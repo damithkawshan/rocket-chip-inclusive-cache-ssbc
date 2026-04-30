@@ -175,6 +175,9 @@ class InclusiveCache(
 
         when (sched.io.resp.valid) { ctrl.module.io.flush_resp := true.B }
         sched.io.resp.ready := true.B
+
+        val perfIdx = if (ctrls.size > 1) 0 else i
+        ctrl.module.io.perf(perfIdx) := sched.io.perf
       }}
     }
 

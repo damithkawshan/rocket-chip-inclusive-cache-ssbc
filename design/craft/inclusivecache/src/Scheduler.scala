@@ -24,6 +24,14 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import chisel3.experimental.dataview._
 
+class L2PerfEvents(setBits: Int) extends Bundle
+{
+  val req_valid  = Bool()
+  val req_set    = UInt(setBits.W)
+  val miss_valid = Bool()
+  val miss_set   = UInt(setBits.W)
+}
+
 class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Module
 {
   val io = IO(new Bundle {
@@ -35,6 +43,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // Control port
     val req = Flipped(Decoupled(new SinkXRequest(params)))
     val resp = Decoupled(new SourceXRequest(params))
+    // Performance events (to control)
+    val perf = Output(new L2PerfEvents(params.setBits))
   })
 
   val sourceA = Module(new SourceA(params))
@@ -342,6 +352,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sourceD.io.grant_req := sinkD  .io.grant_req
   sourceC.io.evict_safe := sourceD.io.evict_safe
   sinkD  .io.grant_safe := sourceD.io.grant_safe
+
+  // Performance event tracking (pipelined to align with directory result)
+  val perfTag1 = RegNext(alloc_uses_directory && request.bits.prio(0), false.B)
+  val perfSet1 = RegNext(request.bits.set)
+  val perfTag2 = if (params.micro.dirReg) RegNext(perfTag1, false.B) else perfTag1
+  val perfSet2 = if (params.micro.dirReg) RegNext(perfSet1) else perfSet1
+
+  io.perf.req_valid  := sinkA.io.req.fire
+  io.perf.req_set    := sinkA.io.req.bits.set
+  io.perf.miss_valid := directory.io.result.valid && !directory.io.result.bits.hit && perfTag2
+  io.perf.miss_set   := perfSet2
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

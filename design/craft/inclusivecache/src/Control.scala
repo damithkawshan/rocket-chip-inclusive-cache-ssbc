@@ -36,10 +36,15 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
 
   lazy val module = new Impl
   class Impl extends LazyModuleImp(this) {
+    val nSets        = scala.math.min(outer.cache.sets, 128)
+    val setBits      = log2Ceil(outer.cache.sets)
+    val nPerfStreams = if (control.bankedControl) 1 else outer.node.edges.in.size
+
     val io = IO(new Bundle {
       val flush_match = Input(Bool())
       val flush_req = Decoupled(UInt(64.W))
       val flush_resp = Input(Bool())
+      val perf = Input(Vec(nPerfStreams, new L2PerfEvents(setBits)))
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -83,10 +88,55 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val lgBlockBytesR = RegField.r(8, log2Ceil(outer.cache.blockBytes).U, RegFieldDesc("lgBlockBytes",
       "Base-2 logarithm of the bytes per cache block", reset=Some(log2Ceil(outer.cache.blockBytes))))
 
-    val regmap = ctrlnode.regmap(
-      0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
+    // Performance counters
+    val perSetReq   = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val perSetMiss  = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val totalAccess = RegInit(0.U(64.W))
+    val missCount   = RegInit(0.U(64.W))
+
+    val clearPerSet = WireDefault(false.B)
+
+    when (clearPerSet) {
+      perSetReq.foreach(_ := 0.U)
+      perSetMiss.foreach(_ := 0.U)
+    } .otherwise {
+      for (s <- 0 until nSets) {
+        val rIncs = io.perf.map(p => p.req_valid  && p.req_set  === s.U)
+        val mIncs = io.perf.map(p => p.miss_valid && p.miss_set === s.U)
+        perSetReq(s)  := perSetReq(s)  + PopCount(rIncs)
+        perSetMiss(s) := perSetMiss(s) + PopCount(mIncs)
+      }
+    }
+
+    totalAccess := totalAccess + PopCount(io.perf.map(_.req_valid))
+    missCount   := missCount   + PopCount(io.perf.map(_.miss_valid))
+
+    val perSetHit = Wire(Vec(nSets, UInt(64.W)))
+    for (s <- 0 until nSets) { perSetHit(s) := perSetReq(s) - perSetMiss(s) }
+
+    val clearReg = RegField.w(64, RegWriteFn((ivalid, oready, data) => {
+      when (ivalid) { clearPerSet := true.B }
+      (true.B, true.B)
+    }), RegFieldDesc("ClearPerSet", "Write any value to clear all per-set counters"))
+
+    val perSetEntries: Seq[(Int, Seq[RegField])] = (0 until nSets).flatMap { s =>
+      val base = 0x400 + s * 24
+      Seq(
+        base       -> Seq(RegField.r(64, perSetHit(s),  RegFieldDesc(s"PerSetHits$s",   s"Hits for set $s"))),
+        (base + 8) -> Seq(RegField.r(64, perSetMiss(s), RegFieldDesc(s"PerSetMisses$s", s"Misses for set $s"))),
+        (base + 16)-> Seq(RegField.r(64, 0.U(64.W),     RegFieldDesc(s"PerSetSecHits$s", s"Secondary hits for set $s (always 0)")))
+      )
+    }
+
+    val baseEntries: Seq[(Int, Seq[RegField])] = Seq(
+      0x000 -> Seq(banksR, waysR, lgSetsR, lgBlockBytesR),
+      0x108 -> Seq(RegField.r(64, missCount,   RegFieldDesc("MissCount",   "Total memory-bound misses"))),
+      0x110 -> Seq(RegField.r(64, totalAccess, RegFieldDesc("TotalAccess", "Total L1 cacheline requests"))),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
-      0x240 -> Seq(flush32)
+      0x240 -> Seq(flush32),
+      0x3F8 -> Seq(clearReg)
     )
+
+    ctrlnode.regmap((baseEntries ++ perSetEntries): _*)
   }
 }
