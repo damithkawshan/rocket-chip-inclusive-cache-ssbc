@@ -119,12 +119,14 @@ case class InclusiveCacheMicroParameters(
   memCycles:  Int = 40, // # of L2 clock cycles for a memory round-trip (50ns @ 800MHz)
   portFactor: Int = 4,  // numSubBanks = (widest TL port * portFactor) / writeBytes
   dirReg:     Boolean = false,
+  victimPolicy: String = "coherency", // "random" = LFSR; "coherency" = tiered by eviction cost
   innerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.fullC, // or none
   outerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.full)   // or flowAE
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
   require (portFactor >= 2) // for inner RMW and concurrent outer Relase + Grant
+  require (victimPolicy == "random" || victimPolicy == "coherency")
 }
 
 case class InclusiveCacheControlParameters(

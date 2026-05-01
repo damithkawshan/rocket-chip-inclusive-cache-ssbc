@@ -111,22 +111,53 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val tag = params.dirReg(RegEnable(io.read.bits.tag, ren), ren1)
   val set = params.dirReg(RegEnable(io.read.bits.set, ren), ren1)
 
-  // Compute the victim way in case of an evicition
+  val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
+
+  // Compute the victim way in case of an eviction.
+  // The LFSR draw is always computed; under "coherency" policy it picks the
+  // tie-breaker among same-cost candidate ways, preserving randomization.
   val victimLFSR = random.LFSR(width = 16, params.dirReg(ren))(InclusiveCacheParameters.lfsrBits-1, 0)
   val victimSums = Seq.tabulate(params.cache.ways) { i => ((1 << InclusiveCacheParameters.lfsrBits)*i / params.cache.ways).U }
   val victimLTE  = Cat(victimSums.map { _ <= victimLFSR }.reverse)
   val victimSimp = Cat(0.U(1.W), victimLTE(params.cache.ways-1, 1), 1.U(1.W))
-  val victimWayOH = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
-  val victimWay = OHToUInt(victimWayOH)
+  val lfsrVictimOH = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
+  val lfsrVictimWay = OHToUInt(lfsrVictimOH)
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone
+  assert (!ren2 || PopCount(lfsrVictimOH) === 1.U)
+
+  val victimWayOH = if (params.micro.victimPolicy == "coherency") {
+    // Tier each way by eviction cost (lower = cheaper):
+    //   0 INVALID; 1 valid+no-clients+clean; 2 valid+no-clients+dirty;
+    //   3 valid+clients+clean; 4 valid+clients+dirty.
+    val tiers = VecInit(ways.map { w =>
+      val invalid   = w.state === INVALID
+      val noClients = !w.clients.orR
+      Mux(invalid,                   0.U(3.W),
+        Mux(noClients && !w.dirty,   1.U(3.W),
+          Mux(noClients,             2.U(3.W),
+            Mux(!w.dirty,            3.U(3.W),
+                                     4.U(3.W)))))
+    })
+    val minTier = tiers.reduceTree((a, b) => Mux(a < b, a, b))
+    val candidatesOH = Cat(tiers.map(_ === minTier).reverse)
+    // Pick the candidate nearest (cyclically) to lfsrVictimWay, so that within
+    // a tier the choice is randomized rather than always biased to way 0.
+    val n = params.cache.ways
+    val doubled = Cat(candidatesOH, candidatesOH)
+    val rotated = (doubled >> lfsrVictimWay)(n-1, 0)
+    val firstOH = PriorityEncoderOH(rotated)
+    val doubledFirst = Cat(firstOH, firstOH)
+    (doubledFirst << lfsrVictimWay)(2*n-1, n)
+  } else {
+    lfsrVictimOH
+  }
+  val victimWay = OHToUInt(victimWayOH)
   assert (!ren2 || PopCount(victimWayOH) === 1.U)
 
   val setQuash = bypass_valid && bypass.set === set
   val tagMatch = bypass.data.tag === tag
   val wayMatch = bypass.way === victimWay
-
-  val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
   val hits = Cat(ways.zipWithIndex.map { case (w, i) =>
     w.tag === tag && w.state =/= INVALID && (!setQuash || i.U =/= bypass.way)
   }.reverse)
