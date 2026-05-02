@@ -26,13 +26,17 @@ import chisel3.experimental.dataview._
 
 class L2PerfEvents(setBits: Int) extends Bundle
 {
-  val req_valid  = Bool()
-  val req_set    = UInt(setBits.W)
-  val miss_valid = Bool()
-  val miss_set   = UInt(setBits.W)
+  val req_valid     = Bool()
+  val req_set       = UInt(setBits.W)
+  val hit_valid     = Bool()
+  val hit_set       = UInt(setBits.W)
+  val miss_valid    = Bool()
+  val miss_set      = UInt(setBits.W)
+  val sec_hit_valid = Bool()
+  val sec_hit_set   = UInt(setBits.W)
 }
 
-class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Module
+class InclusiveCacheBankScheduler(params: InclusiveCacheParameters, enableLogging: Boolean = false) extends Module
 {
   val io = IO(new Bundle {
     val in = Flipped(TLBundle(params.inner.bundle))
@@ -354,15 +358,64 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkD  .io.grant_safe := sourceD.io.grant_safe
 
   // Performance event tracking (pipelined to align with directory result)
-  val perfTag1 = RegNext(alloc_uses_directory && request.bits.prio(0), false.B)
-  val perfSet1 = RegNext(request.bits.set)
+  val perfReadFire = (alloc_uses_directory       && request.bits.prio(0)) ||
+                     (mshr_uses_directory_for_lb && requests.io.data.prio(0)) ||
+                     (mshr_uses_directory && !mshr_uses_directory_for_lb && request.bits.prio(0))
+  val perfReadSet  = Mux(mshr_uses_directory_for_lb, scheduleSet, request.bits.set)
+
+  val perfTag1 = RegNext(perfReadFire, false.B)
+  val perfSet1 = RegNext(perfReadSet)
   val perfTag2 = if (params.micro.dirReg) RegNext(perfTag1, false.B) else perfTag1
   val perfSet2 = if (params.micro.dirReg) RegNext(perfSet1) else perfSet1
 
-  io.perf.req_valid  := sinkA.io.req.fire
-  io.perf.req_set    := sinkA.io.req.bits.set
-  io.perf.miss_valid := directory.io.result.valid && !directory.io.result.bits.hit && perfTag2
-  io.perf.miss_set   := perfSet2
+  val secHitFires = mshrs.map(m => m.io.allocate.valid && m.io.allocate.bits.repeat)
+  val secHitPrioA = Mux(bypass, request.bits.prio(0), requests.io.data.prio(0))
+
+  io.perf.req_valid     := sinkA.io.req.fire
+  io.perf.req_set       := sinkA.io.req.bits.set
+  io.perf.hit_valid     := directory.io.result.valid &&  directory.io.result.bits.hit && perfTag2
+  io.perf.hit_set       := perfSet2
+  io.perf.miss_valid    := directory.io.result.valid && !directory.io.result.bits.hit && perfTag2
+  io.perf.miss_set      := perfSet2
+  io.perf.sec_hit_valid := secHitFires.reduce(_ || _) && secHitPrioA
+  io.perf.sec_hit_set   := Mux1H(secHitFires, mshrs.map(_.io.status.bits.set))
+
+  if (enableLogging) {
+    val nSets = params.cache.sets
+    val logCycle = RegInit(0.U(64.W))
+    logCycle := logCycle + 1.U
+
+    val logReq    = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val logHit    = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val logMiss   = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val logSecHit = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+
+    val newReq    = logReq(io.perf.req_set)        + 1.U
+    val newHit    = logHit(io.perf.hit_set)        + 1.U
+    val newMiss   = logMiss(io.perf.miss_set)      + 1.U
+    val newSecHit = logSecHit(io.perf.sec_hit_set) + 1.U
+
+    when (io.perf.req_valid) {
+      logReq(io.perf.req_set) := newReq
+      printf("[L2-LOG] cycle=%d REQ    set=%d total=%d\n",
+        logCycle, io.perf.req_set, newReq)
+    }
+    when (io.perf.hit_valid) {
+      logHit(io.perf.hit_set) := newHit
+      printf("[L2-LOG] cycle=%d HIT    set=%d total=%d\n",
+        logCycle, io.perf.hit_set, newHit)
+    }
+    when (io.perf.miss_valid) {
+      logMiss(io.perf.miss_set) := newMiss
+      printf("[L2-LOG] cycle=%d MISS   set=%d total=%d\n",
+        logCycle, io.perf.miss_set, newMiss)
+    }
+    when (io.perf.sec_hit_valid) {
+      logSecHit(io.perf.sec_hit_set) := newSecHit
+      printf("[L2-LOG] cycle=%d SECHIT set=%d total=%d\n",
+        logCycle, io.perf.sec_hit_set, newSecHit)
+    }
+  }
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

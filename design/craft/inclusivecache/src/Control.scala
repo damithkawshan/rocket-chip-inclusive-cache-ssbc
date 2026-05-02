@@ -90,29 +90,33 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
 
     // Performance counters
     val perSetReq   = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
+    val perSetHit   = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
     val perSetMiss  = RegInit(VecInit(Seq.fill(nSets)(0.U(64.W))))
     val totalAccess = RegInit(0.U(64.W))
+    val hitCount    = RegInit(0.U(64.W))
     val missCount   = RegInit(0.U(64.W))
 
     val clearPerSet = WireDefault(false.B)
 
     when (clearPerSet) {
-      perSetReq.foreach(_ := 0.U)
+      perSetReq.foreach(_  := 0.U)
+      perSetHit.foreach(_  := 0.U)
       perSetMiss.foreach(_ := 0.U)
     } .otherwise {
       for (s <- 0 until nSets) {
-        val rIncs = io.perf.map(p => p.req_valid  && p.req_set  === s.U)
-        val mIncs = io.perf.map(p => p.miss_valid && p.miss_set === s.U)
+        val rIncs = io.perf.map(p => p.req_valid     && p.req_set     === s.U)
+        val hIncs = io.perf.map(p => p.hit_valid     && p.hit_set     === s.U)
+        val sIncs = io.perf.map(p => p.sec_hit_valid && p.sec_hit_set === s.U)
+        val mIncs = io.perf.map(p => p.miss_valid    && p.miss_set    === s.U)
         perSetReq(s)  := perSetReq(s)  + PopCount(rIncs)
+        perSetHit(s)  := perSetHit(s)  + PopCount(hIncs) + PopCount(sIncs)
         perSetMiss(s) := perSetMiss(s) + PopCount(mIncs)
       }
     }
 
     totalAccess := totalAccess + PopCount(io.perf.map(_.req_valid))
+    hitCount    := hitCount    + PopCount(io.perf.map(_.hit_valid)) + PopCount(io.perf.map(_.sec_hit_valid))
     missCount   := missCount   + PopCount(io.perf.map(_.miss_valid))
-
-    val perSetHit = Wire(Vec(nSets, UInt(64.W)))
-    for (s <- 0 until nSets) { perSetHit(s) := perSetReq(s) - perSetMiss(s) }
 
     val clearReg = RegField.w(64, RegWriteFn((ivalid, oready, data) => {
       when (ivalid) { clearPerSet := true.B }
@@ -132,6 +136,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x000 -> Seq(banksR, waysR, lgSetsR, lgBlockBytesR),
       0x108 -> Seq(RegField.r(64, missCount,   RegFieldDesc("MissCount",   "Total memory-bound misses"))),
       0x110 -> Seq(RegField.r(64, totalAccess, RegFieldDesc("TotalAccess", "Total L1 cacheline requests"))),
+      0x118 -> Seq(RegField.r(64, hitCount,    RegFieldDesc("HitCount",    "Total L2 hits"))),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
       0x240 -> Seq(flush32),
       0x3F8 -> Seq(clearReg)

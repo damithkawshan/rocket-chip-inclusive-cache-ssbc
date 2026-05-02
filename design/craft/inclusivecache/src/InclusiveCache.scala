@@ -34,6 +34,10 @@ class InclusiveCache(
   )(implicit p: Parameters)
     extends LazyModule
 {
+  // Toggle per-set hit/miss event printfs in verilator simulation.
+  // When false the logging hardware is elaborated away.
+  val enableLogging: Boolean = true
+
   val access = TransferSizes(1, cache.blockBytes)
   val xfer = TransferSizes(cache.blockBytes, cache.blockBytes)
   val atom = TransferSizes(1, cache.beatBytes)
@@ -134,7 +138,7 @@ class InclusiveCache(
       }
 
       val params = InclusiveCacheParameters(cache, micro, !ctrls.isEmpty, edgeIn, edgeOut)
-      val scheduler = Module(new InclusiveCacheBankScheduler(params)).suggestName("inclusive_cache_bank_sched")
+      val scheduler = Module(new InclusiveCacheBankScheduler(params, enableLogging)).suggestName("inclusive_cache_bank_sched")
 
       scheduler.io.in <> in
       out <> scheduler.io.out
