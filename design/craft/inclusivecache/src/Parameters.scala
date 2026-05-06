@@ -120,11 +120,17 @@ case class InclusiveCacheMicroParameters(
   portFactor: Int = 4,  // numSubBanks = (widest TL port * portFactor) / writeBytes
   dirReg:     Boolean = false,
   innerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.fullC, // or none
-  outerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.full)   // or flowAE
+  outerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.full,  // or flowAE
+  enablePerfProbe:     Boolean = true, // sim-only TL channel printf + fire counters; elided when false
+  perfProbeDumpPeriod: Int = 100,        // cycles between PERF counter dumps (0 = no periodic dump)
+  enableSatCounter:    Boolean = true,  // per-set saturation counter with histogram; synthesizable
+  satHistoryDepth:     Int = 1024)        // max # of histogram snapshots stored in history memory
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
   require (portFactor >= 2) // for inner RMW and concurrent outer Relase + Grant
+  require (perfProbeDumpPeriod >= 0)
+  require (satHistoryDepth > 0 && isPow2(satHistoryDepth))
 }
 
 case class InclusiveCacheControlParameters(
@@ -185,6 +191,10 @@ case class InclusiveCacheParameters(
   val offsetBits = log2Ceil(cache.blockBytes)
   val tagBits    = addressBits - setBits - offsetBits
   val putBits    = log2Ceil(max(putLists, relLists))
+
+  // Saturation counter parameters
+  val satCounterBits = log2Ceil(2 * cache.ways)  // counter width; range [0, 2K-1]
+  val satCounterMax  = (2 * cache.ways) - 1
 
   require (tagBits > 0)
   require (offsetBits > 0)

@@ -35,6 +35,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // Control port
     val req = Flipped(Decoupled(new SinkXRequest(params)))
     val resp = Decoupled(new SourceXRequest(params))
+    // Optional perf taps; absent (no IO ports) when probe disabled, so RTL
+    // is byte-identical to upstream by default.
+    val perf = if (params.micro.enablePerfProbe) Some(Output(new SchedulerPerf(params))) else None
+    // Optional saturation counter control; absent when enableSatCounter is false.
+    val satControl = if (params.micro.enableSatCounter) Some(new SatCounterCtrlIO(params)) else None
+    val satBankId  = if (params.micro.enableSatCounter) Some(Input(UInt(8.W))) else None
   })
 
   val sourceA = Module(new SourceA(params))
@@ -349,4 +355,56 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   private def tagBits = params.addressMapping.drop(params.offsetBits + params.setBits).take(params.tagBits).mkString(",")
   private def simple = s""""reset":"${reset.pathName}","tagBits":[${tagBits}],"setBits":[${setBits}],"blockBytes":${params.cache.blockBytes},"ways":${params.cache.ways}"""
   def json: String = s"""{"addresses":[${addresses}],${simple},"directory":${directory.json},"subbanks":${bankedStore.json}}"""
+
+  // Optional perf taps. Latch a flag through the directory's read pipeline
+  // so the result is attributed only to inner.A primary lookups (excluding
+  // sinkC/sinkX requests and MSHR-refill lookups).
+  io.perf.foreach { perf =>
+    val isA           = request.bits.prio(0)
+    val lookup_isA_in = alloc_uses_directory && isA
+    val lookup_isA_r1 = RegNext(lookup_isA_in, false.B)
+    val lookup_isA_r2 = if (params.micro.dirReg) RegNext(lookup_isA_r1, false.B) else lookup_isA_r1
+    // Pipeline set/tag through the same depth as the directory result
+    val set_r1 = RegEnable(request.bits.set, lookup_isA_in)
+    val tag_r1 = RegEnable(request.bits.tag, lookup_isA_in)
+    val set_r2 = if (params.micro.dirReg) RegEnable(set_r1, lookup_isA_r1) else set_r1
+    val tag_r2 = if (params.micro.dirReg) RegEnable(tag_r1, lookup_isA_r1) else tag_r1
+    perf.acceptA     := request.fire && isA
+    perf.secondaryA  := request.fire && isA && queue
+    perf.lookupValid := directory.io.result.valid && lookup_isA_r2
+    perf.lookupHit   := directory.io.result.bits.hit
+    perf.lookupSet   := set_r2
+    perf.lookupTag   := tag_r2
+    perf.lookupWay   := directory.io.result.bits.way
+  }
+
+  // Optional per-set saturation counters with histogram history.
+  // Instantiated inside the Scheduler so both directory-path and repeat-path
+  // events are visible.
+  if (params.micro.enableSatCounter) {
+    val satCounter = Module(new InclusiveCacheSatCounter(params))
+
+    // --- Directory-path events (new alloc + tag-mismatch reload) ---
+    // Pipeline the valid flag and set index through the same depth as the
+    // directory result so they arrive aligned with directory.io.result.valid.
+    val dirEvent_in = alloc_uses_directory || mshr_uses_directory
+    val dirEvent_r1 = RegNext(dirEvent_in, false.B)
+    val dirEvent_r2 = if (params.micro.dirReg) RegNext(dirEvent_r1, false.B) else dirEvent_r1
+    val dirSet_r1   = RegEnable(directory.io.read.bits.set, dirEvent_in)
+    val dirSet_r2   = if (params.micro.dirReg) RegEnable(dirSet_r1, dirEvent_r1) else dirSet_r1
+
+    satCounter.io.taps.dirLookupValid := directory.io.result.valid && dirEvent_r2
+    satCounter.io.taps.dirLookupHit   := directory.io.result.bits.hit
+    satCounter.io.taps.dirLookupSet   := dirSet_r2
+
+    // --- Repeat-path events (tag-match reload, bypasses Directory) ---
+    // Any MSHR that fires allocate with repeat=true is a guaranteed hit.
+    val repeatFires = mshrs.map(m => m.io.allocate.valid && m.io.allocate.bits.repeat)
+    satCounter.io.taps.repeatValid := repeatFires.reduce(_ || _)
+    satCounter.io.taps.repeatSet   := Mux1H(repeatFires, mshrs.map(_.io.status.bits.set))
+
+    // --- MMIO control / status ---
+    io.satControl.get <> satCounter.io.control
+    satCounter.io.bankId := io.satBankId.get
+  }
 }

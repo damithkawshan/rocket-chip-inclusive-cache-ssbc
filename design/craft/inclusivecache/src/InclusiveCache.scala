@@ -117,13 +117,13 @@ class InclusiveCache(
     node.edges.in.headOption.foreach { n =>
       println(s"L${cache.level} InclusiveCache Client Map:")
       n.client.clients.zipWithIndex.foreach { case (c,i) =>
-        println(s"\t${i} <= ${c.name}")
+        println(s"\t${i} <= ${c.name} (sourceId ${c.sourceId.start}-${c.sourceId.end})")
       }
       println("")
     }
 
     // Create the L2 Banks
-    val mods = (node.in zip node.out) map { case ((in, edgeIn), (out, edgeOut)) =>
+    val mods = (node.in zip node.out).zipWithIndex map { case (((in, edgeIn), (out, edgeOut)), i) =>
       edgeOut.manager.managers.foreach { m =>
         require (m.supportsAcquireB.contains(xfer),
           s"All managers behind the L2 must support acquireB($xfer) " +
@@ -153,6 +153,27 @@ class InclusiveCache(
       in .b.bits.address := params.restoreAddress(scheduler.io.in .b.bits.address)
       out.c.bits.address := params.restoreAddress(scheduler.io.out.c.bits.address)
 
+      // Sim-only TL channel probe: per-bank fire counters + per-fire printfs.
+      // Entirely elided from the generated FIRRTL when enablePerfProbe is false.
+      if (micro.enablePerfProbe) {
+        InclusiveCachePerfProbe(i, params, in, out, edgeIn, edgeOut, micro.perfProbeDumpPeriod)
+      }
+      scheduler.io.perf.foreach { p =>
+        InclusiveCacheHitMissProbe(i, params, p, micro.perfProbeDumpPeriod)
+      }
+
+      // Saturation counter: set bank ID and tie down defaults for MMIO control.
+      // Actual MMIO wiring happens below in the ctrl loop.
+      scheduler.io.satBankId.foreach { _ := i.U }
+      scheduler.io.satControl.foreach { sc =>
+        sc.enable     := false.B
+        sc.reset_ctr  := false.B
+        sc.interval   := 0.U
+        sc.threshLow  := 0.U
+        sc.threshHigh := 0.U
+        sc.histIdx    := 0.U
+      }
+
       scheduler
     }
 
@@ -160,6 +181,14 @@ class InclusiveCache(
       ctrl.module.io.flush_req.ready := false.B
       ctrl.module.io.flush_resp := false.B
       ctrl.module.io.flush_match := false.B
+      // Tie down sat counter inputs from HW side when no scheduler is connected yet
+      ctrl.module.io.sat.foreach { sat =>
+        sat.histLow    := 0.U
+        sat.histMed    := 0.U
+        sat.histHigh   := 0.U
+        sat.writeCount := 0.U
+        sat.full       := false.B
+      }
     }
 
     mods.zip(node.edges.in).zipWithIndex.foreach { case ((sched, edgeIn), i) =>
@@ -175,6 +204,26 @@ class InclusiveCache(
 
         when (sched.io.resp.valid) { ctrl.module.io.flush_resp := true.B }
         sched.io.resp.ready := true.B
+
+        // Wire saturation counter MMIO ↔ Scheduler
+        for {
+          sc  <- sched.io.satControl
+          sat <- ctrl.module.io.sat
+        } {
+          // SW → HW (MMIO writes → Scheduler/SatCounter)
+          sc.enable     := sat.enable
+          sc.reset_ctr  := sat.reset_ctr
+          sc.interval   := sat.interval
+          sc.threshLow  := sat.threshLow
+          sc.threshHigh := sat.threshHigh
+          sc.histIdx    := sat.histIdx
+          // HW → SW (SatCounter outputs → MMIO reads)
+          sat.histLow    := sc.histLow
+          sat.histMed    := sc.histMed
+          sat.histHigh   := sc.histHigh
+          sat.writeCount := sc.writeCount
+          sat.full       := sc.full
+        }
       }}
     }
 
