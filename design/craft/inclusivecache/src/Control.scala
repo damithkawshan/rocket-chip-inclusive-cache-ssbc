@@ -44,6 +44,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // the Scheduler's SatCounterCtrlIO in InclusiveCache.scala.
       val sat = if (outer.micro.enableSatCounter) Some(new Bundle {
         // HW → SW (readable)
+        val histIdle   = Input(UInt(32.W))
         val histLow    = Input(UInt(32.W))
         val histMed    = Input(UInt(32.W))
         val histHigh   = Input(UInt(32.W))
@@ -119,7 +120,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       sat.reset_ctr := satResetReg
 
       // 0x308: Sampling interval
-      val satIntervalReg = RegInit(100.U(32.W))
+      val satIntervalReg = RegInit(500000.U(32.W))
       val satIntervalField = RegField(32, satIntervalReg,
         RegFieldDesc("satInterval", "Histogram sampling interval in cycles"))
       sat.interval := satIntervalReg
@@ -150,9 +151,11 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         RegFieldDesc("satHistIdx", "Index for reading history memory"))
       sat.histIdx := satHistIdxReg
 
-      // 0x338, 0x340, 0x348: History read data (1-cycle read latency from SyncReadMem)
+      // 0x338-0x350: History read data (1-cycle read latency from SyncReadMem)
+      val satHistIdleField = RegField.r(32, sat.histIdle,
+        RegFieldDesc("satHistIdle", "IDLE bin count at satHistIdx (counter==0)"))
       val satHistLowField = RegField.r(32, sat.histLow,
-        RegFieldDesc("satHistLow", "LOW bin count at satHistIdx"))
+        RegFieldDesc("satHistLow", "LOW bin count at satHistIdx (0<counter<=threshLow)"))
       val satHistMedField = RegField.r(32, sat.histMed,
         RegFieldDesc("satHistMed", "MEDIUM bin count at satHistIdx"))
       val satHistHighField = RegField.r(32, sat.histHigh,
@@ -166,9 +169,10 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         0x320 -> Seq(satStatusField),
         0x328 -> Seq(satWriteCountField),
         0x330 -> Seq(satHistIdxField),
-        0x338 -> Seq(satHistLowField),
-        0x340 -> Seq(satHistMedField),
-        0x348 -> Seq(satHistHighField)
+        0x338 -> Seq(satHistIdleField),
+        0x340 -> Seq(satHistLowField),
+        0x348 -> Seq(satHistMedField),
+        0x350 -> Seq(satHistHighField)
       )
     } else Nil
 

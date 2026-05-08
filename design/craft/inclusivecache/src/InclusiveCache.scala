@@ -183,6 +183,7 @@ class InclusiveCache(
       ctrl.module.io.flush_match := false.B
       // Tie down sat counter inputs from HW side when no scheduler is connected yet
       ctrl.module.io.sat.foreach { sat =>
+        sat.histIdle   := 0.U
         sat.histLow    := 0.U
         sat.histMed    := 0.U
         sat.histHigh   := 0.U
@@ -218,6 +219,7 @@ class InclusiveCache(
           sc.threshHigh := sat.threshHigh
           sc.histIdx    := sat.histIdx
           // HW → SW (SatCounter outputs → MMIO reads)
+          sat.histIdle   := sc.histIdle
           sat.histLow    := sc.histLow
           sat.histMed    := sc.histMed
           sat.histHigh   := sc.histHigh
