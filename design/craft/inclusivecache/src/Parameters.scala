@@ -124,13 +124,16 @@ case class InclusiveCacheMicroParameters(
   enablePerfProbe:     Boolean = true, // sim-only TL channel printf + fire counters; elided when false
   perfProbeDumpPeriod: Int = 100,        // cycles between PERF counter dumps (0 = no periodic dump)
   enableSatCounter:    Boolean = true,  // per-set saturation counter with histogram; synthesizable
-  satHistoryDepth:     Int = 1024)        // max # of histogram snapshots stored in history memory
+  satHistoryDepth:     Int = 1024,        // max # of histogram snapshots stored in history memory
+  enableTLDirMonitor:  Boolean = true,  // bank-global TileLink/Directory event monitor; synthesizable
+  tlDirHistoryDepth:   Int = 1024)        // max # of TLDir snapshots stored in history memory
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
   require (portFactor >= 2) // for inner RMW and concurrent outer Relase + Grant
   require (perfProbeDumpPeriod >= 0)
   require (satHistoryDepth > 0 && isPow2(satHistoryDepth))
+  require (tlDirHistoryDepth > 0 && isPow2(tlDirHistoryDepth))
 }
 
 case class InclusiveCacheControlParameters(

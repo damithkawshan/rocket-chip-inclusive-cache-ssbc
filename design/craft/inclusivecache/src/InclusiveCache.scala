@@ -174,6 +174,15 @@ class InclusiveCache(
         sc.histIdx    := 0.U
       }
 
+      // TL+Directory monitor: bank ID + tied-down defaults; MMIO wired below.
+      scheduler.io.tldBankId.foreach { _ := i.U }
+      scheduler.io.tldControl.foreach { tc =>
+        tc.enable    := false.B
+        tc.reset_ctr := false.B
+        tc.interval  := 0.U
+        tc.histIdx   := 0.U
+      }
+
       scheduler
     }
 
@@ -189,6 +198,11 @@ class InclusiveCache(
         sat.histHigh   := 0.U
         sat.writeCount := 0.U
         sat.full       := false.B
+      }
+      ctrl.module.io.tld.foreach { tld =>
+        tld.histReads.foreach { _ := 0.U }
+        tld.writeCount := 0.U
+        tld.full       := false.B
       }
     }
 
@@ -225,6 +239,19 @@ class InclusiveCache(
           sat.histHigh   := sc.histHigh
           sat.writeCount := sc.writeCount
           sat.full       := sc.full
+        }
+        // Wire TL+Directory monitor MMIO ↔ Scheduler
+        for {
+          tc  <- sched.io.tldControl
+          tld <- ctrl.module.io.tld
+        } {
+          tc.enable    := tld.enable
+          tc.reset_ctr := tld.reset_ctr
+          tc.interval  := tld.interval
+          tc.histIdx   := tld.histIdx
+          tld.histReads  := tc.histReads
+          tld.writeCount := tc.writeCount
+          tld.full       := tc.full
         }
       }}
     }
