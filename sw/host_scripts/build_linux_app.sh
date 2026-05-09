@@ -4,10 +4,12 @@
 # Supported apps:
 #   l2_perf_wrapper   — L2 cache performance counter readout
 #   l2_sat_wrapper    — L2 saturation counter control & histogram dump
+#   l2_tldmon_wrapper — L2 TileLink+Directory event monitor control & history dump
 #
 # Usage:
 #   ./build_linux_app.sh l2_perf_wrapper
 #   ./build_linux_app.sh l2_sat_wrapper
+#   ./build_linux_app.sh l2_tldmon_wrapper
 
 APP="${1:-x}" #l2_perf_wrapper}"
 OUT_DIR="/home/damith/Research/repos/chipyard_performance_eval/chipyard/generators/rocket-chip-inclusive-cache/sw/targeted_tests/src"

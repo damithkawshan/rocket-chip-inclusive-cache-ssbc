@@ -1,9 +1,9 @@
 #!/bin/bash
-# run_dual_bench_vcu118.sh — Run multiple benchmarks in parallel
-# with auto-tuned saturation counter sampling.
+# run_tldmon_bench_vcu118.sh — Run multiple benchmarks in parallel
+# with TLDir monitor sampling.
 #
 # Usage:
-#   ./run_dual_bench_vcu118.sh <wl1> <wl2> <run_seconds> [output_file] [thresh_low] [thresh_high]
+#   ./run_tldmon_bench_vcu118.sh <wl1> <wl2> <run_seconds> [output_file]
 #
 # Available workloads (wl1, wl2):
 #   1 or omnetpp : 520.omnetpp_r_run_ref
@@ -13,7 +13,6 @@
 # Note: no 'set -e' — kill/wait may fail if the benchmark exits early,
 # and we must always reach the dump step.
 
-SAT="./l2_sat_wrapper_riscv"
 TLDMON="./l2_tldmon_wrapper_riscv"
 
 setup_workload() {
@@ -57,14 +56,12 @@ setup_workload() {
 }
 
 CLOCK_HZ=50000000       # 50 MHz
-HISTORY_DEPTH=1024       # compile-time satHistoryDepth
+HISTORY_DEPTH=1024      # compile-time TLD history depth (approx)
 
-WL1_ID="${1:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file] [thresh_low] [thresh_high]}"
-WL2_ID="${2:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file] [thresh_low] [thresh_high]}"
-RUN_SECS="${3:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file] [thresh_low] [thresh_high]}"
-OUTFILE="${4:-sat_history.txt}"
-THRESH_LOW="${5:-4}"
-THRESH_HIGH="${6:-9}"
+WL1_ID="${1:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file]}"
+WL2_ID="${2:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file]}"
+RUN_SECS="${3:?Usage: $0 <wl1> <wl2> <run_seconds> [output_file]}"
+OUTFILE="${4:-tldmon_history.txt}"
 
 setup_workload "$WL1_ID" 1
 setup_workload "$WL2_ID" 2
@@ -74,16 +71,16 @@ INTERVAL=$(( (RUN_SECS * CLOCK_HZ) / HISTORY_DEPTH ))
 SNAP_PERIOD_MS=$(( (INTERVAL * 1000) / CLOCK_HZ ))
 
 # ---- helpers ----
-log() { echo "[sat_bench] $(date '+%H:%M:%S') $*"; }
+log() { echo "[tldmon_bench] $(date '+%H:%M:%S') $*"; }
 
 cleanup() {
     log "Caught interrupt signal! Stopping workloads..."
     kill "$BENCH_PID1" "$BENCH_PID2" 2>/dev/null || true
     wait "$BENCH_PID1" "$BENCH_PID2" 2>/dev/null || true
 
-    $SAT stop
+    $TLDMON stop
     log "Counters stopped. Dumping early stats to terminated_dump.dump..."
-    $SAT dump > "terminated_dump.dump"
+    $TLDMON dump > "terminated_dump.dump"
     log "Done. Early output saved to: terminated_dump.dump"
     exit 1
 }
@@ -92,22 +89,21 @@ trap cleanup SIGINT SIGTERM SIGTSTP
 
 # ---- main ----
 log "============================================"
-log "  Saturation Counter Multi-Benchmark Runner "
+log "  TLDir Monitor Multi-Benchmark Runner "
 log "============================================"
 log "Run duration   : ${RUN_SECS}s"
 log "Clock          : ${CLOCK_HZ} Hz"
 log "History depth  : ${HISTORY_DEPTH}"
 log "Interval       : ${INTERVAL} cycles (~${SNAP_PERIOD_MS}ms per snapshot)"
-log "Thresholds     : low=${THRESH_LOW} high=${THRESH_HIGH}"
 log "Output         : ${OUTFILE}"
 log "Workload 1     : ${WORKDIR1}/${WORKLOAD1}"
 log "Workload 2     : ${WORKDIR2}/${WORKLOAD2}"
 log "============================================"
 
 # Reset, configure, start
-$SAT reset
-$SAT configure "$INTERVAL" "$THRESH_LOW" "$THRESH_HIGH"
-$SAT start
+$TLDMON reset
+$TLDMON configure "$INTERVAL"
+$TLDMON start
 log "Counters started"
 
 # Launch workload 1
@@ -135,10 +131,10 @@ kill "$BENCH_PID1" "$BENCH_PID2" 2>/dev/null || true
 wait "$BENCH_PID1" "$BENCH_PID2" 2>/dev/null || true
 
 # Stop and dump
-$SAT stop
+$TLDMON stop
 log "Counters stopped. Dumping..."
-$SAT status
-$SAT dump > "$OUTFILE"
+$TLDMON status
+$TLDMON dump > "$OUTFILE"
 
 log "Done. Output saved to: $OUTFILE"
-log "Snapshots recorded: $($SAT status 2>/dev/null | grep 'Snapshots' | awk '{print $3}')"
+log "Snapshots recorded: $($TLDMON status 2>/dev/null | grep 'Snapshots' | awk '{print $3}')"

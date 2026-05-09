@@ -5,7 +5,7 @@
 # evenly across the run duration. No periodic draining needed.
 #
 # Usage:
-#   ./run_satcounter_bench_vcu118.sh <run_seconds> <workload: 505|520> [output_file] [thresh_low] [thresh_high]
+#   ./run_satcounter_bench_vcu118.sh <run_seconds> <workload: 505|520|605> [output_file] [thresh_low] [thresh_high]
 #
 # Examples:
 #   ./run_satcounter_bench_vcu118.sh 3600 520                              # 1 hour OMNeT++, defaults
@@ -20,8 +20,8 @@ SAT="./l2_sat_wrapper_riscv"
 CLOCK_HZ=50000000       # 50 MHz
 HISTORY_DEPTH=1024       # compile-time satHistoryDepth
 
-RUN_SECS="${1:?Usage: $0 <run_seconds> <workload: 505|520> [output_file] [thresh_low] [thresh_high]}"
-WL_SEL="${2:?Missing workload selection (505 or 520)}"
+RUN_SECS="${1:?Usage: $0 <run_seconds> <workload: 505|520|605> [output_file] [thresh_low] [thresh_high]}"
+WL_SEL="${2:?Missing workload selection (505, 520 or 605)}"
 OUTFILE="${3:-sat_history_${WL_SEL}.txt}"
 THRESH_LOW="${4:-4}"
 THRESH_HIGH="${5:-9}"
@@ -34,8 +34,12 @@ elif [ "$WL_SEL" = "520" ]; then
     WORKDIR="520.omnetpp_r_run_ref"
     WORKLOAD="./omnetpp_r_base.riscv-64"
     WORK_ARGS="-c General -r 0"
+elif [ "$WL_SEL" = "605" ]; then
+    WORKDIR="605.mcf_s_run_ref"
+    WORKLOAD="./mcf_s_base.riscv-64"
+    WORK_ARGS="inp.in"
 else
-    echo "Error: Unknown workload '$WL_SEL'. Choose 505 or 520."
+    echo "Error: Unknown workload '$WL_SEL'. Choose 505, 520 or 605."
     exit 1
 fi
 
@@ -85,11 +89,7 @@ log "Counters started"
 # Launch workload
 (
     cd "$WORKDIR" || exit 1
-    if [ "$WL_SEL" = "505" ]; then
-        $WORKLOAD $WORK_ARGS > inp.out 2>> inp.er
-    else
-        $WORKLOAD $WORK_ARGS
-    fi
+    $WORKLOAD $WORK_ARGS > run.out 2> run.err
 ) &
 BENCH_PID=$!
 log "Workload started (PID=$BENCH_PID)"
