@@ -58,18 +58,25 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         val threshHigh = Output(UInt(32.W))
         val histIdx    = Output(UInt(32.W))
       }) else None
-      // Optional TL+Directory monitor MMIO — raw register signals wired to
+      // Optional phase-detection monitor MMIO — raw register signals wired to
       // the Scheduler's TLDirMonitorCtrlIO in InclusiveCache.scala.
       val tld = if (outer.micro.enableTLDirMonitor) Some(new Bundle {
         // HW → SW (readable)
-        val histReads  = Input(Vec(TLDirMonitor.N_COUNTERS, UInt(32.W)))
+        val readData   = Input(UInt(64.W))
         val writeCount = Input(UInt(32.W))
         val full       = Input(Bool())
-        // SW → HW (writable, directly drive TLDirMonitorCtrlIO inputs)
+        val streaming  = Input(Bool())
+        val nSrc       = Input(UInt(8.W))
+        val actWords   = Input(UInt(16.W))
+        val numWords   = Input(UInt(16.W))
+        val nSetsLg2   = Input(UInt(8.W))
+        // SW → HW (writable)
         val enable    = Output(Bool())
         val reset_ctr = Output(Bool())
         val interval  = Output(UInt(32.W))
-        val histIdx   = Output(UInt(32.W))
+        val threshold = Output(UInt(32.W))
+        val snapIdx   = Output(UInt(32.W))
+        val wordIdx   = Output(UInt(32.W))
       }) else None
     })
     // Flush directive
@@ -189,12 +196,12 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       )
     } else Nil
 
-    // ---- TL+Directory monitor MMIO registers (offset 0x400 – 0x508) ----
+    // ---- Phase-detection monitor MMIO registers (offset 0x400 – 0x448) ----
     val tldRegmap: Seq[(Int, Seq[RegField])] = if (outer.micro.enableTLDirMonitor) {
       val tld = io.tld.get
 
       // 0x400: Control — bit 0 = enable, bit 1 = reset (auto-clears)
-      val tldEnableReg = RegInit(true.B)
+      val tldEnableReg = RegInit(false.B)
       val tldResetReg  = WireInit(false.B)
       val tldCtrlField = RegField(32, RegReadFn(_ => (true.B, Cat(0.U(30.W), false.B, tldEnableReg))),
         RegWriteFn((valid, data) => {
@@ -203,47 +210,73 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
             tldResetReg  := data(1)
           }
           true.B
-        }), RegFieldDesc("tldCtrl", "TL+Dir monitor control: bit0=enable, bit1=reset"))
+        }), RegFieldDesc("tldCtrl", "Phase monitor control: bit0=enable, bit1=reset"))
       tld.enable    := tldEnableReg
       tld.reset_ctr := tldResetReg
 
       // 0x408: Sampling interval (cycles)
-      val tldIntervalReg = RegInit(500000.U(32.W))
+      val tldIntervalReg = RegInit(0.U(32.W))
       val tldIntervalField = RegField(32, tldIntervalReg,
-        RegFieldDesc("tldInterval", "TL+Dir monitor snapshot interval (cycles)"))
+        RegFieldDesc("tldInterval", "Snapshot interval (cycles)"))
       tld.interval := tldIntervalReg
 
-      // 0x410: Status — bit 0 = full
-      val tldStatusField = RegField.r(32, Cat(0.U(31.W), tld.full),
-        RegFieldDesc("tldStatus", "Bit 0: history memory full"))
+      // 0x410: Activity threshold (CSC > T → bit set in activity bitmap)
+      val tldThreshReg = RegInit(3.U(32.W))
+      val tldThreshField = RegField(32, tldThreshReg,
+        RegFieldDesc("tldThresh", "Activity threshold for CSC (0..7)"))
+      tld.threshold := tldThreshReg
 
-      // 0x418: Snapshot count
+      // 0x418: Status — bit 0 = full, bit 1 = streaming
+      val tldStatusField = RegField.r(32, Cat(0.U(30.W), tld.streaming, tld.full),
+        RegFieldDesc("tldStatus", "bit0=full, bit1=streaming"))
+
+      // 0x420: Snapshot count
       val tldWriteCountField = RegField.r(32, tld.writeCount,
-        RegFieldDesc("tldWriteCount", "Number of TL+Dir snapshots recorded"))
+        RegFieldDesc("tldWriteCount", "Number of completed snapshots"))
 
-      // 0x420: History read index
-      val tldHistIdxReg = RegInit(0.U(32.W))
-      val tldHistIdxField = RegField(32, tldHistIdxReg,
-        RegFieldDesc("tldHistIdx", "Index for reading TL+Dir history memory"))
-      tld.histIdx := tldHistIdxReg
+      // 0x428: Snapshot index for indexed readout
+      val tldSnapIdxReg = RegInit(0.U(32.W))
+      val tldSnapIdxField = RegField(32, tldSnapIdxReg,
+        RegFieldDesc("tldSnapIdx", "Snapshot index (0..depth-1)"))
+      tld.snapIdx := tldSnapIdxReg
 
-      // 0x428 .. 0x428 + 8*(N-1) : 29 readback registers, one per counter
-      val tldHistFields = (0 until TLDirMonitor.N_COUNTERS).map { i =>
-        RegField.r(32, tld.histReads(i),
-          RegFieldDesc(s"tldHist$i", s"TL+Dir history readback for counter index $i"))
-      }
+      // 0x430: Word index within a snapshot
+      val tldWordIdxReg = RegInit(0.U(32.W))
+      val tldWordIdxField = RegField(32, tldWordIdxReg,
+        RegFieldDesc("tldWordIdx", "Word index within snapshot (0..numWords-1)"))
+      tld.wordIdx := tldWordIdxReg
 
-      val staticEntries: Seq[(Int, Seq[RegField])] = Seq(
+      // 0x438: 64-bit read data at (snapIdx, wordIdx). 1-cycle SRAM latency.
+      val tldReadDataField = RegField.r(64, tld.readData,
+        RegFieldDesc("tldReadData", "64-bit data at (snapIdx, wordIdx)"))
+
+      // 0x440: Geometry — packed { nSetsLg2[31:24], nSrc[23:16], actWords[15:8], numWords[7:0] }
+      // numWords / actWords occupy 8 bits each (capped at 255 here for the
+      // packed view; the raw signals are wider in TLDirMonitorCtrlIO).
+      val tldGeomField = RegField.r(32,
+        Cat(tld.nSetsLg2,
+            tld.nSrc,
+            tld.actWords(7, 0),
+            tld.numWords(7, 0)),
+        RegFieldDesc("tldGeom", "Layout: {nSetsLg2,nSrc,actWords,numWords}"))
+
+      // 0x448: Wider geometry (16-bit fields) for SW that needs full numWords.
+      val tldGeomWideField = RegField.r(32,
+        Cat(tld.numWords, tld.actWords),
+        RegFieldDesc("tldGeomWide", "{numWords[31:16], actWords[15:0]}"))
+
+      Seq(
         0x400 -> Seq(tldCtrlField),
         0x408 -> Seq(tldIntervalField),
-        0x410 -> Seq(tldStatusField),
-        0x418 -> Seq(tldWriteCountField),
-        0x420 -> Seq(tldHistIdxField)
+        0x410 -> Seq(tldThreshField),
+        0x418 -> Seq(tldStatusField),
+        0x420 -> Seq(tldWriteCountField),
+        0x428 -> Seq(tldSnapIdxField),
+        0x430 -> Seq(tldWordIdxField),
+        0x438 -> Seq(tldReadDataField),
+        0x440 -> Seq(tldGeomField),
+        0x448 -> Seq(tldGeomWideField)
       )
-      val histEntries: Seq[(Int, Seq[RegField])] = tldHistFields.zipWithIndex.map { case (f, i) =>
-        (0x428 + i * 8) -> Seq(f)
-      }
-      staticEntries ++ histEntries
     } else Nil
 
     val regmap = ctrlnode.regmap(

@@ -1,18 +1,38 @@
 /*
- * Bank-global TileLink + Directory activity monitor.
+ * TLDirMonitor — phase-detection cache resource monitor.
  *
- * Tracks coherence-protocol activity at L2 with a fixed set of saturating
- * 32-bit event counters. On each snapshot tick, every counter's value is
- * committed to a per-counter history memory (SyncReadMem) and reset to 0,
- * so each history row is the *delta* over one sampling interval.
+ * Implements the design described in sw/targeted_tests/docs/impl_4.md.
  *
- * Storage cost: N counters x 32 bits x depth (one BRAM block per counter).
- * Timing strategy mirrors InclusiveCacheSatCounter:
- *   - one saturating-add per counter per cycle (single-event/cycle limit)
- *   - registered snap pulse drives BRAM write-enables and counter resets
- *   - history memory uses SyncReadMem (1-cycle read latency, BRAM-friendly)
+ * Live state (per bank):
+ *   csc[set][src]      : 3-bit composite saturation counter
+ *                          A miss      → +1   (saturating at 7)
+ *                          A hit       → -1   (clamped at 0)
+ *                          B probe     → +2   (saturating at 7)
+ *   invCnt[set]        : log2(WAYS+1)-bit count of ways currently in INVALID
+ *   dirtyCnt[set]      : log2(WAYS+1)-bit count of ways currently in TIP|TRUNK
+ *   wayState[set][way] : 2-bit shadow of directory state, used to compute
+ *                        invCnt/dirtyCnt deltas on each directory write.
  *
- * Disabled at elaboration time via micro.enableTLDirMonitor.
+ * Snapshot (every `interval` cycles):
+ *   1. Compute activity bitmap A[set][src] = (csc[set][src] > THRESH).
+ *   2. Compute setstate[set] = { dirtyBucket[1:0], invCapped[2:0] }
+ *        invCapped     = min(invCnt, 7)
+ *        dirtyBucket   = bucketize(dirtyCnt) into {0, 1-2, 3-5, 6+}
+ *   3. Latch (1)+(2) into a wide shadow register (frozen for streaming).
+ *   4. Halve every csc counter (csc >>= 1) — exponential decay.
+ *   5. Stream the shadow word-by-word (64 bits/cycle) into the snapshot SRAM.
+ *      Total streaming length = ceil(SETS*N_SRC/64) + ceil(SETS*5/64) cycles.
+ *      Streaming finishes long before the next snap because interval >> N.
+ *
+ * Snapshot SRAM layout (single 64-bit-wide SyncReadMem):
+ *   addr = snap_idx * NUM_WORDS + word_idx
+ *   word_idx in [0 .. ACT_WORDS)             → activity bitmap
+ *   word_idx in [ACT_WORDS .. NUM_WORDS)     → setstate array
+ *
+ * NOTE: This is a complete rewrite of the previous 29-event TLDirMonitor.
+ *       The MMIO layout (Control.scala) and the C/Python tooling that read
+ *       it have changed. The on-chip module name and `enableTLDirMonitor`
+ *       parameter are preserved for integration continuity.
  */
 
 package sifive.blocks.inclusivecache
@@ -20,118 +40,94 @@ package sifive.blocks.inclusivecache
 import chisel3._
 import chisel3.util._
 
-// ---------------------------------------------------------------------------
-// Counter ordering (single source of truth — used by HW + matched in C wrapper)
-// ---------------------------------------------------------------------------
 object TLDirMonitor
 {
-  // Group 1 — TL channel fires (9)
-  val IDX_C_INA            = 0
-  val IDX_C_INB            = 1
-  val IDX_C_INC            = 2
-  val IDX_C_IND            = 3
-  val IDX_C_INE            = 4
-  val IDX_C_OUTA           = 5
-  val IDX_C_OUTC           = 6
-  val IDX_C_OUTD           = 7
-  val IDX_C_OUTE           = 8
-  // Group 2 — Inner-A opcode breakdown (3)
-  val IDX_A_ACQUIREBLOCK   = 9
-  val IDX_A_ACQUIREPERM    = 10
-  val IDX_A_GETPUT         = 11
-  // Group 3 — Inner-C opcode breakdown (4)
-  val IDX_C_RELEASE        = 12
-  val IDX_C_RELEASEDATA    = 13
-  val IDX_C_PROBEACK       = 14
-  val IDX_C_PROBEACKDATA   = 15
-  // Group 4 — Inner-D opcode breakdown (2)
-  val IDX_D_GRANT          = 16
-  val IDX_D_GRANTDATA      = 17
-  // Group 5 — Directory hit/miss + eviction (4)
-  val IDX_DIR_HIT          = 18
-  val IDX_DIR_MISS         = 19
-  val IDX_EVICT_CLEAN      = 20
-  val IDX_EVICT_DIRTY      = 21
-  // Group 6 — Directory write target state (4)
-  val IDX_WRITE_TO_INVALID = 22
-  val IDX_WRITE_TO_BRANCH  = 23
-  val IDX_WRITE_TO_TRUNK   = 24
-  val IDX_WRITE_TO_TIP     = 25
-  // Group 7 — MSHR / scheduler pressure (3)
-  val IDX_MSHR_ALLOC       = 26
-  val IDX_MSHR_NO_FREE     = 27
-  val IDX_SECONDARY_HIT    = 28
+  // -------- counter widths / encoding ----------
+  val CSC_WIDTH         = 3
+  val CSC_MAX           = (1 << CSC_WIDTH) - 1   // 7
 
-  val N_COUNTERS = 29
-  val CTR_WIDTH  = 32
+  val INV_FIELD_WIDTH   = 3                       // 3 bits in snapshot word, capped at 7
+  val DIRTY_FIELD_WIDTH = 2                       // 2-bit dirty bucket
+  val SETSTATE_WIDTH    = INV_FIELD_WIDTH + DIRTY_FIELD_WIDTH  // 5
+
+  // -------- snapshot RAM layout ----------------
+  val WORD_WIDTH        = 64
+
+  // -------- helpers parameterised by cache geometry ----------
+  def numSrc (params: InclusiveCacheParameters): Int = math.max(1, params.clientBits)
+  def numSets(params: InclusiveCacheParameters): Int = params.cache.sets
+  def actBitsPerSnap  (params: InclusiveCacheParameters): Int = numSets(params) * numSrc(params)
+  def ssBitsPerSnap   (params: InclusiveCacheParameters): Int = numSets(params) * SETSTATE_WIDTH
+  def actWordsPerSnap (params: InclusiveCacheParameters): Int = (actBitsPerSnap(params) + WORD_WIDTH - 1) / WORD_WIDTH
+  def ssWordsPerSnap  (params: InclusiveCacheParameters): Int = (ssBitsPerSnap (params) + WORD_WIDTH - 1) / WORD_WIDTH
+  def numWordsPerSnap (params: InclusiveCacheParameters): Int = actWordsPerSnap(params) + ssWordsPerSnap(params)
+
+  // dirty count → 2-bit bucket: {0}, {1,2}, {3-5}, {6+}
+  def bucketDirty(cnt: UInt): UInt =
+    Mux(cnt === 0.U,            0.U(DIRTY_FIELD_WIDTH.W),
+    Mux(cnt <= 2.U,             1.U(DIRTY_FIELD_WIDTH.W),
+    Mux(cnt <= 5.U,             2.U(DIRTY_FIELD_WIDTH.W),
+                                3.U(DIRTY_FIELD_WIDTH.W))))
 }
 
 // ---------------------------------------------------------------------------
-// Event tap bundle wired up by InclusiveCacheBankScheduler.
-// All booleans are pulses — at most one assertion per cycle per tap.
+// Tap bundle wired up by InclusiveCacheBankScheduler.
+// All valids are single-cycle pulses already pipeline-aligned with the
+// directory result (for the A path) or with the channel fire (for B / dir
+// writes). The monitor itself adds no further pipelining.
 // ---------------------------------------------------------------------------
 class TLDirMonitorTaps(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
-  // Group 1 — channel fire pulses (inner = towards core, outer = towards mem)
-  val inA_fire   = Bool()
-  val inB_fire   = Bool()
-  val inC_fire   = Bool()
-  val inD_fire   = Bool()
-  val inE_fire   = Bool()
-  val outA_fire  = Bool()
-  val outC_fire  = Bool()
-  val outD_fire  = Bool()
-  val outE_fire  = Bool()
+  private val nSrc = TLDirMonitor.numSrc(params)
 
-  // Group 2 — Inner-A opcode bins (mutually exclusive on inA_fire cycle)
-  val a_acquireBlock = Bool()
-  val a_acquirePerm  = Bool()
-  val a_getPut       = Bool()
+  // A-channel directory result (only A primary lookups; pipelined to align
+  // with directory.io.result.valid). Exactly one of a_hit_valid/a_miss_valid
+  // is asserted on a given cycle, never both.
+  val a_hit_valid  = Bool()
+  val a_miss_valid = Bool()
+  val a_set        = UInt(params.setBits.W)
+  val a_srcOH      = UInt(nSrc.W)
 
-  // Group 3 — Inner-C opcode bins (mutually exclusive on inC_fire cycle)
-  val c_release       = Bool()
-  val c_releaseData   = Bool()
-  val c_probeAck      = Bool()
-  val c_probeAckData  = Bool()
+  // Inner-B probe fire (master being probed identified by b_srcOH).
+  val b_probe_valid = Bool()
+  val b_set         = UInt(params.setBits.W)
+  val b_srcOH       = UInt(nSrc.W)
 
-  // Group 4 — Inner-D opcode bins (mutually exclusive on inD_fire cycle)
-  val d_grant      = Bool()
-  val d_grantData  = Bool()
-
-  // Group 5 — Directory lookup result (pipelined to align with directory.io.result.valid)
-  val dir_hit      = Bool()
-  val dir_miss     = Bool()
-  val evict_clean  = Bool()
-  val evict_dirty  = Bool()
-
-  // Group 6 — Directory write target state (one-hot decoded against MetaData.{INVALID,BRANCH,TRUNK,TIP})
-  val write_to_invalid = Bool()
-  val write_to_branch  = Bool()
-  val write_to_trunk   = Bool()
-  val write_to_tip     = Bool()
-
-  // Group 7 — MSHR / scheduler pressure
-  val mshr_alloc    = Bool()  // a fresh MSHR allocation fired this cycle
-  val mshr_no_free  = Bool()  // request waiting because no MSHR is free (cycle counter)
-  val secondary_hit = Bool()  // request enqueued/bypassed via queue path (no fresh dir lookup)
+  // Directory write commit (set + way + new state). Old state is shadowed
+  // inside the monitor — no need to expose it on this bundle.
+  val dw_fire   = Bool()
+  val dw_set    = UInt(params.setBits.W)
+  val dw_way    = UInt(params.wayBits.W)
+  val dw_state  = UInt(params.stateBits.W)
 }
 
 // ---------------------------------------------------------------------------
-// MMIO control / status interface (drives Control.scala regmap, fan-out from
-// per-bank tied defaults in InclusiveCache.scala)
+// MMIO control / status interface (drives Control.scala regmap)
 // ---------------------------------------------------------------------------
 class TLDirMonitorCtrlIO(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
+  private val depth   = params.micro.tlDirHistoryDepth
+  private val nWords  = TLDirMonitor.numWordsPerSnap(params)
+
   // SW → HW
   val enable    = Input(Bool())
   val reset_ctr = Input(Bool())
   val interval  = Input(UInt(32.W))
-  val histIdx   = Input(UInt(log2Ceil(params.micro.tlDirHistoryDepth).W))
+  val threshold = Input(UInt(TLDirMonitor.CSC_WIDTH.W))
+  val snapIdx   = Input(UInt(log2Ceil(depth).W))
+  val wordIdx   = Input(UInt(log2Ceil(nWords).W))
 
   // HW → SW
-  val histReads  = Output(Vec(TLDirMonitor.N_COUNTERS, UInt(TLDirMonitor.CTR_WIDTH.W)))
-  val writeCount = Output(UInt(log2Ceil(params.micro.tlDirHistoryDepth + 1).W))
+  val readData   = Output(UInt(TLDirMonitor.WORD_WIDTH.W))
+  val writeCount = Output(UInt(log2Ceil(depth + 1).W))
   val full       = Output(Bool())
+  val streaming  = Output(Bool())
+
+  // Geometry (constant): handy for the SW driver to discover layout.
+  val nSrc        = Output(UInt(8.W))
+  val actWords    = Output(UInt(16.W))
+  val numWords    = Output(UInt(16.W))
+  val nSetsLg2    = Output(UInt(8.W))
 }
 
 // ---------------------------------------------------------------------------
@@ -141,72 +137,43 @@ class InclusiveCacheTLDirMonitor(params: InclusiveCacheParameters) extends Modul
 {
   import TLDirMonitor._
 
-  println(s"InclusiveCache TL+Directory Monitor Configuration:")
-  println(s"  Counters      : $N_COUNTERS")
-  println(s"  Counter Width : $CTR_WIDTH bits (saturating)")
-  println(s"  History Depth : ${params.micro.tlDirHistoryDepth}")
+  val SETS      = numSets(params)
+  val N_SRC     = numSrc(params)
+  val WAYS      = params.cache.ways
+  val WAY_W     = log2Ceil(WAYS)
+  val DEPTH     = params.micro.tlDirHistoryDepth
+  val ACT_BITS  = actBitsPerSnap(params)
+  val ACT_WORDS = actWordsPerSnap(params)
+  val SS_BITS   = ssBitsPerSnap (params)
+  val SS_WORDS  = ssWordsPerSnap(params)
+  val NUM_WORDS = numWordsPerSnap(params)
+  val CNT_W     = log2Ceil(WAYS + 1)              // exact way-count width
+
+  println(s"InclusiveCache TL+Directory Phase Monitor:")
+  println(s"  Sets / Sources / Ways : $SETS / $N_SRC / $WAYS")
+  println(s"  Activity bits / words : $ACT_BITS bits  ($ACT_WORDS x 64-bit words)")
+  println(s"  Setstate bits / words : $SS_BITS bits  ($SS_WORDS x 64-bit words)")
+  println(s"  History depth         : $DEPTH snapshots")
+  println(s"  Snapshot RAM size     : ${(NUM_WORDS.toLong * DEPTH * WORD_WIDTH) / 8} bytes")
 
   val io = IO(new Bundle {
     val taps    = Flipped(new TLDirMonitorTaps(params))
     val control = new TLDirMonitorCtrlIO(params)
-    val bankId  = Input(UInt(8.W))   // for printf identification
+    val bankId  = Input(UInt(8.W))
   })
 
   // -----------------------------------------------------------------------
-  // Per-event saturating counter live registers
+  // Live state
   // -----------------------------------------------------------------------
-  val counters = RegInit(VecInit(Seq.fill(N_COUNTERS)(0.U(CTR_WIDTH.W))))
-
-  // Pack tap pulses into a Vec with the same indexing as the counter array.
-  val events = Wire(Vec(N_COUNTERS, Bool()))
-  events(IDX_C_INA)            := io.taps.inA_fire
-  events(IDX_C_INB)            := io.taps.inB_fire
-  events(IDX_C_INC)            := io.taps.inC_fire
-  events(IDX_C_IND)            := io.taps.inD_fire
-  events(IDX_C_INE)            := io.taps.inE_fire
-  events(IDX_C_OUTA)           := io.taps.outA_fire
-  events(IDX_C_OUTC)           := io.taps.outC_fire
-  events(IDX_C_OUTD)           := io.taps.outD_fire
-  events(IDX_C_OUTE)           := io.taps.outE_fire
-  events(IDX_A_ACQUIREBLOCK)   := io.taps.a_acquireBlock
-  events(IDX_A_ACQUIREPERM)    := io.taps.a_acquirePerm
-  events(IDX_A_GETPUT)         := io.taps.a_getPut
-  events(IDX_C_RELEASE)        := io.taps.c_release
-  events(IDX_C_RELEASEDATA)    := io.taps.c_releaseData
-  events(IDX_C_PROBEACK)       := io.taps.c_probeAck
-  events(IDX_C_PROBEACKDATA)   := io.taps.c_probeAckData
-  events(IDX_D_GRANT)          := io.taps.d_grant
-  events(IDX_D_GRANTDATA)      := io.taps.d_grantData
-  events(IDX_DIR_HIT)          := io.taps.dir_hit
-  events(IDX_DIR_MISS)         := io.taps.dir_miss
-  events(IDX_EVICT_CLEAN)      := io.taps.evict_clean
-  events(IDX_EVICT_DIRTY)      := io.taps.evict_dirty
-  events(IDX_WRITE_TO_INVALID) := io.taps.write_to_invalid
-  events(IDX_WRITE_TO_BRANCH)  := io.taps.write_to_branch
-  events(IDX_WRITE_TO_TRUNK)   := io.taps.write_to_trunk
-  events(IDX_WRITE_TO_TIP)     := io.taps.write_to_tip
-  events(IDX_MSHR_ALLOC)       := io.taps.mshr_alloc
-  events(IDX_MSHR_NO_FREE)     := io.taps.mshr_no_free
-  events(IDX_SECONDARY_HIT)    := io.taps.secondary_hit
-
-  private val ctrMax = ((BigInt(1) << CTR_WIDTH) - 1).U(CTR_WIDTH.W)
-  private def satInc(v: UInt): UInt = Mux(v === ctrMax, v, v + 1.U)
+  val csc      = RegInit(VecInit(Seq.fill(SETS)(VecInit(Seq.fill(N_SRC)(0.U(CSC_WIDTH.W))))))
+  val invCnt   = RegInit(VecInit(Seq.fill(SETS)(0.U(CNT_W.W))))
+  val dirtyCnt = RegInit(VecInit(Seq.fill(SETS)(0.U(CNT_W.W))))
+  val wayState = RegInit(VecInit(Seq.fill(SETS)(VecInit(Seq.fill(WAYS)(0.U(params.stateBits.W))))))
 
   // -----------------------------------------------------------------------
-  // History memory — one SyncReadMem per counter
+  // Snapshot timing — interval down-counter
   // -----------------------------------------------------------------------
-  val depth     = params.micro.tlDirHistoryDepth
-  val depthBits = log2Ceil(depth)
-
-  val histMem = Seq.fill(N_COUNTERS)(SyncReadMem(depth, UInt(CTR_WIDTH.W)))
-
-  val writePtr = RegInit(0.U(log2Ceil(depth + 1).W))
-  val fullReg  = RegInit(false.B)
-
-  // -----------------------------------------------------------------------
-  // Snapshot timing — interval down-counter (mirrors SatCounter pattern)
-  // -----------------------------------------------------------------------
-  val cycleCount = RegInit(0.U(32.W))
+  val cycleCount   = RegInit(0.U(64.W))
   cycleCount := cycleCount + 1.U
 
   val intervalNonZero = io.control.interval =/= 0.U
@@ -224,57 +191,193 @@ class InclusiveCacheTLDirMonitor(params: InclusiveCacheParameters) extends Modul
     intervalCtr := intervalCtr - 1.U
   }
 
-  // Register snap pulse so BRAM write-enable / counter-reset path is FF→logic.
-  val periodicSnapReg  = RegNext(ctrFires, false.B)
-  val writePtrAtMaxReg = RegNext(writePtr === (depth - 1).U, false.B)
-  val doSnap           = periodicSnapReg && !fullReg
+  // Streaming FSM: snapPulse triggers an N-cycle write burst into snapMem.
+  // We allow a snap to fire only when not currently streaming and history
+  // is not yet full.
+  val writePtr     = RegInit(0.U(log2Ceil(DEPTH + 1).W))
+  val fullReg      = RegInit(false.B)
+
+  val streamCtr    = RegInit(0.U(log2Ceil(NUM_WORDS + 1).W))   // counts down from NUM_WORDS to 0
+  val streaming    = streamCtr =/= 0.U
+  val canSnap      = !streaming && !fullReg
+  val snapPulseReg = RegNext(ctrFires && canSnap, false.B)
+  val snapPulse    = snapPulseReg                             // 1-cycle, registered
 
   // -----------------------------------------------------------------------
-  // Counter update: apply saturating-inc on the same cycle, but if a snap
-  // is happening this cycle, commit the *current* value to BRAM and reset
-  // the live counter to (event ? 1 : 0) so no events are lost during snap.
+  // Live-state updates: csc, wayState, invCnt, dirtyCnt
   // -----------------------------------------------------------------------
-  for (i <- 0 until N_COUNTERS) {
-    val nextOnEvent = satInc(counters(i))
-    val ctrNext     = Mux(events(i), nextOnEvent, counters(i))
-    when (doSnap) {
-      // BRAM write captures pre-reset value (with this cycle's event folded in)
-      histMem(i).write(writePtr(depthBits - 1, 0), ctrNext)
-      // Live counter resets to 0 (event for this cycle was already snapshotted)
-      counters(i) := 0.U
-    } .elsewhen (events(i)) {
-      counters(i) := nextOnEvent
+
+  // ---- csc[set][src] ----
+  // For every (s, k), determine the events that touch this slot this cycle
+  // and apply +probe(2), +miss(1), -hit(1) with saturation. A snap halves it.
+  for (s <- 0 until SETS; k <- 0 until N_SRC) {
+    val cur        = csc(s)(k)
+    val a_match    = (io.taps.a_set === s.U) && io.taps.a_srcOH(k)
+    val b_match    = (io.taps.b_set === s.U) && io.taps.b_srcOH(k)
+    val miss_here  = io.taps.a_miss_valid && a_match
+    val hit_here   = io.taps.a_hit_valid  && a_match
+    val probe_here = io.taps.b_probe_valid && b_match
+
+    val incAmt = (Mux(miss_here, 1.U, 0.U) +& Mux(probe_here, 2.U, 0.U))(2,0)  // 0..3
+    val decAmt = Mux(hit_here, 1.U(1.W), 0.U(1.W))
+
+    val sumWide = cur +& incAmt
+    val incd    = Mux(sumWide > CSC_MAX.U, CSC_MAX.U(CSC_WIDTH.W), sumWide(CSC_WIDTH-1, 0))
+    val nxtEv   = Mux(decAmt > incd, 0.U(CSC_WIDTH.W), incd - decAmt)
+
+    when (snapPulse) {
+      csc(s)(k) := cur >> 1                         // decay; events on snap cycle dropped
+    } .otherwise {
+      csc(s)(k) := nxtEv
     }
   }
 
-  when (doSnap) {
+  // ---- wayState[set][way] + invCnt[set] + dirtyCnt[set] ----
+  // Maintain incremental counts based on the (old → new) state transition
+  // observed at every directory write.
+  val dwSet   = io.taps.dw_set
+  val dwWay   = io.taps.dw_way
+  val dwNew   = io.taps.dw_state
+  val dwOld   = wayState(dwSet)(dwWay)
+
+  val INVALID = 0.U(params.stateBits.W)
+  val BRANCH  = 1.U(params.stateBits.W)
+  val TRUNK   = 2.U(params.stateBits.W)
+  val TIP     = 3.U(params.stateBits.W)
+  def isInv  (s: UInt): Bool = s === INVALID
+  def isDirty(s: UInt): Bool = (s === TIP) || (s === TRUNK)
+
+  val invDelta_pos   = !isInv(dwOld) &&  isInv(dwNew)
+  val invDelta_neg   =  isInv(dwOld) && !isInv(dwNew)
+  val dirtyDelta_pos = !isDirty(dwOld) &&  isDirty(dwNew)
+  val dirtyDelta_neg =  isDirty(dwOld) && !isDirty(dwNew)
+
+  val invCntCur   = invCnt(dwSet)
+  val dirtyCntCur = dirtyCnt(dwSet)
+
+  val invCntNxt = MuxCase(invCntCur, Seq(
+    invDelta_pos -> Mux(invCntCur === WAYS.U, invCntCur, invCntCur + 1.U),
+    invDelta_neg -> Mux(invCntCur === 0.U,    invCntCur, invCntCur - 1.U)
+  ))
+  val dirtyCntNxt = MuxCase(dirtyCntCur, Seq(
+    dirtyDelta_pos -> Mux(dirtyCntCur === WAYS.U, dirtyCntCur, dirtyCntCur + 1.U),
+    dirtyDelta_neg -> Mux(dirtyCntCur === 0.U,    dirtyCntCur, dirtyCntCur - 1.U)
+  ))
+
+  when (io.taps.dw_fire) {
+    wayState(dwSet)(dwWay) := dwNew
+    invCnt(dwSet)          := invCntNxt
+    dirtyCnt(dwSet)        := dirtyCntNxt
+  }
+
+  // -----------------------------------------------------------------------
+  // Snapshot capture: pack live state into a wide shadow register
+  // -----------------------------------------------------------------------
+
+  // Activity bitmap — bit_index = set * N_SRC + src, LSB-first.
+  val activityBits = Wire(Vec(SETS * N_SRC, Bool()))
+  for (s <- 0 until SETS; k <- 0 until N_SRC) {
+    activityBits(s * N_SRC + k) := csc(s)(k) > io.control.threshold
+  }
+  val activityWide  = activityBits.asUInt   // SETS*N_SRC bits, LSB = (set=0, src=0)
+  val actPad        = ACT_WORDS * WORD_WIDTH - ACT_BITS
+  val activityFlat  = if (actPad == 0) activityWide else Cat(0.U(actPad.W), activityWide)
+
+  // Setstate — entry s = { dirtyBucket(2), invCapped(3) }
+  val ssEntries = Wire(Vec(SETS, UInt(SETSTATE_WIDTH.W)))
+  for (s <- 0 until SETS) {
+    val invCapped = Mux(invCnt(s) > 7.U, 7.U(INV_FIELD_WIDTH.W), invCnt(s)(INV_FIELD_WIDTH-1, 0))
+    val dirtyB    = bucketDirty(dirtyCnt(s))
+    ssEntries(s) := Cat(dirtyB, invCapped)
+  }
+  val ssWide = ssEntries.asUInt
+  val ssPad  = SS_WORDS * WORD_WIDTH - SS_BITS
+  val ssFlat = if (ssPad == 0) ssWide else Cat(0.U(ssPad.W), ssWide)
+
+  val actShadow = Reg(Vec(ACT_WORDS, UInt(WORD_WIDTH.W)))
+  val ssShadow  = Reg(Vec(SS_WORDS,  UInt(WORD_WIDTH.W)))
+
+  when (snapPulse) {
+    for (w <- 0 until ACT_WORDS) {
+      actShadow(w) := activityFlat(w * WORD_WIDTH + WORD_WIDTH - 1, w * WORD_WIDTH)
+    }
+    for (w <- 0 until SS_WORDS) {
+      ssShadow(w)  := ssFlat(w * WORD_WIDTH + WORD_WIDTH - 1, w * WORD_WIDTH)
+    }
+    streamCtr := NUM_WORDS.U
+  } .elsewhen (streaming) {
+    streamCtr := streamCtr - 1.U
+  }
+
+  // -----------------------------------------------------------------------
+  // Snapshot RAM — single 64-bit-wide SyncReadMem, flat (snap, word) addr.
+  // -----------------------------------------------------------------------
+  val snapMem  = SyncReadMem(DEPTH * NUM_WORDS, UInt(WORD_WIDTH.W))
+
+  // Write pointer & current sub-word index within the in-flight snapshot.
+  // streamCtr counts NUM_WORDS → 1 over the streaming cycles, so the linear
+  // word index is (NUM_WORDS - streamCtr).
+  val streamWordIdx = Mux(streaming, (NUM_WORDS.U - streamCtr), 0.U)
+  val writeAddr     = writePtr * NUM_WORDS.U + streamWordIdx
+
+  // Word value to write: actShadow for the first ACT_WORDS positions, then
+  // ssShadow for the rest.
+  val isActWord = streamWordIdx < ACT_WORDS.U
+  val actSel    = if (ACT_WORDS == 1) actShadow(0) else actShadow(streamWordIdx(log2Ceil(ACT_WORDS)-1, 0))
+  val ssSel     = if (SS_WORDS  == 1) ssShadow(0)  else ssShadow ((streamWordIdx - ACT_WORDS.U)(log2Ceil(SS_WORDS)-1, 0))
+  val writeData = Mux(isActWord, actSel, ssSel)
+
+  when (streaming) {
+    snapMem.write(writeAddr, writeData)
+  }
+
+  // When the streaming completes for this snapshot, advance writePtr.
+  val streamDoneNext = streaming && streamCtr === 1.U
+  when (streamDoneNext) {
     writePtr := writePtr + 1.U
-    when (writePtrAtMaxReg) {
+    when (writePtr === (DEPTH - 1).U) {
       fullReg := true.B
     }
   }
 
-  when (periodicSnapReg) {
-    printf(p"[TLDirMon] bank=${io.bankId} cycle=${cycleCount} snap=${writePtr}\n")
-  }
+  // -----------------------------------------------------------------------
+  // Indexed read port (1-cycle SyncReadMem read latency)
+  // -----------------------------------------------------------------------
+  val readAddr = io.control.snapIdx * NUM_WORDS.U + io.control.wordIdx
+  io.control.readData   := snapMem.read(readAddr)
+  io.control.writeCount := writePtr
+  io.control.full       := fullReg
+  io.control.streaming  := streaming
+
+  io.control.nSrc       := N_SRC.U
+  io.control.actWords   := ACT_WORDS.U
+  io.control.numWords   := NUM_WORDS.U
+  io.control.nSetsLg2   := log2Ceil(SETS).U
 
   // -----------------------------------------------------------------------
-  // Reset
+  // Software-controlled reset: clears live counters and history index, but
+  // intentionally does NOT clear wayState — it is a shadow of physical
+  // directory contents and must remain in sync.
   // -----------------------------------------------------------------------
   when (io.control.reset_ctr) {
-    counters.foreach { c => c := 0.U }
+    for (s <- 0 until SETS; k <- 0 until N_SRC) {
+      csc(s)(k) := 0.U
+    }
+    for (s <- 0 until SETS) {
+      invCnt(s)   := 0.U
+      dirtyCnt(s) := 0.U
+    }
     writePtr    := 0.U
     fullReg     := false.B
+    streamCtr   := 0.U
     cycleCount  := 0.U
     intervalCtr := Mux(intervalNonZero, io.control.interval - 1.U, 0.U)
   }
 
   // -----------------------------------------------------------------------
-  // MMIO read interface — indexed read from history memory
+  // Diagnostic printf — visible in simulation; elided by SiliconCompilers.
   // -----------------------------------------------------------------------
-  for (i <- 0 until N_COUNTERS) {
-    io.control.histReads(i) := histMem(i).read(io.control.histIdx)
+  when (snapPulse) {
+    printf(p"[TLDirMon] bank=${io.bankId} cycle=${cycleCount} snap=${writePtr}\n")
   }
-  io.control.writeCount := writePtr
-  io.control.full       := fullReg
 }

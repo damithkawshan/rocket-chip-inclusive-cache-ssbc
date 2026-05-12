@@ -180,7 +180,9 @@ class InclusiveCache(
         tc.enable    := false.B
         tc.reset_ctr := false.B
         tc.interval  := 0.U
-        tc.histIdx   := 0.U
+        tc.threshold := 0.U
+        tc.snapIdx   := 0.U
+        tc.wordIdx   := 0.U
       }
 
       scheduler
@@ -200,9 +202,14 @@ class InclusiveCache(
         sat.full       := false.B
       }
       ctrl.module.io.tld.foreach { tld =>
-        tld.histReads.foreach { _ := 0.U }
+        tld.readData   := 0.U
         tld.writeCount := 0.U
         tld.full       := false.B
+        tld.streaming  := false.B
+        tld.nSrc       := 0.U
+        tld.actWords   := 0.U
+        tld.numWords   := 0.U
+        tld.nSetsLg2   := 0.U
       }
     }
 
@@ -245,13 +252,22 @@ class InclusiveCache(
           tc  <- sched.io.tldControl
           tld <- ctrl.module.io.tld
         } {
+          // SW → HW
           tc.enable    := tld.enable
           tc.reset_ctr := tld.reset_ctr
           tc.interval  := tld.interval
-          tc.histIdx   := tld.histIdx
-          tld.histReads  := tc.histReads
+          tc.threshold := tld.threshold
+          tc.snapIdx   := tld.snapIdx
+          tc.wordIdx   := tld.wordIdx
+          // HW → SW
+          tld.readData   := tc.readData
           tld.writeCount := tc.writeCount
           tld.full       := tc.full
+          tld.streaming  := tc.streaming
+          tld.nSrc       := tc.nSrc
+          tld.actWords   := tc.actWords
+          tld.numWords   := tc.numWords
+          tld.nSetsLg2   := tc.nSetsLg2
         }
       }}
     }

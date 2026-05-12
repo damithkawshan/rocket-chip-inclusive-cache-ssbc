@@ -411,78 +411,42 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     satCounter.io.bankId := io.satBankId.get
   }
 
-  // Optional bank-global TileLink + Directory activity monitor.
-  // Bank-global event tallies, snapshotted into per-counter history memory
-  // every `interval` cycles, then auto-reset for the next interval.
+  // Optional phase-detection cache resource monitor (impl_4.md).
+  // Per-(set, source) composite saturation counter + per-set invalid/dirty
+  // way-count snapshots, sampled every `interval` cycles into a history RAM.
   if (params.micro.enableTLDirMonitor) {
     val tldMon = Module(new InclusiveCacheTLDirMonitor(params))
     val taps   = Wire(new TLDirMonitorTaps(params))
 
-    // ---- Group 1 — TL channel fires (gated by .fire on the bundle endpoint) ----
-    taps.inA_fire  := io.in.a.fire
-    taps.inB_fire  := io.in.b.fire
-    taps.inC_fire  := io.in.c.fire
-    taps.inD_fire  := io.in.d.fire
-    taps.inE_fire  := io.in.e.fire
-    taps.outA_fire := io.out.a.fire
-    taps.outC_fire := io.out.c.fire
-    taps.outD_fire := io.out.d.fire
-    taps.outE_fire := io.out.e.fire
+    // ---- A path: hit/miss with set + source one-hot ----
+    // Pipeline an A-only valid plus the request set/source through the same
+    // depth as the directory result so they align with directory.io.result.valid.
+    val isA           = request.bits.prio(0)
+    val tld_aLook_in  = alloc_uses_directory && isA
+    val tld_aLook_r1  = RegNext(tld_aLook_in, false.B)
+    val tld_aLook_r2  = if (params.micro.dirReg) RegNext(tld_aLook_r1, false.B) else tld_aLook_r1
+    val tld_aSet_r1   = RegEnable(request.bits.set,    tld_aLook_in)
+    val tld_aSrc_r1   = RegEnable(request.bits.source, tld_aLook_in)
+    val tld_aSet_r2   = if (params.micro.dirReg) RegEnable(tld_aSet_r1, tld_aLook_r1) else tld_aSet_r1
+    val tld_aSrc_r2   = if (params.micro.dirReg) RegEnable(tld_aSrc_r1, tld_aLook_r1) else tld_aSrc_r1
+    val tld_dirRes    = directory.io.result
+    val tld_dirValid  = tld_dirRes.valid && tld_aLook_r2
+    taps.a_hit_valid  := tld_dirValid &&  tld_dirRes.bits.hit
+    taps.a_miss_valid := tld_dirValid && !tld_dirRes.bits.hit
+    taps.a_set        := tld_aSet_r2
+    taps.a_srcOH      := params.clientBit(tld_aSrc_r2)
 
-    // ---- Group 2 — Inner-A opcode breakdown ----
-    val inA_op = io.in.a.bits.opcode
-    val a_isAcquireBlock = inA_op === TLMessages.AcquireBlock
-    val a_isAcquirePerm  = inA_op === TLMessages.AcquirePerm
-    taps.a_acquireBlock := io.in.a.fire && a_isAcquireBlock
-    taps.a_acquirePerm  := io.in.a.fire && a_isAcquirePerm
-    taps.a_getPut       := io.in.a.fire && !a_isAcquireBlock && !a_isAcquirePerm
+    // ---- B path: probe fire, set + source one-hot ----
+    val (_, b_set, _) = params.parseAddress(io.in.b.bits.address)
+    taps.b_probe_valid := io.in.b.fire
+    taps.b_set         := b_set
+    taps.b_srcOH       := params.clientBit(io.in.b.bits.source)
 
-    // ---- Group 3 — Inner-C opcode breakdown ----
-    val inC_op = io.in.c.bits.opcode
-    taps.c_release      := io.in.c.fire && (inC_op === TLMessages.Release)
-    taps.c_releaseData  := io.in.c.fire && (inC_op === TLMessages.ReleaseData)
-    taps.c_probeAck     := io.in.c.fire && (inC_op === TLMessages.ProbeAck)
-    taps.c_probeAckData := io.in.c.fire && (inC_op === TLMessages.ProbeAckData)
-
-    // ---- Group 4 — Inner-D opcode breakdown ----
-    val inD_op = io.in.d.bits.opcode
-    taps.d_grant      := io.in.d.fire && (inD_op === TLMessages.Grant)
-    taps.d_grantData  := io.in.d.fire && (inD_op === TLMessages.GrantData)
-
-    // ---- Group 5 — Directory hit/miss + eviction ----
-    // Reuse the same pipelined dirEvent flag pattern as SatCounter: align with
-    // directory.io.result.valid by accounting for the optional dirReg stage.
-    val tld_dirEvent_in = alloc_uses_directory || mshr_uses_directory
-    val tld_dirEvent_r1 = RegNext(tld_dirEvent_in, false.B)
-    val tld_dirEvent_r2 = if (params.micro.dirReg) RegNext(tld_dirEvent_r1, false.B) else tld_dirEvent_r1
-    val dirRes          = directory.io.result
-    val dirValid        = dirRes.valid && tld_dirEvent_r2
-    val dirHit          = dirRes.bits.hit
-    val dirState        = dirRes.bits.state
-    val dirDirty        = dirRes.bits.dirty
-    val isEvict         = !dirHit && (dirState =/= MetaData.INVALID)
-    taps.dir_hit     := dirValid &&  dirHit
-    taps.dir_miss    := dirValid && !dirHit
-    taps.evict_clean := dirValid && isEvict && !dirDirty
-    taps.evict_dirty := dirValid && isEvict &&  dirDirty
-
-    // ---- Group 6 — Directory write target state distribution ----
-    val dirWrFire   = directory.io.write.fire
-    val dirWrState  = directory.io.write.bits.data.state
-    taps.write_to_invalid := dirWrFire && (dirWrState === MetaData.INVALID)
-    taps.write_to_branch  := dirWrFire && (dirWrState === MetaData.BRANCH)
-    taps.write_to_trunk   := dirWrFire && (dirWrState === MetaData.TRUNK)
-    taps.write_to_tip     := dirWrFire && (dirWrState === MetaData.TIP)
-
-    // ---- Group 7 — MSHR / scheduler pressure ----
-    // mshr_alloc: any of the alloc cases fires (request actually consumes an MSHR slot)
-    taps.mshr_alloc    := request.valid && request_alloc_cases
-    // mshr_no_free: cycle counter — request wants to allocate but no MSHR slot
-    // is available (stalls the scheduler). We approximate this as: request is
-    // valid, alloc path is needed, but no free MSHR.
-    taps.mshr_no_free  := request.valid && alloc && !mshr_free
-    // secondary_hit: request enters via the queue/bypass path, no fresh dir lookup
-    taps.secondary_hit := request.valid && queue && (bypassQueue || requests.io.push.ready)
+    // ---- Directory write commit (set, way, new state) ----
+    taps.dw_fire  := directory.io.write.fire
+    taps.dw_set   := directory.io.write.bits.set
+    taps.dw_way   := directory.io.write.bits.way
+    taps.dw_state := directory.io.write.bits.data.state
 
     // --- Wire to module ---
     tldMon.io.taps <> taps
