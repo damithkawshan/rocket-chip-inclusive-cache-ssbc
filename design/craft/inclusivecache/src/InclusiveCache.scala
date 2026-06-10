@@ -177,12 +177,18 @@ class InclusiveCache(
       // TL+Directory monitor: bank ID + tied-down defaults; MMIO wired below.
       scheduler.io.tldBankId.foreach { _ := i.U }
       scheduler.io.tldControl.foreach { tc =>
-        tc.enable    := false.B
-        tc.reset_ctr := false.B
-        tc.interval  := 0.U
-        tc.threshold := 0.U
-        tc.snapIdx   := 0.U
-        tc.wordIdx   := 0.U
+        tc.enable        := false.B
+        tc.reset_ctr     := false.B
+        tc.interval      := 0.U
+        tc.useMorris     := false.B
+        tc.decayPeriod   := 0.U
+        tc.decayShift    := 1.U
+        tc.threshLo      := 0.U
+        tc.threshHi      := 0.U
+        tc.probeThreshLo := 0.U
+        tc.probeThreshHi := 0.U
+        tc.snapIdx       := 0.U
+        tc.wordIdx       := 0.U
       }
 
       scheduler
@@ -202,14 +208,18 @@ class InclusiveCache(
         sat.full       := false.B
       }
       ctrl.module.io.tld.foreach { tld =>
-        tld.readData   := 0.U
-        tld.writeCount := 0.U
-        tld.full       := false.B
-        tld.streaming  := false.B
-        tld.nSrc       := 0.U
-        tld.actWords   := 0.U
-        tld.numWords   := 0.U
-        tld.nSetsLg2   := 0.U
+        tld.readData    := 0.U
+        tld.writeCount  := 0.U
+        tld.full        := false.B
+        tld.streaming   := false.B
+        tld.nSrc        := 0.U
+        tld.cscWidthOut := 0.U
+        tld.actWords    := 0.U
+        tld.ssWords     := 0.U
+        tld.probeWords  := 0.U
+        tld.numWords    := 0.U
+        tld.nSetsLg2    := 0.U
+        tld.missedSnaps := 0.U
       }
     }
 
@@ -253,21 +263,31 @@ class InclusiveCache(
           tld <- ctrl.module.io.tld
         } {
           // SW → HW
-          tc.enable    := tld.enable
-          tc.reset_ctr := tld.reset_ctr
-          tc.interval  := tld.interval
-          tc.threshold := tld.threshold
-          tc.snapIdx   := tld.snapIdx
-          tc.wordIdx   := tld.wordIdx
+          tc.enable        := tld.enable
+          tc.reset_ctr     := tld.reset_ctr
+          tc.interval      := tld.interval
+          tc.useMorris     := tld.useMorris
+          tc.decayPeriod   := tld.decayPeriod
+          tc.decayShift    := tld.decayShift
+          tc.threshLo      := tld.threshLo
+          tc.threshHi      := tld.threshHi
+          tc.probeThreshLo := tld.probeThreshLo
+          tc.probeThreshHi := tld.probeThreshHi
+          tc.snapIdx       := tld.snapIdx
+          tc.wordIdx       := tld.wordIdx
           // HW → SW
-          tld.readData   := tc.readData
-          tld.writeCount := tc.writeCount
-          tld.full       := tc.full
-          tld.streaming  := tc.streaming
-          tld.nSrc       := tc.nSrc
-          tld.actWords   := tc.actWords
-          tld.numWords   := tc.numWords
-          tld.nSetsLg2   := tc.nSetsLg2
+          tld.readData    := tc.readData
+          tld.writeCount  := tc.writeCount
+          tld.full        := tc.full
+          tld.streaming   := tc.streaming
+          tld.nSrc        := tc.nSrc
+          tld.cscWidthOut := tc.cscWidthOut
+          tld.actWords    := tc.actWords
+          tld.ssWords     := tc.ssWords
+          tld.probeWords  := tc.probeWords
+          tld.numWords    := tc.numWords
+          tld.nSetsLg2    := tc.nSetsLg2
+          tld.missedSnaps := tc.missedSnaps
         }
       }}
     }

@@ -62,21 +62,31 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // the Scheduler's TLDirMonitorCtrlIO in InclusiveCache.scala.
       val tld = if (outer.micro.enableTLDirMonitor) Some(new Bundle {
         // HW → SW (readable)
-        val readData   = Input(UInt(64.W))
-        val writeCount = Input(UInt(32.W))
-        val full       = Input(Bool())
-        val streaming  = Input(Bool())
-        val nSrc       = Input(UInt(8.W))
-        val actWords   = Input(UInt(16.W))
-        val numWords   = Input(UInt(16.W))
-        val nSetsLg2   = Input(UInt(8.W))
+        val readData    = Input(UInt(64.W))
+        val writeCount  = Input(UInt(32.W))
+        val full        = Input(Bool())
+        val streaming   = Input(Bool())
+        val nSrc        = Input(UInt(8.W))
+        val cscWidthOut = Input(UInt(8.W))
+        val actWords    = Input(UInt(16.W))
+        val ssWords     = Input(UInt(16.W))
+        val probeWords  = Input(UInt(16.W))
+        val numWords    = Input(UInt(16.W))
+        val nSetsLg2    = Input(UInt(8.W))
+        val missedSnaps = Input(UInt(32.W))  // snapshots dropped due to streaming overlap
         // SW → HW (writable)
-        val enable    = Output(Bool())
-        val reset_ctr = Output(Bool())
-        val interval  = Output(UInt(32.W))
-        val threshold = Output(UInt(32.W))
-        val snapIdx   = Output(UInt(32.W))
-        val wordIdx   = Output(UInt(32.W))
+        val enable        = Output(Bool())
+        val reset_ctr     = Output(Bool())
+        val interval      = Output(UInt(32.W))
+        val useMorris     = Output(Bool())
+        val decayPeriod   = Output(UInt(32.W))
+        val decayShift    = Output(UInt(8.W))
+        val threshLo      = Output(UInt(32.W))
+        val threshHi      = Output(UInt(32.W))
+        val probeThreshLo = Output(UInt(32.W))
+        val probeThreshHi = Output(UInt(32.W))
+        val snapIdx       = Output(UInt(32.W))
+        val wordIdx       = Output(UInt(32.W))
       }) else None
     })
     // Flush directive
@@ -196,23 +206,27 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       )
     } else Nil
 
-    // ---- Phase-detection monitor MMIO registers (offset 0x400 – 0x448) ----
+    // ---- Phase-detection monitor MMIO registers (offset 0x400 – 0x488) ----
     val tldRegmap: Seq[(Int, Seq[RegField])] = if (outer.micro.enableTLDirMonitor) {
       val tld = io.tld.get
 
-      // 0x400: Control — bit 0 = enable, bit 1 = reset (auto-clears)
-      val tldEnableReg = RegInit(false.B)
-      val tldResetReg  = WireInit(false.B)
-      val tldCtrlField = RegField(32, RegReadFn(_ => (true.B, Cat(0.U(30.W), false.B, tldEnableReg))),
+      // 0x400: Control — bit 0 = enable, bit 1 = reset (auto-clears), bit 2 = useMorris
+      val tldEnableReg    = RegInit(false.B)
+      val tldUseMorrisReg = RegInit(false.B)
+      val tldResetReg     = WireInit(false.B)
+      val tldCtrlField = RegField(32,
+        RegReadFn(_ => (true.B, Cat(0.U(29.W), tldUseMorrisReg, false.B, tldEnableReg))),
         RegWriteFn((valid, data) => {
           when (valid) {
-            tldEnableReg := data(0)
-            tldResetReg  := data(1)
+            tldEnableReg    := data(0)
+            tldResetReg     := data(1)
+            tldUseMorrisReg := data(2)
           }
           true.B
-        }), RegFieldDesc("tldCtrl", "Phase monitor control: bit0=enable, bit1=reset"))
+        }), RegFieldDesc("tldCtrl", "Phase monitor control: bit0=enable, bit1=reset, bit2=useMorris"))
       tld.enable    := tldEnableReg
       tld.reset_ctr := tldResetReg
+      tld.useMorris := tldUseMorrisReg
 
       // 0x408: Sampling interval (cycles)
       val tldIntervalReg = RegInit(0.U(32.W))
@@ -220,11 +234,11 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         RegFieldDesc("tldInterval", "Snapshot interval (cycles)"))
       tld.interval := tldIntervalReg
 
-      // 0x410: Activity threshold (CSC > T → bit set in activity bitmap)
-      val tldThreshReg = RegInit(3.U(32.W))
-      val tldThreshField = RegField(32, tldThreshReg,
-        RegFieldDesc("tldThresh", "Activity threshold for CSC (0..7)"))
-      tld.threshold := tldThreshReg
+      // 0x410: Activity low threshold (CSC < threshLo → bucket 1)
+      val tldThreshLoReg = RegInit(1.U(32.W))
+      val tldThreshLoField = RegField(32, tldThreshLoReg,
+        RegFieldDesc("tldThreshLo", "Activity low threshold (CSC bucket boundary)"))
+      tld.threshLo := tldThreshLoReg
 
       // 0x418: Status — bit 0 = full, bit 1 = streaming
       val tldStatusField = RegField.r(32, Cat(0.U(30.W), tld.streaming, tld.full),
@@ -251,8 +265,6 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         RegFieldDesc("tldReadData", "64-bit data at (snapIdx, wordIdx)"))
 
       // 0x440: Geometry — packed { nSetsLg2[31:24], nSrc[23:16], actWords[15:8], numWords[7:0] }
-      // numWords / actWords occupy 8 bits each (capped at 255 here for the
-      // packed view; the raw signals are wider in TLDirMonitorCtrlIO).
       val tldGeomField = RegField.r(32,
         Cat(tld.nSetsLg2,
             tld.nSrc,
@@ -265,17 +277,64 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
         Cat(tld.numWords, tld.actWords),
         RegFieldDesc("tldGeomWide", "{numWords[31:16], actWords[15:0]}"))
 
+      // 0x450: Extended geometry — { reserved[31:24], cscWidth[23:16], probeWords[15:8], ssWords[7:0] }
+      val tldGeomExtField = RegField.r(32,
+        Cat(0.U(8.W), tld.cscWidthOut, tld.probeWords(7, 0), tld.ssWords(7, 0)),
+        RegFieldDesc("tldGeomExt", "{reserved[31:24], cscWidth[23:16], probeWords[15:8], ssWords[7:0]}"))
+
+      // 0x458: Activity high threshold (CSC < threshHi → bucket 2; otherwise 3)
+      val tldThreshHiReg = RegInit(3.U(32.W))
+      val tldThreshHiField = RegField(32, tldThreshHiReg,
+        RegFieldDesc("tldThreshHi", "Activity high threshold (CSC bucket boundary)"))
+      tld.threshHi := tldThreshHiReg
+
+      // 0x460: Probe low threshold
+      val tldProbeThreshLoReg = RegInit(1.U(32.W))
+      val tldProbeThreshLoField = RegField(32, tldProbeThreshLoReg,
+        RegFieldDesc("tldProbeThreshLo", "Probe low threshold (probeCsc bucket boundary)"))
+      tld.probeThreshLo := tldProbeThreshLoReg
+
+      // 0x468: Probe high threshold
+      val tldProbeThreshHiReg = RegInit(3.U(32.W))
+      val tldProbeThreshHiField = RegField(32, tldProbeThreshHiReg,
+        RegFieldDesc("tldProbeThreshHi", "Probe high threshold (probeCsc bucket boundary)"))
+      tld.probeThreshHi := tldProbeThreshHiReg
+
+      // 0x470: Continuous-decay timer period (cycles); 0 disables decay.
+      val tldDecayPeriodReg = RegInit(0.U(32.W))
+      val tldDecayPeriodField = RegField(32, tldDecayPeriodReg,
+        RegFieldDesc("tldDecayPeriod", "Cycles between leaky-decay pulses; 0 = disabled"))
+      tld.decayPeriod := tldDecayPeriodReg
+
+      // 0x478: Decay right-shift amount.
+      val tldDecayShiftReg = RegInit(1.U(32.W))
+      val tldDecayShiftField = RegField(32, tldDecayShiftReg,
+        RegFieldDesc("tldDecayShift", "Right-shift amount applied on each decay pulse"))
+      tld.decayShift := tldDecayShiftReg
+
+      // 0x480: Missed-snapshot counter (snapshots dropped due to streaming overlap).
+      // Read-only; cleared by a reset pulse on bit 1 of 0x400.
+      val tldMissedSnapsField = RegField.r(32, tld.missedSnaps,
+        RegFieldDesc("tldMissedSnaps", "Snapshots dropped due to streaming overlap; cleared by reset"))
+
       Seq(
         0x400 -> Seq(tldCtrlField),
         0x408 -> Seq(tldIntervalField),
-        0x410 -> Seq(tldThreshField),
+        0x410 -> Seq(tldThreshLoField),
         0x418 -> Seq(tldStatusField),
         0x420 -> Seq(tldWriteCountField),
         0x428 -> Seq(tldSnapIdxField),
         0x430 -> Seq(tldWordIdxField),
         0x438 -> Seq(tldReadDataField),
         0x440 -> Seq(tldGeomField),
-        0x448 -> Seq(tldGeomWideField)
+        0x448 -> Seq(tldGeomWideField),
+        0x450 -> Seq(tldGeomExtField),
+        0x458 -> Seq(tldThreshHiField),
+        0x460 -> Seq(tldProbeThreshLoField),
+        0x468 -> Seq(tldProbeThreshHiField),
+        0x470 -> Seq(tldDecayPeriodField),
+        0x478 -> Seq(tldDecayShiftField),
+        0x480 -> Seq(tldMissedSnapsField)
       )
     } else Nil
 
