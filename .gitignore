@@ -1,1 +1,22 @@
-target/
+# Build artifacts
+sw/**/build/
+sw/**/*_riscv
+sw/**/*.o
+sw/**/*.asm
+target/*
+
+# Research data (large, regenerated per run)
+results/
+
+# Python caches
+**/__pycache__/
+*.pyc
+
+# Editor / IDE
+.metals/
+.scala-build/
+.bsp/
+.vscode/
+.claude/
+sw/bench/*
+evaluation/examples/*
