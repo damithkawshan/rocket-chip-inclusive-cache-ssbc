@@ -1,9 +1,9 @@
 # Build artifacts
-target/
 sw/**/build/
 sw/**/*_riscv
 sw/**/*.o
 sw/**/*.asm
+target/*
 
 # Research data (large, regenerated per run)
 results/
