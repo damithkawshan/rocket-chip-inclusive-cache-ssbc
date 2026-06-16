@@ -35,6 +35,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // Control port
     val req = Flipped(Decoupled(new SinkXRequest(params)))
     val resp = Decoupled(new SourceXRequest(params))
+    // SBC MMIO: SW-selected set index in, read-only stats out
+    val sbcSatReadSet = Input(UInt(params.setBits.W))
+    val sbcStats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
   })
 
   val sourceA = Module(new SourceA(params))
@@ -342,6 +345,25 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sourceD.io.grant_req := sinkD  .io.grant_req
   sourceC.io.evict_safe := sourceD.io.evict_safe
   sinkD  .io.grant_safe := sourceD.io.grant_safe
+
+  // ---------------- Set-Balancing Cache (SBC) ----------------
+  // Phase 0: observation only. The SBU watches the directory result via a read-only tap; it owns no
+  // data/SRAM ports and migration is OFF. Stats are surfaced to the MMIO control block.
+  if (params.micro.enableSetBalancing) {
+    val sbu = Module(new SetBalanceUnit(params))
+    sbu.io.dirTap     := directory.io.tap
+    sbu.io.satReadSet := io.sbcSatReadSet
+    io.sbcStats       := sbu.io.stats
+    // advisory queries / commit are unused in Phase 0
+    sbu.io.migrateQuery.valid := false.B
+    sbu.io.migrateQuery.bits  := 0.U
+    sbu.io.assocQuery.valid   := false.B
+    sbu.io.assocQuery.bits    := 0.U
+    sbu.io.commit.valid       := false.B
+    sbu.io.commit.bits        := 0.U.asTypeOf(chiselTypeOf(sbu.io.commit.bits))
+  } else {
+    io.sbcStats := 0.U.asTypeOf(new SBCStats(params.setBits, params.micro.satCounterBits))
+  }
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

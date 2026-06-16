@@ -120,11 +120,22 @@ case class InclusiveCacheMicroParameters(
   portFactor: Int = 4,  // numSubBanks = (widest TL port * portFactor) / writeBytes
   dirReg:     Boolean = false,
   innerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.fullC, // or none
-  outerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.full)   // or flowAE
+  outerBuf:   InclusiveCachePortParameters = InclusiveCachePortParameters.full,   // or flowAE
+  // --- Set-Balancing Cache (SBC) ---
+  enableSetBalancing:      Boolean = false, // master gate for SBC migration behavior
+  satCounterBits:          Int = 3,        // per-set saturation counter width
+  migrationThreshold:      Int = 4,       // T_hi: only migrate victims of sets at/above this
+  migrationClearThreshold: Int = 2,       // T_lo: stop forming associations below this (hysteresis)
+  dssEntries:              Int = 8,         // Destination Set Selector candidate slots
+  sbcDebug:                Boolean = false) // sim-only SBC debug printfs (nothing elaborated when off)
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
   require (portFactor >= 2) // for inner RMW and concurrent outer Relase + Grant
+  // SBC sanity
+  require (satCounterBits > 0)
+  require (migrationThreshold >= migrationClearThreshold)
+  require (dssEntries >= 1)
 }
 
 case class InclusiveCacheControlParameters(

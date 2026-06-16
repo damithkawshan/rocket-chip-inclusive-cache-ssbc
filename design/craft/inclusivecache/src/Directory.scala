@@ -32,6 +32,17 @@ class DirectoryEntry(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val state   = UInt(params.stateBits.W)
   val clients = UInt(params.clientBits.W)
   val tag     = UInt(params.tagBits.W)
+  // SBC: this line was spilled here from a foreign (home) set; its real home set is
+  // AT[physicalSet].assocSet. Always false unless Set-Balancing migration is active.
+  val displaced = Bool()
+}
+
+// SBC: result-aligned observation tap for the SetBalanceUnit (read-only, never affects datapath)
+class DirectoryTap(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
+{
+  val set = UInt(params.setBits.W)
+  val hit = Bool()
+  val way = UInt(params.wayBits.W)
 }
 
 class DirectoryWrite(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -60,6 +71,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
     val read   = Flipped(Valid(new DirectoryRead(params))) // sees same-cycle write
     val result = Valid(new DirectoryResult(params))
     val ready  = Bool() // reset complete; can enable access
+    val tap    = Valid(new DirectoryTap(params)) // SBC: result-aligned observation tap
   })
 
   val codeBits = new DirectoryEntry(params).getWidth
@@ -136,6 +148,13 @@ class Directory(params: InclusiveCacheParameters) extends Module
   io.result.bits.viewAsSupertype(chiselTypeOf(bypass.data)) := Mux(hit, Mux1H(hits, ways), Mux(setQuash && (tagMatch || wayMatch), bypass.data, Mux1H(victimWayOH, ways)))
   io.result.bits.hit := hit || (setQuash && tagMatch && bypass.data.state =/= INVALID)
   io.result.bits.way := Mux(hit, OHToUInt(hits), Mux(setQuash && tagMatch, bypass.way, victimWay))
+
+  // SBC observation tap: aligned to the result (uses the already result-aligned `set` wire so the
+  // SetBalanceUnit gets a correct (set, hit) pair without re-deriving the read->result latency).
+  io.tap.valid    := ren2
+  io.tap.bits.set := set
+  io.tap.bits.hit := io.result.bits.hit
+  io.tap.bits.way := io.result.bits.way
 
   params.ccover(ren2 && setQuash && tagMatch, "DIRECTORY_HIT_BYPASS", "Bypassing write to a directory hit")
   params.ccover(ren2 && setQuash && !tagMatch && wayMatch, "DIRECTORY_EVICT_BYPASS", "Bypassing a write to a directory eviction")

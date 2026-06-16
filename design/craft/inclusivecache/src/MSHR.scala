@@ -246,6 +246,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                                     Mux(req_acquire, req_clientBit, 0.U)
     final_meta_writeback.tag := request.tag
     final_meta_writeback.hit := true.B
+    // SBC: a (re)filled native line is not displaced; migration phases set this explicitly.
+    final_meta_writeback.displaced := false.B
   }
 
   when (bad_grant) {
@@ -270,6 +272,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   invalid.state   := INVALID
   invalid.clients := 0.U
   invalid.tag     := 0.U
+  invalid.displaced := false.B // SBC: invalidated entries are never displaced
 
   // Just because a client says BtoT, by the time we process the request he may be N.
   // Therefore, we must consult our own meta-data state to confirm he owns the line still.

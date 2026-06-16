@@ -54,7 +54,11 @@ class WithInclusiveCache(
   hintsSkipProbe: Boolean = false,
   bankedControl: Boolean = false,
   ctrlAddr: Option[Int] = Some(InclusiveCacheParameters.L2ControlAddress),
-  writeBytes: Int = 8
+  writeBytes: Int = 8,
+  // SBC: this is the Set-Balancing branch — observation + sim debug prints default ON.
+  // (Phase 0 is observation-only: no datapath/behavior change.) Set false for a quiet build.
+  enableSetBalancing: Boolean = true,
+  sbcDebug: Boolean = true
 ) extends Config((site, here, up) => {
   case InclusiveCacheKey => InclusiveCacheParams(
       sets = (capacityKB * 1024)/(site(CacheBlockBytes) * nWays * up(SubsystemBankedCoherenceKey, site).nBanks),
@@ -103,7 +107,9 @@ class WithInclusiveCache(
         portFactor = portFactor,
         memCycles = memCycles,
         innerBuf = bufInnerInterior,
-        outerBuf = bufOuterInterior),
+        outerBuf = bufOuterInterior,
+        enableSetBalancing = enableSetBalancing,
+        sbcDebug = sbcDebug),
       l2Ctrl))
 
     def skipMMIO(x: TLClientParameters) = {

@@ -145,6 +145,7 @@ class InclusiveCache(
       scheduler.io.req.valid := false.B
       scheduler.io.req.bits.address := 0.U
       scheduler.io.resp.ready := true.B
+      scheduler.io.sbcSatReadSet := 0.U // SBC: default; overridden below when a control port exists
 
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
@@ -176,6 +177,17 @@ class InclusiveCache(
         when (sched.io.resp.valid) { ctrl.module.io.flush_resp := true.B }
         sched.io.resp.ready := true.B
       }}
+    }
+
+    // SBC: connect the read-only stats and the SW set-select between control and bank schedulers.
+    // Phase 0 surfaces one bank's SetBalanceUnit (bank i for banked control, else bank 0).
+    ctrls.zipWithIndex.foreach { case (ctrl, ci) =>
+      val bank = if (ctrls.size > 1) ci else 0
+      ctrl.module.io.sbc_stats := mods(bank).io.sbcStats
+    }
+    mods.zipWithIndex.foreach { case (sched, i) =>
+      val ctrlOpt = if (ctrls.size > 1) ctrls.lift(i) else ctrls.headOption
+      ctrlOpt.foreach { ctrl => sched.io.sbcSatReadSet := ctrl.module.io.sbc_satReadSet }
     }
 
     def json = s"""{"banks":[${mods.map(_.json).mkString(",")}]}"""

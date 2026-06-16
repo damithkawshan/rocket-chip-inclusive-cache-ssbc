@@ -40,6 +40,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val flush_match = Input(Bool())
       val flush_req = Decoupled(UInt(64.W))
       val flush_resp = Input(Bool())
+      // SBC: SW-selected set index out, read-only stats in
+      val sbc_satReadSet = Output(UInt(log2Ceil(outer.cache.sets).W))
+      val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -83,10 +86,42 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val lgBlockBytesR = RegField.r(8, log2Ceil(outer.cache.blockBytes).U, RegFieldDesc("lgBlockBytes",
       "Base-2 logarithm of the bytes per cache block", reset=Some(log2Ceil(outer.cache.blockBytes))))
 
+    // Set-Balancing Cache (SBC) observation block (read-only stats + a SW set-select).
+    val sbcSetBits = log2Ceil(outer.cache.sets)
+    val sbcSatBits = outer.micro.satCounterBits
+    val sbcSetSel  = RegInit(0.U(sbcSetBits.W))
+    io.sbc_satReadSet := sbcSetSel
+
+    val sbcSetSelField = RegField(sbcSetBits, sbcSetSel,
+      RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back"))
+    val sbcSetSatField = RegField.r(sbcSatBits, io.sbc_stats.satReadValue,
+      RegFieldDesc("SBC_SetSat", "Saturation counter of the selected set", volatile=true))
+    val sbcColdestSetField = RegField.r(sbcSetBits, io.sbc_stats.coldestSet,
+      RegFieldDesc("SBC_ColdestSet", "Current coldest (DSS) destination set", volatile=true))
+    val sbcColdestLevelField = RegField.r(sbcSatBits, io.sbc_stats.coldestLevel,
+      RegFieldDesc("SBC_ColdestLevel", "Saturation level of the coldest set", volatile=true))
+    val sbcStatusField = RegField.r(8,
+      Cat(io.sbc_stats.atValid, io.sbc_stats.coldestValid, outer.micro.enableSetBalancing.B),
+      RegFieldDesc("SBC_Status", "bit0=enabled, bit1=coldestValid, bit2=selectedAtValid", volatile=true))
+    val sbcMigrationsField = RegField.r(32, io.sbc_stats.migrations,
+      RegFieldDesc("SBC_Migrations", "Migrations performed (0 in Phase 0)", volatile=true))
+    val sbcSecHitsField = RegField.r(32, io.sbc_stats.secHits,
+      RegFieldDesc("SBC_SecHits", "Secondary hits (0 in Phase 0)", volatile=true))
+    val sbcSecMissField = RegField.r(32, io.sbc_stats.secMiss,
+      RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
+
     val regmap = ctrlnode.regmap(
       0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
-      0x240 -> Seq(flush32)
+      0x240 -> Seq(flush32),
+      0x300 -> RegFieldGroup("SBC", Some("Set-Balancing Cache observation/stats"), Seq(sbcSetSelField)),
+      0x308 -> Seq(sbcSetSatField),
+      0x310 -> Seq(sbcColdestSetField),
+      0x318 -> Seq(sbcColdestLevelField),
+      0x320 -> Seq(sbcStatusField),
+      0x328 -> Seq(sbcMigrationsField),
+      0x330 -> Seq(sbcSecHitsField),
+      0x338 -> Seq(sbcSecMissField)
     )
   }
 }
