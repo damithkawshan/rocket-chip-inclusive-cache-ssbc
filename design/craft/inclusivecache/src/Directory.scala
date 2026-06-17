@@ -140,7 +140,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
   val hits = Cat(ways.zipWithIndex.map { case (w, i) =>
-    w.tag === tag && w.state =/= INVALID && (!setQuash || i.U =/= bypass.way)
+    w.tag === tag && w.state =/= INVALID && !w.displaced && (!setQuash || i.U =/= bypass.way)
   }.reverse)
   val hit = hits.orR
 

@@ -70,6 +70,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   val directory = Module(new Directory(params))
   val bankedStore = Module(new BankedStore(params))
+  val setCopyUnit = Module(new SetCopyUnit(params))
   val requests = Module(new ListBuffer(ListBufferParameters(new QueuedRequest(params), 3*params.mshrs, params.secondary, false)))
   val mshrs = Seq.fill(params.mshrs) { Module(new MSHR(params)) }
   val abc_mshrs = mshrs.init.init
@@ -174,6 +175,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // If no MSHR has been assigned to this set, we need to allocate one
   val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.set === request.bits.set }.reverse)
   val alloc = !setMatches.orR // NOTE: no matches also means no BC or C pre-emption on this set
+  // SBC Phase 1: stall any request whose set is reserved as a migration destination
+  val dstSetConflict = mshrs.map { m =>
+    m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set
+  }.reduce(_ || _)
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
   val blockC = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockC)) && request.bits.prio(2)
@@ -261,7 +266,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
      (alloc && !mshr_uses_directory_assuming_no_bypass && mshr_free) ||
      (nestB && !mshr_uses_directory_assuming_no_bypass && !bc_mshr.io.status.valid && !c_mshr.io.status.valid) ||
      (nestC && !mshr_uses_directory_assuming_no_bypass && !c_mshr.io.status.valid)
-  request.ready := request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))
+  request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) && !dstSetConflict
   val alloc_uses_directory = request.valid && request_alloc_cases
 
   // When a request goes through, it will need to hit the Directory
@@ -339,6 +344,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   bankedStore.io.sourceD_wdat := sourceD.io.bs_wdat
   sourceC.io.bs_dat := bankedStore.io.sourceC_dat
   sourceD.io.bs_rdat := bankedStore.io.sourceD_rdat
+
+  // SBC Phase 1: SetCopyUnit <-> BankedStore copy ports
+  bankedStore.io.sourceCopy_radr <> setCopyUnit.io.bs_radr
+  setCopyUnit.io.bs_rdat := bankedStore.io.sourceCopy_rdat
+  bankedStore.io.sourceCopy_wadr <> setCopyUnit.io.bs_wadr
+  bankedStore.io.sourceCopy_wdat := setCopyUnit.io.bs_wdat
+  // Not yet driven: start (from migrating MSHR) and hazards (from SourceD). Tie off so the SCU idles.
+  setCopyUnit.io.start.valid := false.B
+  setCopyUnit.io.start.bits  := 0.U.asTypeOf(chiselTypeOf(setCopyUnit.io.start.bits))
+  setCopyUnit.io.copy_safe   := true.B
+  setCopyUnit.io.copy_wsafe  := true.B
 
   // SourceD data hazard interlock
   sourceD.io.evict_req := sourceC.io.evict_req

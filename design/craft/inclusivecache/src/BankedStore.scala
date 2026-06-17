@@ -69,6 +69,11 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
     val sourceD_rdat = new BankedStoreInnerDecoded(params)
     val sourceD_wadr = Flipped(Decoupled(new BankedStoreInnerAddress(params)))
     val sourceD_wdat = Flipped(new BankedStoreInnerPoison(params))
+    // SBC Phase 1: set-to-set copy ports (lowest priority); driven by SetCopyUnit
+    val sourceCopy_radr = Flipped(Decoupled(new BankedStoreInnerAddress(params)))
+    val sourceCopy_rdat = new BankedStoreInnerDecoded(params)
+    val sourceCopy_wadr = Flipped(Decoupled(new BankedStoreInnerAddress(params)))
+    val sourceCopy_wdat = Flipped(new BankedStoreInnerPoison(params))
   })
 
   val innerBytes = params.inner.manager.beatBytes
@@ -150,9 +155,12 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
   val sourceC_req  = req(io.sourceC_adr,  R, outerData)
   val sourceD_rreq = req(io.sourceD_radr, R, innerData)
   val sourceD_wreq = req(io.sourceD_wadr, W, io.sourceD_wdat.data)
+  val sourceCopy_rreq = req(io.sourceCopy_radr, R, innerData)
+  val sourceCopy_wreq = req(io.sourceCopy_wadr, W, io.sourceCopy_wdat.data)
 
-  // See the comments above for why this prioritization is used
-  val reqs = Seq(sinkC_req, sourceC_req, sinkD_req, sourceD_wreq, sourceD_rreq)
+  // See the comments above for why this prioritization is used.
+  // SBC copy ports are appended last (lowest priority); write before read mirrors sourceDw > sourceDr.
+  val reqs = Seq(sinkC_req, sourceC_req, sinkD_req, sourceD_wreq, sourceD_rreq, sourceCopy_wreq, sourceCopy_rreq)
 
   // Connect priorities; note that even if a request does not go through due to failing
   // to obtain a needed subbank, it still blocks overlapping lower priority requests.
@@ -174,6 +182,7 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
 
   val regsel_sourceC = RegNext(RegNext(sourceC_req.bankEn))
   val regsel_sourceD = RegNext(RegNext(sourceD_rreq.bankEn))
+  val regsel_sourceCopy = RegNext(RegNext(sourceCopy_rreq.bankEn))
 
   val decodeC = regout.zipWithIndex.map {
     case (r, i) => Mux(regsel_sourceC(i), r, 0.U)
@@ -187,6 +196,12 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
   }.grouped(innerBytes/params.micro.writeBytes).toList.transpose.map(s => s.reduce(_|_))
 
   io.sourceD_rdat.data := Cat(decodeD.reverse)
+
+  val decodeCopy = regout.zipWithIndex.map {
+    case (r, i) => Mux(regsel_sourceCopy(i), r, 0.U)
+  }.grouped(innerBytes/params.micro.writeBytes).toList.transpose.map(s => s.reduce(_|_))
+
+  io.sourceCopy_rdat.data := Cat(decodeCopy.reverse)
 
   private def banks = cc_banks.map("\"" + _.pathName + "\"").mkString(",")
   def json: String = s"""{"widthBytes":${params.micro.writeBytes},"mem":[${banks}]}"""

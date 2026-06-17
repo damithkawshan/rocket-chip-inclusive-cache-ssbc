@@ -48,6 +48,10 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val nestB  = Bool()
   val blockC = Bool()
   val nestC  = Bool()
+  // SBC Phase 1: migration destination reservation
+  val dstValid = Bool()
+  val dstSet   = UInt(params.setBits.W)
+  val dstWay   = UInt(params.wayBits.W)
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -171,6 +175,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // own inner probes. Thus every probe wakes exactly one MSHR.
   io.status.bits.blockC := !meta_valid
   io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
+  // SBC Phase 1: default no migration; overwritten when MSHR owns a migration
+  io.status.bits.dstValid := false.B
+  io.status.bits.dstSet   := 0.U
+  io.status.bits.dstWay   := 0.U
   // The w_grantfirst in nestC is necessary to deal with:
   //   acquire waiting for grant, inner release gets queued, outer probe -> inner probe -> deadlock
   // ... this is possible because the release+probe can be for same set, but different tag
