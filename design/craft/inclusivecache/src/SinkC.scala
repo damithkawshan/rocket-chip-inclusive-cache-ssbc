@@ -149,6 +149,8 @@ class SinkC(params: InclusiveCacheParameters) extends Module
     io.req.bits.set    := set
     io.req.bits.tag    := tag
     io.req.bits.put    := put
+    io.req.bits.migrate := false.B // SBC: C-channel requests never migrate
+    io.req.bits.dstSet := 0.U // SBC: unused when migrate=false (no destination)
 
     putbuffer.io.push.bits.index := put
     putbuffer.io.push.bits.data.data    := c.bits.data

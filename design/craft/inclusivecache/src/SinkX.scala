@@ -51,4 +51,6 @@ class SinkX(params: InclusiveCacheParameters) extends Module
   io.req.bits.set    := set
   io.req.bits.tag    := tag
   io.req.bits.put    := 0.U
+  io.req.bits.migrate := false.B // SBC: plain flush; sub-step 4 adds a migrate variant here
+  io.req.bits.dstSet  := 0.U
 }

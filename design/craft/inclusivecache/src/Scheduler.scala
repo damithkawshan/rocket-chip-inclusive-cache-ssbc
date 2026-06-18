@@ -87,6 +87,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.sinkd.bits := sinkD.io.resp.bits
     m.io.sinke.bits := sinkE.io.resp.bits
     m.io.nestedwb := nestedwb
+    // SBC Phase 1: deliver the SetCopyUnit done pulse to its owning MSHR (routed by mshrId)
+    m.io.copy_done := setCopyUnit.io.done && setCopyUnit.io.doneId === i.U
   }
 
   // If the pre-emption BC or C MSHR have a matching set, the normal MSHR must be blocked
@@ -115,7 +117,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       (sourceD.io.req.ready || !m.io.schedule.bits.d.valid) &&
       (sourceE.io.req.ready || !m.io.schedule.bits.e.valid) &&
       (sourceX.io.req.ready || !m.io.schedule.bits.x.valid) &&
-      (directory.io.write.ready || !m.io.schedule.bits.dir.valid)
+      (directory.io.write.ready || !m.io.schedule.bits.dir.valid) &&
+      (setCopyUnit.io.idle || !m.io.schedule.bits.copy.valid)
   }.reverse)
 
   // Round-robin arbitration of MSHRs
@@ -350,17 +353,26 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   setCopyUnit.io.bs_rdat := bankedStore.io.sourceCopy_rdat
   bankedStore.io.sourceCopy_wadr <> setCopyUnit.io.bs_wadr
   bankedStore.io.sourceCopy_wdat := setCopyUnit.io.bs_wdat
-  // Not yet driven: start (from migrating MSHR) and hazards (from SourceD). Tie off so the SCU idles.
-  setCopyUnit.io.start.valid := false.B
-  setCopyUnit.io.start.bits  := 0.U.asTypeOf(chiselTypeOf(setCopyUnit.io.start.bits))
-  setCopyUnit.io.copy_safe   := true.B
-  setCopyUnit.io.copy_wsafe  := true.B
+  // SBC Phase 1: kick the SCU from the winning MSHR's copy lane (gated on SCU idle via mshr_request).
+  // mshrId steers the done pulse back to the owning MSHR.
+  setCopyUnit.io.start.valid       := schedule.copy.valid
+  setCopyUnit.io.start.bits.srcSet := schedule.copy.bits.srcSet
+  setCopyUnit.io.start.bits.srcWay := schedule.copy.bits.srcWay
+  setCopyUnit.io.start.bits.dstSet := schedule.copy.bits.dstSet
+  setCopyUnit.io.start.bits.dstWay := schedule.copy.bits.dstWay
+  setCopyUnit.io.start.bits.mshrId := mshr_select
 
   // SourceD data hazard interlock
   sourceD.io.evict_req := sourceC.io.evict_req
   sourceD.io.grant_req := sinkD  .io.grant_req
   sourceC.io.evict_safe := sourceD.io.evict_safe
   sinkD  .io.grant_safe := sourceD.io.grant_safe
+
+  // SBC Phase 1: SourceD <-> SetCopyUnit copy hazards (RaW on src read, WaR on dst write)
+  sourceD.io.copy_req  := setCopyUnit.io.copy_req
+  sourceD.io.copy_wreq := setCopyUnit.io.copy_wreq
+  setCopyUnit.io.copy_safe  := sourceD.io.copy_safe
+  setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe
 
   // ---------------- Set-Balancing Cache (SBC) ----------------
   // Phase 0: observation only. The SBU watches the directory result via a read-only tap; it owns no

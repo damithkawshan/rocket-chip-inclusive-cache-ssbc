@@ -66,6 +66,13 @@ class SourceD(params: InclusiveCacheParameters) extends Module
     val evict_safe = Bool()
     val grant_req  = Flipped(new SourceDHazard(params))
     val grant_safe = Bool()
+    // SBC Phase 1: SetCopyUnit copy hazards.
+    // RaW: SourceD must not write (srcSet,srcWay) while the SCU reads it.
+    val copy_req   = Flipped(new SourceDHazard(params))
+    val copy_safe  = Bool()
+    // WaR: SourceD must not read (dstSet,dstWay) while the SCU writes it.
+    val copy_wreq  = Flipped(new SourceDHazard(params))
+    val copy_wsafe = Bool()
   })
 
   val beatBytes = params.inner.manager.beatBytes
@@ -384,6 +391,22 @@ class SourceD(params: InclusiveCacheParameters) extends Module
     (!s2_full || io.grant_req.way =/= s2_req.way     || io.grant_req.set =/= s2_req.set) &&
     (!s3_full || io.grant_req.way =/= s3_req.way     || io.grant_req.set =/= s3_req.set) &&
     (!s4_full || io.grant_req.way =/= s4_req.way     || io.grant_req.set =/= s4_req.set)
+
+  // SBC Phase 1: SetCopyUnit reads (srcSet,srcWay). RaW hazard vs SourceD writes (same
+  // s1-s4 pattern as evict_safe): the copy read must not start while SourceD will write it.
+  io.copy_safe :=
+    (!busy    || io.copy_req.way =/= s1_req_reg.way || io.copy_req.set =/= s1_req_reg.set) &&
+    (!s2_full || io.copy_req.way =/= s2_req.way     || io.copy_req.set =/= s2_req.set) &&
+    (!s3_full || io.copy_req.way =/= s3_req.way     || io.copy_req.set =/= s3_req.set) &&
+    (!s4_full || io.copy_req.way =/= s4_req.way     || io.copy_req.set =/= s4_req.set)
+
+  // SBC Phase 1: SetCopyUnit writes (dstSet,dstWay). WaR hazard vs SourceD reads (same
+  // s1-s4 pattern as grant_safe): the copy write must not proceed while SourceD reads it.
+  io.copy_wsafe :=
+    (!busy    || io.copy_wreq.way =/= s1_req_reg.way || io.copy_wreq.set =/= s1_req_reg.set) &&
+    (!s2_full || io.copy_wreq.way =/= s2_req.way     || io.copy_wreq.set =/= s2_req.set) &&
+    (!s3_full || io.copy_wreq.way =/= s3_req.way     || io.copy_wreq.set =/= s3_req.set) &&
+    (!s4_full || io.copy_wreq.way =/= s4_req.way     || io.copy_wreq.set =/= s4_req.set)
 
   // SourceD cannot overlap with SinkC b/c the only way inner caches could become
   // dirty such that they want to put data in via SinkC is if we Granted them permissions,

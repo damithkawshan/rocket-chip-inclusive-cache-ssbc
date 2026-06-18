@@ -24,8 +24,13 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
       val srcWay = UInt(params.wayBits.W)
       val dstSet = UInt(params.setBits.W)
       val dstWay = UInt(params.wayBits.W)
+      val mshrId = UInt(log2Ceil(params.mshrs).W)
     }))
-    val done = Output(Bool())
+    val done   = Output(Bool())
+    // Which MSHR owns the in-flight copy (latched at start); steers done back in the Scheduler
+    val doneId = Output(UInt(log2Ceil(params.mshrs).W))
+    // High when no copy is in flight; Scheduler gates start on this (≤1 copy per bank)
+    val idle   = Output(Bool())
 
     // BankedStore read port (added last in reqs → lowest priority)
     val bs_radr = Decoupled(new BankedStoreInnerAddress(params))
@@ -52,6 +57,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
   val srcWay = Reg(UInt(params.wayBits.W))
   val dstSet = Reg(UInt(params.setBits.W))
   val dstWay = Reg(UInt(params.wayBits.W))
+  val mshrId = Reg(UInt(log2Ceil(params.mshrs).W))
 
   val blockBuf = Reg(Vec(nBeats, UInt((params.inner.manager.beatBytes * 8).W)))
 
@@ -65,6 +71,8 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
 
   // Defaults
   io.done           := false.B
+  io.doneId         := mshrId
+  io.idle           := state === s_idle
   io.bs_radr.valid  := false.B
   io.bs_radr.bits   := 0.U.asTypeOf(new BankedStoreInnerAddress(params))
   io.bs_wadr.valid  := false.B
@@ -82,6 +90,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         srcWay    := io.start.bits.srcWay
         dstSet    := io.start.bits.dstSet
         dstWay    := io.start.bits.dstWay
+        mshrId    := io.start.bits.mshrId
         rdAdrBeat := 0.U
         rdDatBeat := 0.U
         wrBeat    := 0.U
@@ -128,8 +137,10 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
 
     is (s_done) {
       io.done := true.B
-      printf("SetCopyUnit: copy done src(%d,%d) → dst(%d,%d)\n",
-             srcSet, srcWay, dstSet, dstWay)
+      if (params.micro.sbcDebug) {
+        printf("SetCopyUnit: copy done src(%d,%d) → dst(%d,%d)\n",
+               srcSet, srcWay, dstSet, dstWay)
+      }
       state := s_idle
     }
   }
