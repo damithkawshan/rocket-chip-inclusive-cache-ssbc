@@ -127,7 +127,8 @@ case class InclusiveCacheMicroParameters(
   migrationThreshold:      Int = 4,       // T_hi: only migrate victims of sets at/above this
   migrationClearThreshold: Int = 2,       // T_lo: stop forming associations below this (hysteresis)
   dssEntries:              Int = 8,         // Destination Set Selector candidate slots
-  sbcDebug:                Boolean = false) // sim-only SBC debug printfs (nothing elaborated when off)
+  sbcDebug:                Boolean = false, // sim-only SBC debug printfs (nothing elaborated when off)
+  sbcAutoMigrate:          Boolean = false) // debug: fire one migration without SW ARM (ignores armed[])
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)

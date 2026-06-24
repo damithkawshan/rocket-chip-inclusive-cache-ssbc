@@ -23,6 +23,11 @@ import chisel3.util._
 class SinkXRequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
   val address = UInt(params.inner.bundle.addressBits.W)
+  // SBC Phase 1: migration injection. Flush requests leave these at false/0 and use `address`;
+  // a migrate request carries its source set + DSS destination set directly.
+  val migrate = Bool()
+  val set     = UInt(params.setBits.W)
+  val dstSet  = UInt(params.setBits.W)
 }
 
 class SinkX(params: InclusiveCacheParameters) extends Module
@@ -48,9 +53,11 @@ class SinkX(params: InclusiveCacheParameters) extends Module
   // However, it must be a legal source, otherwise assertions might spuriously fire.
   io.req.bits.source := params.inner.client.clients.map(_.sourceId.start).min.U
   io.req.bits.offset := 0.U
-  io.req.bits.set    := set
-  io.req.bits.tag    := tag
+  // SBC: a migrate request supplies its source set directly (no address parse); the tag is
+  // irrelevant — the directory read of srcSet returns the replacement victim way to relocate.
+  io.req.bits.set    := Mux(x.bits.migrate, x.bits.set, set)
+  io.req.bits.tag    := Mux(x.bits.migrate, 0.U, tag)
   io.req.bits.put    := 0.U
-  io.req.bits.migrate := false.B // SBC: plain flush; sub-step 4 adds a migrate variant here
-  io.req.bits.dstSet  := 0.U
+  io.req.bits.migrate := x.bits.migrate
+  io.req.bits.dstSet  := x.bits.dstSet
 }

@@ -13,6 +13,11 @@ package sifive.blocks.inclusivecache
 import chisel3._
 import chisel3.util._
 
+// SBC commit kinds carried on SetBalanceUnit.io.commit.kind.
+object SBCCommitKind {
+  def MIGRATE = 1.U(2.W) // a migration committed (src→dst)
+}
+
 // One Association Table entry, per set. (Inert in Phase 0.)
 class ATEntry(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
@@ -30,7 +35,9 @@ class SBCStats(setBits: Int, satBits: Int) extends Bundle
   val coldestLevel = UInt(satBits.W)
   val satReadValue = UInt(satBits.W)       // saturation of the SW-selected set
   val atValid      = Bool()                // AT[selected set].valid (Phase 0: always 0)
-  val migrations   = UInt(32.W)
+  val migrations   = UInt(32.W)            // committed migrations
+  val attempted    = UInt(32.W)            // migrations attempted (setup reached)
+  val aborted      = UInt(32.W)            // migrations aborted (ineligible src/dst)
   val secHits      = UInt(32.W)
   val secMiss      = UInt(32.W)
 }
@@ -55,6 +62,18 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
       val src  = UInt(params.setBits.W)
       val dst  = UInt(params.setBits.W)
     }))
+    // SBC Phase 1: SW arm pulse from MMIO SBC_BalanceSet (1-cycle valid+set).
+    val arm = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 1: autonomous migrate request — high while an armed set is hot (one in flight).
+    val migrateReq = Valid(new Bundle {
+      val srcSet = UInt(params.setBits.W)
+      val dstSet = UInt(params.setBits.W)
+    })
+    // SBC Phase 1: throttle — high while any MSHR owns a migrate request (≤1 in flight).
+    val anyMigrating = Input(Bool())
+    // SBC Phase 1: migration counter pulses from the MSHRs (attempted at alloc, aborted at retire).
+    val migAttempt = Input(Bool())
+    val migAbort   = Input(Bool())
     // MMIO
     val satReadSet = Input(UInt(params.setBits.W))
     val stats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
@@ -88,14 +107,51 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.update.bits.set   := tapSet
   dss.io.update.bits.level := nxt
 
-  // Advisory queries — migration OFF in Phase 0.
+  // Advisory query response (legacy, unused by the active path which is io.migrateReq below).
   io.migrateResp.migrate    := false.B
   io.migrateResp.destSet    := dss.io.coldestSet
   io.assocResp.activeSource := at(io.assocQuery.bits).valid && !at(io.assocQuery.bits).sd
   io.assocResp.assocSet     := at(io.assocQuery.bits).assocSet
 
-  // No migrations happen in Phase 0, so the AT must stay inert.
-  assert(!io.commit.valid, "SBC Phase 0: unexpected migration commit")
+  // ---- SBC Phase 1: arm-and-fire migration trigger ------------------------------------------
+  // SW arms a source set via SBC_BalanceSet. While that set is armed AND hot (sat >= T_hi) we
+  // emit a migrate request to the injection path; the throttle keeps at most one in flight.
+  // Hysteresis: the armed bit self-clears once the set cools below T_lo.
+  val armed = RegInit(VecInit(Seq.fill(sets)(false.B)))
+  val tHi   = params.micro.migrationThreshold.U
+  val tLo   = params.micro.migrationClearThreshold.U
+  when (io.dirTap.valid && nxt < tLo) { armed(tapSet)     := false.B } // cooled -> disarm
+  when (io.arm.valid)                 { armed(io.arm.bits) := true.B }  // SW arm (wins same-cycle)
+
+  // ---- SBC migrate trigger: request-driven, 1-cycle pulse on the tap set --------------------
+  // Fire the moment the just-touched set crosses T_hi, provided a genuinely cold destination
+  // exists (coldestLevel < T_lo) and no migration is already in flight.
+  // Using `nxt` (post-update sat) means we react the same cycle the threshold is crossed.
+  // The hot-src / cold-dst invariant makes the old `coldestSet =/= pickSet` guard redundant.
+  val srcHot = (params.micro.sbcAutoMigrate.B || armed(tapSet)) && nxt >= tHi
+  val dstCold = dss.io.coldestValid && dss.io.coldestLevel < tLo
+  io.migrateReq.valid       := io.dirTap.valid && srcHot && dstCold && !io.anyMigrating
+  io.migrateReq.bits.srcSet := tapSet
+  io.migrateReq.bits.dstSet := dss.io.coldestSet
+
+  // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
+  // attempted/aborted come from dedicated MSHR pulses; migrations from commit{MIGRATE}.
+  val nAttempt = RegInit(0.U(32.W))
+  val nAbort   = RegInit(0.U(32.W))
+  val nCommit  = RegInit(0.U(32.W))
+  when (io.migAttempt) { nAttempt := nAttempt + 1.U }
+  when (io.migAbort)   { nAbort   := nAbort + 1.U }
+  // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
+  // It can't be unwound, so the write is unconditional (overwrite if already set).
+  when (io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE) {
+    nCommit := nCommit + 1.U
+    at(io.commit.bits.src).valid    := true.B
+    at(io.commit.bits.src).sd       := false.B            // source side
+    at(io.commit.bits.src).assocSet := io.commit.bits.dst
+    at(io.commit.bits.dst).valid    := true.B
+    at(io.commit.bits.dst).sd       := true.B             // destination side
+    at(io.commit.bits.dst).assocSet := io.commit.bits.src
+  }
 
   // Read-only stats for MMIO.
   io.stats.coldestValid := dss.io.coldestValid
@@ -103,7 +159,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.stats.coldestLevel := dss.io.coldestLevel
   io.stats.satReadValue := sat(io.satReadSet)
   io.stats.atValid      := at(io.satReadSet).valid
-  io.stats.migrations   := 0.U
+  io.stats.migrations   := nCommit
+  io.stats.attempted    := nAttempt
+  io.stats.aborted      := nAbort
   io.stats.secHits      := 0.U
   io.stats.secMiss      := 0.U
 
@@ -111,24 +169,43 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   if (params.micro.sbcDebug) {
     val cyc = RegInit(0.U(64.W)); cyc := cyc + 1.U
 
-    // Per directory-lookup: set, hit/miss, resulting saturation level.
-    when (io.dirTap.valid) {
-      printf(p"[SBC] TAP set=${io.dirTap.bits.set} hit=${io.dirTap.bits.hit} sat=${nxt} cycle=${cyc}\n")
-    }
+    // ---- threshold crossing events (one print per set per transition) ----
 
-    // A set heating past the migration threshold (the "hot set detected" event).
+    // Set heats past T_hi (miss drove sat from below to at/above threshold).
     val crossedHot = io.dirTap.valid && !io.dirTap.bits.hit &&
                      cur < params.micro.migrationThreshold.U && nxt >= params.micro.migrationThreshold.U
     when (crossedHot) {
-      printf(p"[SBC] HOT set=${io.dirTap.bits.set} reached T_hi sat=${nxt} cycle=${cyc}\n")
+      printf(p"[SBC] HOT   set=${io.dirTap.bits.set} sat ${cur}->${nxt} (T_hi=${params.micro.migrationThreshold.U}) cycle=${cyc}\n")
     }
 
-    // Periodic snapshot of the SW-selected set and the current DSS coldest candidate.
-    val dumpPeriod = 2048
-    when ((cyc % dumpPeriod.U) === 0.U && cyc =/= 0.U) {
-      printf(p"[SBC] SUMMARY cycle=${cyc} selSet=${io.satReadSet} selSat=${io.stats.satReadValue} " +
-             p"coldestValid=${io.stats.coldestValid} coldestSet=${io.stats.coldestSet} " +
-             p"coldestLevel=${io.stats.coldestLevel}\n")
+    // Set cools below T_lo (hit drove sat from at/above down to below clear threshold).
+    val crossedCold = io.dirTap.valid && io.dirTap.bits.hit &&
+                      cur >= params.micro.migrationClearThreshold.U && nxt < params.micro.migrationClearThreshold.U
+    when (crossedCold) {
+      printf(p"[SBC] COOL  set=${io.dirTap.bits.set} sat ${cur}->${nxt} (T_lo=${params.micro.migrationClearThreshold.U}) cycle=${cyc}\n")
     }
+
+    // ---- ARM / migrate-request events ----
+    when (io.arm.valid) {
+      printf(p"[SBC] ARM   set=${io.arm.bits} sat=${sat(io.arm.bits)} cycle=${cyc}\n")
+    }
+    when (io.migrateReq.valid) {
+      printf(p"[SBC] MIGREQ src=${tapSet} (sat=${nxt}) " +
+             p"dst=${dss.io.coldestSet} (coldLevel=${dss.io.coldestLevel}) cycle=${cyc}\n")
+    }
+
+    // ---- periodic per-set saturation dump + DSS snapshot ----
+    // Print every `dumpPeriod` cycles; period is large enough to avoid log explosion.
+    val dumpPeriod = 50000
+    val doDump = (cyc % dumpPeriod.U) === 0.U && cyc =/= 0.U
+    // when (doDump) {
+    //   printf(p"[SBC] DUMP  cycle=${cyc} coldestValid=${io.stats.coldestValid} " +
+    //          p"coldestSet=${io.stats.coldestSet} coldestLevel=${io.stats.coldestLevel} " +
+    //          p"migr=${io.stats.migrations} attempted=${io.stats.attempted} aborted=${io.stats.aborted}\n")
+    //   // Unroll per-set sat print (sets is a Scala Int, known at elaboration time).
+    //   for (s <- 0 until sets) {
+    //     printf(p"[SBC] DUMP    set[${s.U}] sat=${sat(s)} armed=${armed(s)}\n")
+    //   }
+    // }
   }
 }

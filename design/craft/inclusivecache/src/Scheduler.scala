@@ -38,6 +38,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC MMIO: SW-selected set index in, read-only stats out
     val sbcSatReadSet = Input(UInt(params.setBits.W))
     val sbcStats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
+    // SBC MMIO: SW arm pulse in (a write to SBC_BalanceSet)
+    val sbcBalanceSet = Flipped(Valid(UInt(params.setBits.W)))
   })
 
   val sourceA = Module(new SourceA(params))
@@ -64,7 +66,23 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkC.io.c <> io.in.c
   sinkE.io.e <> io.in.e
   sinkD.io.d <> io.out.d
-  sinkX.io.x <> io.req
+
+  // SBC Phase 1: the control port (io.req) carries flushes; the SBU may also inject migrate
+  // requests. Flush has priority; migrate fills idle cycles. `migrateInject` is driven by the
+  // SBC block below (inert — valid=false — when set-balancing is disabled, so the baseline path
+  // remains the direct sinkX.io.x <> io.req).
+  val migrateInject = Wire(Decoupled(new SinkXRequest(params)))
+  migrateInject.valid := false.B
+  migrateInject.bits  := 0.U.asTypeOf(new SinkXRequest(params))
+  if (params.micro.enableSetBalancing) {
+    val xarb = Module(new Arbiter(new SinkXRequest(params), 2))
+    xarb.io.in(0) <> io.req         // flush — priority
+    xarb.io.in(1) <> migrateInject  // migrate
+    sinkX.io.x <> xarb.io.out
+  } else {
+    migrateInject.ready := false.B
+    sinkX.io.x <> io.req
+  }
 
   io.out.b.ready := true.B // disconnected
 
@@ -178,10 +196,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // If no MSHR has been assigned to this set, we need to allocate one
   val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.set === request.bits.set }.reverse)
   val alloc = !setMatches.orR // NOTE: no matches also means no BC or C pre-emption on this set
+  // SBC Phase 1: identifies an injected migrate request (its source read prefers an evictable victim).
+  val isMigrate = request.bits.control && request.bits.migrate
   // SBC Phase 1: stall any request whose set is reserved as a migration destination
   val dstSetConflict = mshrs.map { m =>
     m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set
   }.reduce(_ || _)
+  // SBC Phase 1: throttle — at most one migrate request in flight across all MSHRs (abort included)
+  val anyMigrating = mshrs.map(m => m.io.status.valid && m.io.status.bits.migReq).reduce(_ || _)
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
   val blockC = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockC)) && request.bits.prio(2)
@@ -255,7 +277,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   // Reload from the Directory if the next MSHR operation changes tags
   val lb_tag_mismatch = scheduleTag =/= requests.io.data.tag
-  val mshr_uses_directory_assuming_no_bypass = schedule.reload && may_pop && lb_tag_mismatch
+  // SBC Phase 1: the winning MSHR's 2nd dir-read (of dstSet) holds the directory read port this
+  // cycle; treat it like a reload so no incoming request grabs the port or allocates concurrently.
+  val mshr_uses_directory_for_dread = schedule.dread.valid
+  val mshr_uses_directory_assuming_no_bypass = (schedule.reload && may_pop && lb_tag_mismatch) || mshr_uses_directory_for_dread
   val mshr_uses_directory_for_lb = will_pop && lb_tag_mismatch
   val mshr_uses_directory = will_reload && scheduleTag =/= Mux(bypass, request.bits.tag, requests.io.data.tag)
 
@@ -273,9 +298,15 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val alloc_uses_directory = request.valid && request_alloc_cases
 
   // When a request goes through, it will need to hit the Directory
-  directory.io.read.valid := mshr_uses_directory || alloc_uses_directory
-  directory.io.read.bits.set := Mux(mshr_uses_directory_for_lb, scheduleSet,          request.bits.set)
-  directory.io.read.bits.tag := Mux(mshr_uses_directory_for_lb, requests.io.data.tag, request.bits.tag)
+  directory.io.read.valid := mshr_uses_directory || alloc_uses_directory || mshr_uses_directory_for_dread
+  directory.io.read.bits.set := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.set,
+                                Mux(mshr_uses_directory_for_lb,    scheduleSet, request.bits.set))
+  directory.io.read.bits.tag := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.tag,
+                                Mux(mshr_uses_directory_for_lb,    requests.io.data.tag, request.bits.tag))
+  directory.io.read.bits.preferInvalid := mshr_uses_directory_for_dread // only the migration probe
+  // SBC Phase 1: the migrate's source (allocate) read prefers a migration-eligible victim, so the
+  // MSHR's srcEligible check passes whenever the hot set holds any clean, client-free line.
+  directory.io.read.bits.preferEvictable := alloc_uses_directory && isMigrate
 
   // Enqueue the request if not bypassed directly into an MSHR
   requests.io.push.valid := request.valid && queue && !bypassQueue
@@ -315,7 +346,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   // Fanout the result of the Directory lookup
   val dirTarget = Mux(alloc, mshr_insertOH, Mux(nestB,(BigInt(1) << (params.mshrs-2)).U,(BigInt(1) << (params.mshrs-1)).U))
-  val directoryFanout = params.dirReg(RegNext(Mux(mshr_uses_directory, mshr_selectOH, Mux(alloc_uses_directory, dirTarget, 0.U))))
+  val directoryFanout = params.dirReg(RegNext(
+    Mux(mshr_uses_directory || mshr_uses_directory_for_dread, mshr_selectOH,
+      Mux(alloc_uses_directory, dirTarget, 0.U))))
   mshrs.zipWithIndex.foreach { case (m, i) =>
     m.io.directory.valid := directoryFanout(i)
     m.io.directory.bits := directory.io.result.bits
@@ -375,20 +408,43 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe
 
   // ---------------- Set-Balancing Cache (SBC) ----------------
-  // Phase 0: observation only. The SBU watches the directory result via a read-only tap; it owns no
-  // data/SRAM ports and migration is OFF. Stats are surfaced to the MMIO control block.
+  // The SBU watches the directory result via a read-only tap (it owns no data/SRAM ports) and,
+  // when a set is armed + hot, emits a migrate request that is injected via the control port.
+  // Stats are surfaced to the MMIO control block.
   if (params.micro.enableSetBalancing) {
     val sbu = Module(new SetBalanceUnit(params))
     sbu.io.dirTap     := directory.io.tap
     sbu.io.satReadSet := io.sbcSatReadSet
+    sbu.io.arm        := io.sbcBalanceSet
+    sbu.io.anyMigrating := anyMigrating
+    // SBC Phase 1: migration counter pulses (OR across MSHRs; throttle keeps ≤1 in flight)
+    sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
+    sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)
     io.sbcStats       := sbu.io.stats
+
+    // Migrate-request injection one-shot: hold a fired migrate until the in-flight one retires
+    // (anyMigrating falls), so each migrateReq produces exactly one injected SinkX request.
+    val migInFlight = RegInit(false.B)
+    when (migrateInject.fire) { migInFlight := true.B }
+    .elsewhen (RegNext(anyMigrating, false.B) && !anyMigrating) { migInFlight := false.B }
+    migrateInject.valid        := sbu.io.migrateReq.valid && !migInFlight
+    migrateInject.bits.migrate := true.B
+    migrateInject.bits.set     := sbu.io.migrateReq.bits.srcSet
+    migrateInject.bits.dstSet  := sbu.io.migrateReq.bits.dstSet
+    migrateInject.bits.address := 0.U
+
     // advisory queries / commit are unused in Phase 0
     sbu.io.migrateQuery.valid := false.B
     sbu.io.migrateQuery.bits  := 0.U
     sbu.io.assocQuery.valid   := false.B
     sbu.io.assocQuery.bits    := 0.U
-    sbu.io.commit.valid       := false.B
-    sbu.io.commit.bits        := 0.U.asTypeOf(chiselTypeOf(sbu.io.commit.bits))
+    // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).
+    // SBU bumps the committed counter now; the AT write on commit is step 7.
+    val migCommit = mshrs.map(_.io.migCommit)
+    sbu.io.commit.valid     := migCommit.reduce(_ || _)
+    sbu.io.commit.bits.kind := SBCCommitKind.MIGRATE
+    sbu.io.commit.bits.src  := Mux1H(migCommit, mshrs.map(_.io.status.bits.set))
+    sbu.io.commit.bits.dst  := Mux1H(migCommit, mshrs.map(_.io.status.bits.dstSet))
   } else {
     io.sbcStats := 0.U.asTypeOf(new SBCStats(params.setBits, params.micro.satCounterBits))
   }

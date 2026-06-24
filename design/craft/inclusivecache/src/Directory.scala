@@ -56,6 +56,12 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
 {
   val set = UInt(params.setBits.W)
   val tag = UInt(params.tagBits.W)
+  // SBC Phase 1: when set, the victim selection returns an invalid way if one exists (used by the
+  // migration destination probe). Baseline reads leave this false and get the LFSR victim.
+  val preferInvalid = Bool()
+  // SBC Phase 1: when set, prefer a migration-eligible way (valid, clean, no clients, not displaced)
+  // as the victim (used by the migration source read). Baseline reads leave this false.
+  val preferEvictable = Bool()
 }
 
 class DirectoryResult(params: InclusiveCacheParameters) extends DirectoryEntry(params)
@@ -122,13 +128,28 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val regout = params.dirReg(cc_dir.read(io.read.bits.set, ren), ren1)
   val tag = params.dirReg(RegEnable(io.read.bits.tag, ren), ren1)
   val set = params.dirReg(RegEnable(io.read.bits.set, ren), ren1)
+  val preferInvalid = params.dirReg(RegEnable(io.read.bits.preferInvalid, ren), ren1)
+  val preferEvictable = params.dirReg(RegEnable(io.read.bits.preferEvictable, ren), ren1)
+
+  val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
 
   // Compute the victim way in case of an evicition
   val victimLFSR = random.LFSR(width = 16, params.dirReg(ren))(InclusiveCacheParameters.lfsrBits-1, 0)
   val victimSums = Seq.tabulate(params.cache.ways) { i => ((1 << InclusiveCacheParameters.lfsrBits)*i / params.cache.ways).U }
   val victimLTE  = Cat(victimSums.map { _ <= victimLFSR }.reverse)
   val victimSimp = Cat(0.U(1.W), victimLTE(params.cache.ways-1, 1), 1.U(1.W))
-  val victimWayOH = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
+  val victimWayOHLFSR = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
+  // SBC Phase 1: never victimize a displaced way; prefer invalid, else the LFSR victim among
+  // non-displaced ways (preferInvalid makes "destination set full?" a precise test).
+  val invalidWayOH   = Cat(ways.map(_.state === INVALID).reverse)
+  val nonDisplacedOH = Cat(ways.map(!_.displaced).reverse)
+  val lfsrVictimOH   = victimWayOHLFSR & nonDisplacedOH
+  // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
+  // writeback), no clients (no probe), not displaced. The migration source read prefers one.
+  val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
+  val victimWayOH = Mux(preferInvalid && invalidWayOH.orR, PriorityEncoderOH(invalidWayOH),
+                    Mux(preferEvictable && evictableOH.orR, PriorityEncoderOH(evictableOH),
+                    Mux(lfsrVictimOH.orR, lfsrVictimOH, PriorityEncoderOH(nonDisplacedOH))))
   val victimWay = OHToUInt(victimWayOH)
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone
@@ -138,7 +159,6 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val tagMatch = bypass.data.tag === tag
   val wayMatch = bypass.way === victimWay
 
-  val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
   val hits = Cat(ways.zipWithIndex.map { case (w, i) =>
     w.tag === tag && w.state =/= INVALID && !w.displaced && (!setQuash || i.U =/= bypass.way)
   }.reverse)
@@ -146,7 +166,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
 
   io.result.valid := ren2
   io.result.bits.viewAsSupertype(chiselTypeOf(bypass.data)) := Mux(hit, Mux1H(hits, ways), Mux(setQuash && (tagMatch || wayMatch), bypass.data, Mux1H(victimWayOH, ways)))
-  io.result.bits.hit := hit || (setQuash && tagMatch && bypass.data.state =/= INVALID)
+  io.result.bits.hit := hit || (setQuash && tagMatch && bypass.data.state =/= INVALID && !bypass.data.displaced)
   io.result.bits.way := Mux(hit, OHToUInt(hits), Mux(setQuash && tagMatch, bypass.way, victimWay))
 
   // SBC observation tap: aligned to the result (uses the already result-aligned `set` wire so the
@@ -155,6 +175,14 @@ class Directory(params: InclusiveCacheParameters) extends Module
   io.tap.bits.set := set
   io.tap.bits.hit := io.result.bits.hit
   io.tap.bits.way := io.result.bits.way
+
+  // SBC Phase 1 debug: trace every preferEvictable read so we can see whether the flag arrives and
+  // whether the set held an eligible (clean, client-free) way for it to pick.
+  if (params.micro.sbcDebug) {
+    when (ren2 && preferEvictable) {
+      printf(p"[SBC] DIR-EVICT set=${set} evictableAvail=${evictableOH.orR} hit=${io.result.bits.hit} victimWay=${victimWay}\n")
+    }
+  }
 
   params.ccover(ren2 && setQuash && tagMatch, "DIRECTORY_HIT_BYPASS", "Bypassing write to a directory hit")
   params.ccover(ren2 && setQuash && !tagMatch && wayMatch, "DIRECTORY_EVICT_BYPASS", "Bypassing a write to a directory eviction")

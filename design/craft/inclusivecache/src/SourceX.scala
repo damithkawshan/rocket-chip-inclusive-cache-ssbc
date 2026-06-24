@@ -24,6 +24,9 @@ import chisel3.util._
 class SourceXRequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
   val fail = Bool()
+  // SBC Phase 1: this ack retires a migration (abort), not an SW flush — InclusiveCache must not
+  // map it to flush_resp.
+  val migrate = Bool()
 }
 
 class SourceX(params: InclusiveCacheParameters) extends Module

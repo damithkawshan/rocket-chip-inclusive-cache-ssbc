@@ -144,8 +144,13 @@ class InclusiveCache(
       // Tie down default values in case there is no controller
       scheduler.io.req.valid := false.B
       scheduler.io.req.bits.address := 0.U
+      scheduler.io.req.bits.migrate := false.B // SBC: the control port injects only flushes
+      scheduler.io.req.bits.set     := 0.U
+      scheduler.io.req.bits.dstSet  := 0.U
       scheduler.io.resp.ready := true.B
       scheduler.io.sbcSatReadSet := 0.U // SBC: default; overridden below when a control port exists
+      scheduler.io.sbcBalanceSet.valid := false.B // SBC: default; overridden below when a control port exists
+      scheduler.io.sbcBalanceSet.bits  := 0.U
 
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
@@ -174,7 +179,8 @@ class InclusiveCache(
         sched.io.req.bits.address := ctrl.module.io.flush_req.bits
         when (contained && sched.io.req.ready) { ctrl.module.io.flush_req.ready := true.B }
 
-        when (sched.io.resp.valid) { ctrl.module.io.flush_resp := true.B }
+        // SBC: a migration-abort ack also rides SourceX; only real flushes complete a flush.
+        when (sched.io.resp.valid && !sched.io.resp.bits.migrate) { ctrl.module.io.flush_resp := true.B }
         sched.io.resp.ready := true.B
       }}
     }
@@ -187,7 +193,10 @@ class InclusiveCache(
     }
     mods.zipWithIndex.foreach { case (sched, i) =>
       val ctrlOpt = if (ctrls.size > 1) ctrls.lift(i) else ctrls.headOption
-      ctrlOpt.foreach { ctrl => sched.io.sbcSatReadSet := ctrl.module.io.sbc_satReadSet }
+      ctrlOpt.foreach { ctrl =>
+        sched.io.sbcSatReadSet := ctrl.module.io.sbc_satReadSet
+        sched.io.sbcBalanceSet := ctrl.module.io.sbc_balanceSet
+      }
     }
 
     def json = s"""{"banks":[${mods.map(_.json).mkString(",")}]}"""

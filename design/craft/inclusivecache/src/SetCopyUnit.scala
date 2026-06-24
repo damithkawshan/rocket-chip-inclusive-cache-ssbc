@@ -135,10 +135,12 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
       }
     }
 
+    // TODO(Phase 3): verify copied bytes before first read — add SCU s_verify here (re-read
+    // (dstSet,dstWay), assert == blockBuf). Deferred in Phase 1 (copy is dark, nothing reads it).
     is (s_done) {
       io.done := true.B
       if (params.micro.sbcDebug) {
-        printf("SetCopyUnit: copy done src(%d,%d) → dst(%d,%d)\n",
+      printf("SetCopyUnit: copy done src(%d,%d) -> dst(%d,%d)\n",
                srcSet, srcWay, dstSet, dstWay)
       }
       state := s_idle

@@ -43,6 +43,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // SBC: SW-selected set index out, read-only stats in
       val sbc_satReadSet = Output(UInt(log2Ceil(outer.cache.sets).W))
       val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
+      // SBC: SW arm pulse out (a write to SBC_BalanceSet → 1-cycle valid+set)
+      val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -92,6 +94,12 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcSetSel  = RegInit(0.U(sbcSetBits.W))
     io.sbc_satReadSet := sbcSetSel
 
+    // SBC: arm pulse — a write to SBC_BalanceSet emits a 1-cycle valid+set downstream.
+    val sbcArmPulse = WireInit(false.B)
+    val sbcArmSet   = WireInit(0.U(sbcSetBits.W))
+    io.sbc_balanceSet.valid := sbcArmPulse
+    io.sbc_balanceSet.bits  := sbcArmSet
+
     val sbcSetSelField = RegField(sbcSetBits, sbcSetSel,
       RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back"))
     val sbcSetSatField = RegField.r(sbcSatBits, io.sbc_stats.satReadValue,
@@ -104,11 +112,21 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       Cat(io.sbc_stats.atValid, io.sbc_stats.coldestValid, outer.micro.enableSetBalancing.B),
       RegFieldDesc("SBC_Status", "bit0=enabled, bit1=coldestValid, bit2=selectedAtValid", volatile=true))
     val sbcMigrationsField = RegField.r(32, io.sbc_stats.migrations,
-      RegFieldDesc("SBC_Migrations", "Migrations performed (0 in Phase 0)", volatile=true))
+      RegFieldDesc("SBC_Migrations", "Migrations committed", volatile=true))
     val sbcSecHitsField = RegField.r(32, io.sbc_stats.secHits,
       RegFieldDesc("SBC_SecHits", "Secondary hits (0 in Phase 0)", volatile=true))
     val sbcSecMissField = RegField.r(32, io.sbc_stats.secMiss,
       RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
+
+    // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
+    val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
+      when (ivalid) { sbcArmPulse := true.B; sbcArmSet := data }
+      (true.B, ivalid)  // ready always; ack immediately when write arrives
+    }), RegFieldDesc("SBC_BalanceSet", "Arm SBC migration for the written source-set index"))
+    val sbcAttemptedField = RegField.r(32, io.sbc_stats.attempted,
+      RegFieldDesc("SBC_Attempted", "Migrations attempted (setup reached)", volatile=true))
+    val sbcAbortedField = RegField.r(32, io.sbc_stats.aborted,
+      RegFieldDesc("SBC_Aborted", "Migrations aborted (ineligible source/destination)", volatile=true))
 
     val regmap = ctrlnode.regmap(
       0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
@@ -121,7 +139,10 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x320 -> Seq(sbcStatusField),
       0x328 -> Seq(sbcMigrationsField),
       0x330 -> Seq(sbcSecHitsField),
-      0x338 -> Seq(sbcSecMissField)
+      0x338 -> Seq(sbcSecMissField),
+      0x340 -> RegFieldGroup("SBC_Ctrl", Some("Set-Balancing Cache control/counters"), Seq(sbcBalanceSetField)),
+      0x348 -> Seq(sbcAttemptedField),
+      0x350 -> Seq(sbcAbortedField)
     )
   }
 }
