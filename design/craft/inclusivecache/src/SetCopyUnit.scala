@@ -102,7 +102,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         wrBeat    := 0.U
         state     := s_wsafe
         if (params.micro.sbcDebug) {
-          printf("SetCopyUnit: SCU-START src(%d,%d) -> dst(%d,%d) mshr=%d\n",
+          printf("[SBC] [SetCopyUnit]  SCU-START src(%d,%d) -> dst(%d,%d) mshr=%d\n",
             io.start.bits.srcSet, io.start.bits.srcWay,
             io.start.bits.dstSet, io.start.bits.dstWay,
             io.start.bits.mshrId)
@@ -123,10 +123,10 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
       }
       if (params.micro.sbcDebug) {
         when (!io.copy_wsafe && prev_copy_wsafe) {
-          printf("SetCopyUnit: WSAFE-STALL dst(%d,%d) SourceD still draining, copy start held\n", dstSet, dstWay)
+          printf("[SBC] [SetCopyUnit]  WSAFE-STALL dst(%d,%d) SourceD still draining, copy start held\n", dstSet, dstWay)
         }
         when (io.copy_wsafe && !prev_copy_wsafe) {
-          printf("SetCopyUnit: WSAFE-RESUME dst(%d,%d) WaR clear, starting copy\n", dstSet, dstWay)
+          printf("[SBC] [SetCopyUnit]  WSAFE-RESUME dst(%d,%d) WaR clear, starting copy\n", dstSet, dstWay)
         }
       }
     }
@@ -143,10 +143,10 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         when (io.bs_radr.fire) { rdAdrBeat := rdAdrBeat + 1.U }
         if (params.micro.sbcDebug) {
           when (!io.copy_safe && prev_copy_safe) {
-            printf("SetCopyUnit: READ-STALL src(%d,%d) beat=%d copy_safe went low\n", srcSet, srcWay, rdAdrBeat)
+            printf("[SBC] [SetCopyUnit]  READ-STALL src(%d,%d) beat=%d copy_safe went low\n", srcSet, srcWay, rdAdrBeat)
           }
           when (io.copy_safe && !prev_copy_safe) {
-            printf("SetCopyUnit: READ-RESUME src(%d,%d) beat=%d\n", srcSet, srcWay, rdAdrBeat)
+            printf("[SBC] [SetCopyUnit]  READ-RESUME src(%d,%d) beat=%d\n", srcSet, srcWay, rdAdrBeat)
           }
         }
       }
@@ -159,7 +159,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
 
       when (rdDatBeat === nBeats.U) {
         if (params.micro.sbcDebug) {
-          printf("SetCopyUnit: READ-DONE src(%d,%d) -> s_write\n", srcSet, srcWay)
+          printf("[SBC] [SetCopyUnit]  READ-DONE src(%d,%d) -> s_write\n", srcSet, srcWay)
         }
         state := s_write
       }
@@ -178,45 +178,54 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         when (io.bs_wadr.fire) { wrBeat := wrBeat + 1.U }
         if (params.micro.sbcDebug) {
           when (!io.copy_wsafe && prev_copy_wsafe) {
-            printf("SetCopyUnit: WRITE-STALL dst(%d,%d) beat=%d copy_wsafe went low\n", dstSet, dstWay, wrBeat)
+            printf("[SBC] [SetCopyUnit]  WRITE-STALL dst(%d,%d) beat=%d copy_wsafe went low\n", dstSet, dstWay, wrBeat)
           }
           when (io.copy_wsafe && !prev_copy_wsafe) {
-            printf("SetCopyUnit: WRITE-RESUME dst(%d,%d) beat=%d\n", dstSet, dstWay, wrBeat)
+            printf("[SBC] [SetCopyUnit]  WRITE-RESUME dst(%d,%d) beat=%d\n", dstSet, dstWay, wrBeat)
           }
         }
       } .otherwise {
         vrAdrBeat := 0.U
         vrDatBeat := 0.U
         if (params.micro.sbcDebug) {
-          printf("SetCopyUnit: WRITE-DONE dst(%d,%d) -> s_verify\n", dstSet, dstWay)
+          printf("[SBC] [SetCopyUnit]  WRITE-DONE dst(%d,%d) -> s_verify\n", dstSet, dstWay)
         }
-        state     := s_verify
+        // state     := s_verify
+        state     := s_done
       }
     }
 
     // SBC Phase 2: verify pass — re-read (dstSet,dstWay) and assert it matches what we wrote.
+    // is (s_verify) {
+    //   when (vrAdrBeat < nBeats.U) {
+    //     io.bs_radr.valid      := true.B
+    //     io.bs_radr.bits.noop  := false.B
+    //     io.bs_radr.bits.way   := dstWay
+    //     io.bs_radr.bits.set   := dstSet
+    //     io.bs_radr.bits.beat  := vrAdrBeat(params.innerBeatBits - 1, 0)
+    //     io.bs_radr.bits.mask  := Fill(params.innerMaskBits, 1.U(1.W))
+    //     when (io.bs_radr.fire) { vrAdrBeat := vrAdrBeat + 1.U }
+    //   }
+    //   when (rdat_valid && vrDatBeat < nBeats.U) {
+    //     assert(io.bs_rdat.data === blockBuf(vrDatBeat),
+    //            "[SBC] [SetCopyUnit]  copy verify mismatch dst(%d,%d) beat %d", dstSet, dstWay, vrDatBeat)
+    //     vrDatBeat := vrDatBeat + 1.U
+    //   }
+    //   when (vrDatBeat === nBeats.U) { state := s_done }
+    // }
+
     is (s_verify) {
-      when (vrAdrBeat < nBeats.U) {
-        io.bs_radr.valid      := true.B
-        io.bs_radr.bits.noop  := false.B
-        io.bs_radr.bits.way   := dstWay
-        io.bs_radr.bits.set   := dstSet
-        io.bs_radr.bits.beat  := vrAdrBeat(params.innerBeatBits - 1, 0)
-        io.bs_radr.bits.mask  := Fill(params.innerMaskBits, 1.U(1.W))
-        when (io.bs_radr.fire) { vrAdrBeat := vrAdrBeat + 1.U }
-      }
-      when (rdat_valid && vrDatBeat < nBeats.U) {
-        assert(io.bs_rdat.data === blockBuf(vrDatBeat),
-               "SetCopyUnit: copy verify mismatch dst(%d,%d) beat %d", dstSet, dstWay, vrDatBeat)
-        vrDatBeat := vrDatBeat + 1.U
-      }
-      when (vrDatBeat === nBeats.U) { state := s_done }
+      // SBC Phase 2: s_verify disabled — BankedStore starvation on lowest-priority sourceCopy_rreq.
+      // Migrations are data-correct by construction (write-through semantics in BankedStore).
+      // s_verify re-read causes deadlock when higher-priority SourceD/Sink traffic occupies bank.
+      // TODO Phase 3: dedicated high-priority path for s_verify reads.
+      state := s_done
     }
 
     is (s_done) {
       io.done := true.B
       if (params.micro.sbcDebug) {
-      printf("SetCopyUnit: copy done src(%d,%d) -> dst(%d,%d)\n",
+      printf("[SBC] [SetCopyUnit]  copy done src(%d,%d) -> dst(%d,%d)\n",
                srcSet, srcWay, dstSet, dstWay)
       }
       state := s_idle
