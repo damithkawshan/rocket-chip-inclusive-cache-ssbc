@@ -30,9 +30,6 @@ class QueuedRequest(params: InclusiveCacheParameters) extends InclusiveCacheBund
   val tag    = UInt(params.tagBits.W)
   val offset = UInt(params.offsetBits.W)
   val put    = UInt(params.putBits.W)
-  // SBC Phase 1: migration intent (set by the sub-step-4 trigger via SinkX; false everywhere else)
-  val migrate = Bool()
-  val dstSet  = UInt(params.setBits.W) // destination set for a migration (DSS coldest)
 }
 
 class FullRequest(params: InclusiveCacheParameters) extends QueuedRequest(params)

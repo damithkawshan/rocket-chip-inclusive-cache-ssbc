@@ -67,22 +67,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkE.io.e <> io.in.e
   sinkD.io.d <> io.out.d
 
-  // SBC Phase 1: the control port (io.req) carries flushes; the SBU may also inject migrate
-  // requests. Flush has priority; migrate fills idle cycles. `migrateInject` is driven by the
-  // SBC block below (inert — valid=false — when set-balancing is disabled, so the baseline path
-  // remains the direct sinkX.io.x <> io.req).
-  val migrateInject = Wire(Decoupled(new SinkXRequest(params)))
-  migrateInject.valid := false.B
-  migrateInject.bits  := 0.U.asTypeOf(new SinkXRequest(params))
-  if (params.micro.enableSetBalancing) {
-    val xarb = Module(new Arbiter(new SinkXRequest(params), 2))
-    xarb.io.in(0) <> io.req         // flush — priority
-    xarb.io.in(1) <> migrateInject  // migrate
-    sinkX.io.x <> xarb.io.out
-  } else {
-    migrateInject.ready := false.B
-    sinkX.io.x <> io.req
-  }
+  // SBC Phase 2: the control port (io.req) carries only flushes now. Migration is the demand
+  // MSHR's own eviction work (no injected requester), so the control port is wired straight
+  // through to sinkX exactly as in the baseline.
+  sinkX.io.x <> io.req
 
   io.out.b.ready := true.B // disconnected
 
@@ -196,14 +184,28 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // If no MSHR has been assigned to this set, we need to allocate one
   val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.set === request.bits.set }.reverse)
   val alloc = !setMatches.orR // NOTE: no matches also means no BC or C pre-emption on this set
-  // SBC Phase 1: identifies an injected migrate request (its source read prefers an evictable victim).
-  val isMigrate = request.bits.control && request.bits.migrate
-  // SBC Phase 1: stall any request whose set is reserved as a migration destination
+  // SBC Phase 2: migrate advice for the current allocating request. Driven by the SBC block below
+  // (defaults keep the baseline path untouched when set-balancing is disabled).
+  val adviceMigrate = WireInit(false.B)
+  val adviceDstSet  = WireInit(0.U(params.setBits.W))
+  // SBC Phase 2: stall any request whose set is reserved as a migration destination by an in-flight
+  // MSHR (dstValid). dstValid rises at the MSHR's eviction gate (== migrating), which is also when
+  // migDstSet is committed, so this term fences the whole dst set from the moment migration is real
+  // — covering the 2nd dir-read that picks dstWay. We deliberately do NOT fence on the speculative
+  // migrate-allocate window (allocate→gate): nothing is reserved in dst yet there, and fencing it
+  // would wrongly stall demand traffic on the hit / ineligible-victim path (CPU hang). A second
+  // migration racing into that window is still prevented by `!migTokenPending` in adviceMigrate.
   val dstSetConflict = mshrs.map { m =>
     m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set
   }.reduce(_ || _)
-  // SBC Phase 1: throttle — at most one migrate request in flight across all MSHRs (abort included)
-  val anyMigrating = mshrs.map(m => m.io.status.valid && m.io.status.bits.migReq).reduce(_ || _)
+  if (params.micro.sbcDebug) {
+    when (request.valid && dstSetConflict) {
+      printf(p"[SBC][SCHED] DST-FENCE blocked reqSet=${request.bits.set}\n")
+    }
+  }
+  // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
+  // destination reservation (dstValid).
+  val anyMigrating = mshrs.map(m => m.io.status.valid && m.io.status.bits.dstValid).reduce(_ || _)
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
   val blockC = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockC)) && request.bits.prio(2)
@@ -269,6 +271,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.allocate.valid := sel && will_reload
   }
 
+  // SBC Phase 2: deliver migrate advice to every MSHR; each latches it only on its own allocate.
+  mshrs.foreach { m =>
+    m.io.migAdvice.valid := adviceMigrate
+    m.io.migAdvice.bits  := adviceDstSet
+  }
+
   // Determine which of the queued requests to pop (supposing will_pop)
   val prio_requests = ~(~requests.io.valid | (requests.io.valid >> params.mshrs) | (requests.io.valid >> 2*params.mshrs))
   val pop_index = OHToUInt(Cat(mshr_selectOH, mshr_selectOH, mshr_selectOH) & prio_requests)
@@ -304,9 +312,21 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.tag := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.tag,
                                 Mux(mshr_uses_directory_for_lb,    requests.io.data.tag, request.bits.tag))
   directory.io.read.bits.preferInvalid := mshr_uses_directory_for_dread // only the migration probe
-  // SBC Phase 1: the migrate's source (allocate) read prefers a migration-eligible victim, so the
-  // MSHR's srcEligible check passes whenever the hot set holds any clean, client-free line.
-  directory.io.read.bits.preferEvictable := alloc_uses_directory && isMigrate
+  // SBC Phase 2: a demand miss to a hot migration-source set prefers a clean, client-free victim
+  // so the migrate-on-eviction gate in the MSHR finds an eligible line.
+  // SBC Phase 2b (Bug A fix): the 2nd dir-read (the dstSet probe) must ALSO prefer an evictable way,
+  // not just an invalid one. preferInvalid still wins when the dst set has a free way; when the dst
+  // set is full, preferEvictable lets the directory return a clean / client-free / non-displaced way
+  // we can silently overwrite. Without this term the dread fell back to the LFSR victim (usually
+  // dirty or client-held) on a full dst set, so every migration hit the ABORT-DST path — which is
+  // why zero migrations committed. The MSHR already requests preferEvictable on its dread bundle.
+  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
+                                            mshr_uses_directory_for_dread
+  if (params.micro.sbcDebug) {
+    when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
+      printf(p"[SBC][SCHED] DREAD-SCHED dstSet=${schedule.dread.bits.set} mshr=${mshr_select}\n")
+    }
+  }
 
   // Enqueue the request if not bypassed directly into an MSHR
   requests.io.push.valid := request.valid && queue && !bypassQueue
@@ -394,6 +414,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   setCopyUnit.io.start.bits.dstSet := schedule.copy.bits.dstSet
   setCopyUnit.io.start.bits.dstWay := schedule.copy.bits.dstWay
   setCopyUnit.io.start.bits.mshrId := mshr_select
+  if (params.micro.sbcDebug) {
+    when (schedule.copy.valid && mshr_selectOH.orR) {
+      printf(p"[SBC][SCHED] COPY-START srcSet=${schedule.copy.bits.srcSet} srcWay=${schedule.copy.bits.srcWay} dstSet=${schedule.copy.bits.dstSet} dstWay=${schedule.copy.bits.dstWay} mshr=${mshr_select}\n")
+    }
+  }
 
   // SourceD data hazard interlock
   sourceD.io.evict_req := sourceC.io.evict_req
@@ -416,35 +441,67 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.dirTap     := directory.io.tap
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
-    sbu.io.anyMigrating := anyMigrating
-    // SBC Phase 1: migration counter pulses (OR across MSHRs; throttle keeps ≤1 in flight)
+    // SBC Phase 2: migration counter pulses (OR across MSHRs; the token keeps ≤1 in flight)
     sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
     sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)
     io.sbcStats       := sbu.io.stats
 
-    // Migrate-request injection one-shot: hold a fired migrate until the in-flight one retires
-    // (anyMigrating falls), so each migrateReq produces exactly one injected SinkX request.
-    val migInFlight = RegInit(false.B)
-    when (migrateInject.fire) { migInFlight := true.B }
-    .elsewhen (RegNext(anyMigrating, false.B) && !anyMigrating) { migInFlight := false.B }
-    migrateInject.valid        := sbu.io.migrateReq.valid && !migInFlight
-    migrateInject.bits.migrate := true.B
-    migrateInject.bits.set     := sbu.io.migrateReq.bits.srcSet
-    migrateInject.bits.dstSet  := sbu.io.migrateReq.bits.dstSet
-    migrateInject.bits.address := 0.U
+    // SBC Phase 2: migrate advice for the demand-allocating set. The SBU reports the source set is
+    // hot and a cold destination exists; here we add the demand-A filter and the one-migration
+    // token. `anyMigrating` covers a reservation already raised; `migTokenPending` covers the
+    // allocate→dstValid window (one cycle) so a second migrate can't slip through.
+    val migTokenPending = RegInit(false.B)
+    val migTokenDstSet  = Reg(UInt(params.setBits.W))
+    val migPendCtr      = RegInit(0.U(4.W))  // bounds the pending fence so it can never stick
+    val isDemandA = request.bits.prio(0) && !request.bits.control
+    sbu.io.migrateQuery.valid := request.valid
+    sbu.io.migrateQuery.bits  := request.bits.set
+    val coldDst = sbu.io.migrateResp.destSet
+    // SBC Phase 2b (Q1 gate): never reserve a destination equal to the source set, nor a set
+    // already owned by an active MSHR's primary set. With anyMigrating (≤1 migration) and the
+    // dstSetConflict fence, this guarantees a single writer per directory set for the whole window.
+    val dstSelfCollision = coldDst === request.bits.set
+    val dstSetOwned      = mshrs.map { m => m.io.status.valid && m.io.status.bits.set === coldDst }.reduce(_ || _)
+    adviceMigrate := isDemandA && sbu.io.migrateResp.migrate && !anyMigrating && !migTokenPending &&
+                     !dstSelfCollision && !dstSetOwned
+    adviceDstSet  := coldDst
+    val migrateAllocFire = request.valid && request.ready && alloc && adviceMigrate
+    if (params.micro.sbcDebug) {
+      when (migrateAllocFire) {
+        printf(p"[SBC][SCHED] ADVICE-MIG srcSet=${request.bits.set} dstSet=${adviceDstSet}\n")
+      }
+    }
+    // migTokenPending only suppresses a *second* migrate-advise during the first migration's
+    // allocate→gate window (it feeds `!migTokenPending` in adviceMigrate above); it no longer
+    // fences demand traffic. Hold it until the owning MSHR raises dstValid (handoff) or a bounded
+    // timeout fires — the timeout covers the hit / ineligible-victim path where the latched advice
+    // never produces an eviction, so dstValid never rises.
+    val pendingOwnerLive = mshrs.map { m =>
+      m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === migTokenDstSet
+    }.reduce(_ || _)
+    when (migrateAllocFire) {
+      migTokenPending := true.B
+      migTokenDstSet  := adviceDstSet
+      migPendCtr      := 8.U
+    } .elsewhen (migTokenPending) {
+      when (pendingOwnerLive || migPendCtr === 0.U) { migTokenPending := false.B }
+      .otherwise                                    { migPendCtr := migPendCtr - 1.U }
+    }
 
-    // advisory queries / commit are unused in Phase 0
-    sbu.io.migrateQuery.valid := false.B
-    sbu.io.migrateQuery.bits  := 0.U
+    // advisory assoc query unused until Phase 3
     sbu.io.assocQuery.valid   := false.B
     sbu.io.assocQuery.bits    := 0.U
     // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).
-    // SBU bumps the committed counter now; the AT write on commit is step 7.
     val migCommit = mshrs.map(_.io.migCommit)
     sbu.io.commit.valid     := migCommit.reduce(_ || _)
     sbu.io.commit.bits.kind := SBCCommitKind.MIGRATE
     sbu.io.commit.bits.src  := Mux1H(migCommit, mshrs.map(_.io.status.bits.set))
     sbu.io.commit.bits.dst  := Mux1H(migCommit, mshrs.map(_.io.status.bits.dstSet))
+    if (params.micro.sbcDebug) {
+      when (sbu.io.commit.valid) {
+        printf(p"[SBC][SCHED] MIG-COMMIT srcSet=${sbu.io.commit.bits.src} dstSet=${sbu.io.commit.bits.dst}\n")
+      }
+    }
   } else {
     io.sbcStats := 0.U.asTypeOf(new SBCStats(params.setBits, params.micro.satCounterBits))
   }

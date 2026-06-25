@@ -64,10 +64,6 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val dstValid = Bool()
   val dstSet   = UInt(params.setBits.W)
   val dstWay   = UInt(params.wayBits.W)
-  // SBC Phase 1: this MSHR currently owns a migrate request (alloc..retire, abort included).
-  // Distinct from dstValid (which is the proceed-only destination reservation) so the injection
-  // throttle also covers the abort window.
-  val migReq   = Bool()
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -114,6 +110,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val nestedwb  = Flipped(new NestedWriteback(params))
     // SBC Phase 1: SetCopyUnit done pulse for this MSHR (routed by mshrId in Scheduler)
     val copy_done = Input(Bool())
+    // SBC Phase 2: migrate advice latched at allocate (valid = migrate allowed; bits = dstSet)
+    val migAdvice = Flipped(Valid(UInt(params.setBits.W)))
     // SBC Phase 1: migration counter pulses to the SBU (attempted at alloc, aborted/committed at retire)
     val migAttempt = Output(Bool())
     val migAbort   = Output(Bool())
@@ -164,8 +162,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val w_grantack       = RegInit(true.B)
   val s_writeback      = RegInit(true.B) // W  w_*
 
-  // SBC Phase 1: migration scoreboard (mirrors s_release/w_releaseack). Inert by default;
-  // cleared only when a migration request (request.migrate) is set up below.
+  // SBC Phase 2: migration scoreboard (mirrors s_release/w_releaseack). Inert by default;
+  // cleared only when the A-channel eviction decides to migrate (migrate gate below).
   val s_copy           = RegInit(true.B)  // kick the SetCopyUnit via the copy lane
   val w_copy           = RegInit(true.B)  // SetCopyUnit reported done (io.copy_done)
   val s_dmeta          = RegInit(true.B)  // dir-write #1: install displaced @ (dstSet,dstWay)
@@ -175,7 +173,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migSrcWay        = Reg(UInt(params.wayBits.W))
   val s_dread          = RegInit(true.B)  // schedule the 2nd dir-read (dstSet, preferInvalid)
   val w_dread          = RegInit(true.B)  // waiting for the 2nd dir-read result
-  val migAborting      = RegInit(false.B) // migration is aborting (retire => aborted++, no commit)
+  // SBC Phase 2: migrate advice latched at allocate (valid = migrate allowed; bits = dstSet)
+  val migAdviceValidReg = RegInit(false.B)
+  val migAdviceDstReg   = Reg(UInt(params.setBits.W))
 
   // SBC Phase 1: migration counter pulses (driven false here; asserted in the setup/retire logic).
   val migAttempt = WireInit(false.B)
@@ -221,7 +221,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.bits.dstValid := migrating
   io.status.bits.dstSet   := migDstSet
   io.status.bits.dstWay   := migDstWay
-  io.status.bits.migReq   := request_valid && request.control && request.migrate
   // The w_grantfirst in nestC is necessary to deal with:
   //   acquire waiting for grant, inner release gets queued, outer probe -> inner probe -> deadlock
   // ... this is possible because the release+probe can be for same set, but different tag
@@ -237,7 +236,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // home way. mig_ready holds the home-invalidate (and retire) until #1 has gone out.
   val mig_dir1  = migrating && !s_dmeta && w_copy
   val mig_ready = !migrating || (s_dmeta && w_dread)
-  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe
+  // SBC Phase 2: while migrating, hold the demand Acquire until the victim copy has been fully
+  // read (w_copy). This sequences the 2nd dir-read + copy first and provides the A2 copy<->refill
+  // interlock (the memory refill of (s,vWay) cannot precede copy-read-done).
+  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy)
   io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
   io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
   io.schedule.bits.d.valid := !s_execute && w_pprobeack && w_grant
@@ -251,18 +253,28 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.copy.bits.srcWay := migSrcWay
   io.schedule.bits.copy.bits.dstSet := migDstSet
   io.schedule.bits.copy.bits.dstWay := migDstWay
-  // SBC Phase 1: 2nd dir-read of dstSet — preferInvalid so the result is a free way (or "set full")
+  // SBC Phase 2b: 2nd dir-read of dstSet — prefer a free (INVALID) way, else a clean/client-free
+  // evictable way we can silently overwrite (no writeback, no probe). Falls back if neither exists.
   io.schedule.bits.dread.valid         := migrating && !s_dread
   io.schedule.bits.dread.bits.set      := migDstSet
   io.schedule.bits.dread.bits.tag      := 0.U
   io.schedule.bits.dread.bits.preferInvalid := true.B
-  io.schedule.bits.dread.bits.preferEvictable := false.B  // dst probe wants a free way, not an evictable one
+  io.schedule.bits.dread.bits.preferEvictable := true.B  // 2b: accept a clean evictable dst way
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||
                        io.schedule.bits.dir.valid || io.schedule.bits.copy.valid || io.schedule.bits.dread.valid
 
   // Schedule completions
   when (io.schedule.ready) {
+    if (params.micro.sbcDebug) {
+      when (migrating) {
+        printf(p"[SBC] SCHED-FIRE srcSet=${request.set} dstSet=${migDstSet} a_valid=${io.schedule.bits.a.valid} dread=${migrating && !s_dread} copy=${migrating && !s_copy} dir1=${mig_dir1} retire=${no_wait && mig_ready} s_acq=${s_acquire} w_copy=${w_copy} w_dread=${w_dread}\n")
+      }
+      // BUG-A smoke detector: s_acquire being marked done without the Acquire actually firing
+      when (s_release && s_pprobe && !s_acquire && !io.schedule.bits.a.valid) {
+        printf(p"[SBC] BUG-A-DETECT srcSet=${request.set} s_acquire SET WITHOUT ACQUIRE FIRING mig=${migrating} w_copy=${w_copy} w_dread=${w_dread}\n")
+      }
+    }
                                     s_rprobe     := true.B
     when (w_rprobeackfirst)       { s_release    := true.B }
                                     s_pprobe     := true.B
@@ -280,10 +292,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (no_wait && mig_ready) {
       request_valid := false.B
       meta_valid := false.B
+      // SBC Phase 2: a still-migrating MSHR at retire committed its migration (commit{MIGRATE}).
+      // A dst-full abort already cleared `migrating` (and pulsed migAbort) on the fallback path.
+      migCommit := migrating
       migrating := false.B
-      // SBC Phase 1: migration retire accounting (one pulse, this MSHR only)
-      migAbort  := migAborting                     // aborted++   if this retire was an abort
-      migCommit := request.migrate && !migAborting // migrations++ (commit{MIGRATE}) if it proceeded
     }
   }
 
@@ -377,7 +389,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (io.schedule.bits.a.valid && io.schedule.ready) {
       printf(p"[SBC] OUTER-A addr=0x${Hexadecimal(params.expandAddress(io.schedule.bits.a.bits.tag, io.schedule.bits.a.bits.set, 0.U))} " +
              p"set=${io.schedule.bits.a.bits.set} perm=${!io.schedule.bits.a.bits.block} param=${io.schedule.bits.a.bits.param} hit=${meta.hit} " +
-             p"ctrl=${request.control} mig=${request.migrate} op=${request.opcode} prio=${request.prio.asUInt}\n")
+             p"ctrl=${request.control} mig=${migrating} op=${request.opcode} prio=${request.prio.asUInt}\n")
     }
   }
   io.schedule.bits.b.bits.param   := Mux(!s_rprobe, toN, Mux(request.prio(1), request.param, Mux(req_needT, toN, toB)))
@@ -402,12 +414,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.d.bits.bad     := bad_grant
   io.schedule.bits.e.bits.sink    := sink
   io.schedule.bits.x.bits.fail    := false.B
-  io.schedule.bits.x.bits.migrate := request.control && request.migrate // SBC: abort-ack ≠ flush
   io.schedule.bits.dir.bits.set   := Mux(mig_dir1, migDstSet, request.set)
-  io.schedule.bits.dir.bits.way   := Mux(mig_dir1, migDstWay, Mux(migrating, migSrcWay, meta.way))
+  io.schedule.bits.dir.bits.way   := Mux(mig_dir1, migDstWay, meta.way)
+  // SBC Phase 2: dir-write #1 (mig_dir1) installs the displaced copy at (dstSet,dstWay); dir-write
+  // #2 is the ordinary demand refill that rewrites the freed home way (s,vWay) with the new line.
   io.schedule.bits.dir.bits.data  := Mux(mig_dir1, displacedEntry,
-                                     Mux(migrating, invalid,
-                                     Mux(!s_release, invalid, WireInit(new DirectoryEntry(params), init = final_meta_writeback))))
+                                     Mux(!s_release, invalid, WireInit(new DirectoryEntry(params), init = final_meta_writeback)))
 
   // Coverage of state transitions
   def cacheState(entry: DirectoryEntry, hit: Bool) = {
@@ -602,6 +614,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 1: the SetCopyUnit finished the block copy for this MSHR's migration
   when (io.copy_done) {
     w_copy := true.B
+    if (params.micro.sbcDebug) {
+      printf(p"[SBC] COPY-DONE srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migDstSet} dstWay=${migDstWay}\n")
+    }
   }
 
   // Bootstrap new requests
@@ -637,23 +652,38 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!request_valid || (no_wait && io.schedule.fire))
     request_valid := true.B
     request := io.allocate.bits
+    // SBC Phase 2: latch migrate advice for this set (suppressed on repeat allocations).
+    migAdviceValidReg := io.migAdvice.valid && !io.allocate.bits.repeat
+    migAdviceDstReg   := io.migAdvice.bits
   }
 
   // Create execution plan
   when (io.directory.valid && migrating && !w_dread) {
-    // SBC Phase 1: 2nd dir-read (dstSet) result. Decide proceed vs abort; do NOT touch meta — it
-    // still holds the srcSet victim needed for the displaced install + home invalidate.
+    // SBC Phase 2: 2nd dir-read (dstSet) result. Decide proceed vs fall back; do NOT touch meta —
+    // it still holds the srcSet victim needed for the displaced install + the copy source.
+    if (params.micro.sbcDebug) {
+      printf(p"[SBC] DREAD-RESULT srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way} state=${io.directory.bits.state} dirty=${io.directory.bits.dirty} clients=${io.directory.bits.clients} displaced=${io.directory.bits.displaced}\n")
+    }
     w_dread := true.B
-    when (io.directory.bits.state === INVALID) { // preferInvalid returned a free destination way
+    // 2b: accept a free (INVALID) way, or a clean/client-free/non-displaced way we can silently
+    // overwrite (coherence-identical to a normal clean-victim eviction — no writeback, no probe).
+    val dstFree      = io.directory.bits.state === INVALID
+    val dstEvictable = io.directory.bits.state =/= INVALID && !io.directory.bits.dirty &&
+                       !io.directory.bits.clients.orR && !io.directory.bits.displaced
+    when (dstFree || dstEvictable) {
       migDstWay   := io.directory.bits.way
-      s_copy      := false.B  // now run: copy → dir-write #1 (displaced) → dir-write #2 (invalidate)
+      s_copy      := false.B  // now run: copy → dir-write #1 (displaced) → dir-write #2 (refill)
       w_copy      := false.B
       s_dmeta     := false.B
       s_writeback := false.B
-    } .otherwise {                               // dstSet full → abort
-      migrating   := false.B
-      migAborting := true.B
-      s_flush     := false.B  // retire via the migrate-tagged x-ack
+      if (params.micro.sbcDebug) {
+        when (!dstFree) { printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}\n") }
+      }
+    } .otherwise {                               // dstSet has no free or evictable way → fall back
+      migrating    := false.B
+      migAbort     := true.B   // aborted++
+      s_release    := false.B  // release the (clean, client-free) victim and refill normally
+      w_releaseack := false.B
       if (params.micro.sbcDebug) { printf(p"[SBC] ABORT-DST srcSet=${request.set} dstSet=${migDstSet}\n") }
     }
   } .elsewhen (io.directory.valid || (io.allocate.valid && io.allocate.bits.repeat)) {
@@ -692,7 +722,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_dmeta          := true.B
     s_dread          := true.B
     w_dread          := true.B
-    migAborting      := false.B
     migrating        := false.B
 
     // For C channel requests (ie: Release[Data])
@@ -714,59 +743,54 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     }
     // For X channel requests (ie: flush)
     .elsewhen (new_request.control && params.control.B) { // new_request.prio(0)
-      when (new_request.migrate) {
-        // SBC Phase 1: migration setup. srcEligible comes from this read of srcSet (victim must be
-        // valid, clean, client-free, non-displaced). If eligible, issue a 2nd dir-read of dstSet
-        // (preferInvalid); its result (handled above) picks the free dstWay or aborts if full.
-        migAttempt := true.B // attempted++ (every migrate that allocates)
-        val srcEligible = new_meta.state =/= INVALID && !new_meta.dirty &&
-                          !new_meta.clients.orR && !new_meta.displaced
-        when (srcEligible) {
-          migrating := true.B
-          migDstSet := new_request.dstSet
-          migSrcWay := new_meta.way
-          s_dread   := false.B  // request the 2nd dir-read of dstSet (preferInvalid)
-          w_dread   := false.B  // s_copy/s_dmeta/s_writeback are set by that read's result
-        } .otherwise {
-          // src ineligible → abort now; retire via the migrate-tagged x-ack (aborted++ at retire)
-          migAborting := true.B
-          s_flush     := false.B
-          if (params.micro.sbcDebug) {
-            printf(p"[SBC] ABORT-SRC set=${new_request.set} state=${new_meta.state} dirty=${new_meta.dirty} clients=${new_meta.clients} disp=${new_meta.displaced}\n")
-          }
-        }
-      } .otherwise {
-        s_flush := false.B
-        // Do we need to actually do something?
-        when (new_meta.hit) {
-          s_release := false.B
-          w_releaseack := false.B
-          // Do we need to shoot-down inner caches?
-          when ((!params.firstLevel).B && (new_meta.clients =/= 0.U)) {
-            s_rprobe := false.B
-            w_rprobeackfirst := false.B
-            w_rprobeacklast := false.B
-          }
+      s_flush := false.B
+      // Do we need to actually do something?
+      when (new_meta.hit) {
+        s_release := false.B
+        w_releaseack := false.B
+        // Do we need to shoot-down inner caches?
+        when ((!params.firstLevel).B && (new_meta.clients =/= 0.U)) {
+          s_rprobe := false.B
+          w_rprobeackfirst := false.B
+          w_rprobeacklast := false.B
         }
       }
     }
     // For A channel requests
     .otherwise { // new_request.prio(0) && !new_request.control
-      if (params.micro.sbcDebug) {
-        when (new_request.control || new_request.migrate) {
-          printf(p"[SBC] LEAK demand-path control=${new_request.control} migrate=${new_request.migrate} set=${new_request.set} tag=${new_request.tag} prio=${new_request.prio.asUInt} alloc=${io.allocate.valid}\n")
-        }
-      }
       s_execute := false.B
       // Do we need an eviction?
       when (!new_meta.hit && new_meta.state =/= INVALID) {
-        s_release := false.B
-        w_releaseack := false.B
-        // Do we need to shoot-down inner caches?
-        when ((!params.firstLevel).B & (new_meta.clients =/= 0.U)) {
-          s_rprobe := false.B
-          w_rprobeackfirst := false.B
-          w_rprobeacklast := false.B
+        // SBC Phase 2: migrate-on-eviction. If this set is a hot migration source (advice latched
+        // at allocate) and the victim is clean, client-free, and not already displaced, migrate the
+        // victim to a cold set instead of releasing it; the demand refill then reuses the freed way.
+        // Otherwise fall through to a normal eviction (bit-identical to baseline).
+        val migEligible = !new_meta.dirty && !new_meta.clients.orR && !new_meta.displaced
+        if (params.micro.sbcDebug) {
+          printf(p"[SBC] EVICT-ASSESS srcSet=${new_request.set} way=${new_meta.way} adviceValid=${migAdviceValidReg} adviceDst=${migAdviceDstReg} eligible=${migEligible} dirty=${new_meta.dirty} clients=${new_meta.clients} displaced=${new_meta.displaced}\n")
+        }
+        when (params.micro.enableSetBalancing.B && migAdviceValidReg && migEligible) {
+          if (params.micro.sbcDebug) {
+            printf(p"[SBC] MIG-START srcSet=${new_request.set} srcWay=${new_meta.way} dstSet=${migAdviceDstReg}\n")
+          }
+          migrating  := true.B
+          migDstSet  := migAdviceDstReg
+          migSrcWay  := new_meta.way
+          s_dread    := false.B  // 2nd dir-read of dstSet (preferInvalid) picks dstWay or falls back
+          w_dread    := false.B
+          migAttempt := true.B   // attempted++
+        } .otherwise {
+          if (params.micro.sbcDebug) {
+            printf(p"[SBC] EVICT-NORMAL srcSet=${new_request.set} srcWay=${new_meta.way}\n")
+          }
+          s_release := false.B
+          w_releaseack := false.B
+          // Do we need to shoot-down inner caches?
+          when ((!params.firstLevel).B & (new_meta.clients =/= 0.U)) {
+            s_rprobe := false.B
+            w_rprobeackfirst := false.B
+            w_rprobeacklast := false.B
+          }
         }
       }
       // Do we need an acquire?

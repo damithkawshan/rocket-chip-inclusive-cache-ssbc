@@ -64,14 +64,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     }))
     // SBC Phase 1: SW arm pulse from MMIO SBC_BalanceSet (1-cycle valid+set).
     val arm = Flipped(Valid(UInt(params.setBits.W)))
-    // SBC Phase 1: autonomous migrate request — high while an armed set is hot (one in flight).
-    val migrateReq = Valid(new Bundle {
-      val srcSet = UInt(params.setBits.W)
-      val dstSet = UInt(params.setBits.W)
-    })
-    // SBC Phase 1: throttle — high while any MSHR owns a migrate request (≤1 in flight).
-    val anyMigrating = Input(Bool())
-    // SBC Phase 1: migration counter pulses from the MSHRs (attempted at alloc, aborted at retire).
+    // SBC Phase 2: migration counter pulses from the MSHRs (attempted at the migrate decision,
+    // aborted at the dst-full fallback).
     val migAttempt = Input(Bool())
     val migAbort   = Input(Bool())
     // MMIO
@@ -107,9 +101,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.update.bits.set   := tapSet
   dss.io.update.bits.level := nxt
 
-  // Advisory query response (legacy, unused by the active path which is io.migrateReq below).
-  io.migrateResp.migrate    := false.B
-  io.migrateResp.destSet    := dss.io.coldestSet
+  // Advisory query responses. migrateResp is the Phase-2 migrate advice; it is assigned below,
+  // after `armed`/thresholds are declared.
   io.assocResp.activeSource := at(io.assocQuery.bits).valid && !at(io.assocQuery.bits).sd
   io.assocResp.assocSet     := at(io.assocQuery.bits).assocSet
 
@@ -123,16 +116,14 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   when (io.dirTap.valid && nxt < tLo) { armed(tapSet)     := false.B } // cooled -> disarm
   when (io.arm.valid)                 { armed(io.arm.bits) := true.B }  // SW arm (wins same-cycle)
 
-  // ---- SBC migrate trigger: request-driven, 1-cycle pulse on the tap set --------------------
-  // Fire the moment the just-touched set crosses T_hi, provided a genuinely cold destination
-  // exists (coldestLevel < T_lo) and no migration is already in flight.
-  // Using `nxt` (post-update sat) means we react the same cycle the threshold is crossed.
-  // The hot-src / cold-dst invariant makes the old `coldestSet =/= pickSet` guard redundant.
-  val srcHot = (params.micro.sbcAutoMigrate.B || armed(tapSet)) && nxt >= tHi
-  val dstCold = dss.io.coldestValid && dss.io.coldestLevel < tLo
-  io.migrateReq.valid       := io.dirTap.valid && srcHot && dstCold && !io.anyMigrating
-  io.migrateReq.bits.srcSet := tapSet
-  io.migrateReq.bits.dstSet := dss.io.coldestSet
+  // ---- SBC Phase 2: migrate advice for the demand-allocating set ------------------------------
+  // The Scheduler queries with the allocating set; the MSHR re-checks victim eligibility and the
+  // Scheduler ANDs in the one-migration token. "migrate" = source is hot (armed/auto + sat>=T_hi)
+  // AND a genuinely cold destination exists.
+  val qSet = io.migrateQuery.bits
+  io.migrateResp.migrate := (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi) &&
+                            dss.io.coldestValid && (dss.io.coldestLevel < tLo)
+  io.migrateResp.destSet := dss.io.coldestSet
 
   // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
   // attempted/aborted come from dedicated MSHR pulses; migrations from commit{MIGRATE}.
@@ -188,10 +179,6 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // ---- ARM / migrate-request events ----
     when (io.arm.valid) {
       printf(p"[SBC] ARM   set=${io.arm.bits} sat=${sat(io.arm.bits)} cycle=${cyc}\n")
-    }
-    when (io.migrateReq.valid) {
-      printf(p"[SBC] MIGREQ src=${tapSet} (sat=${nxt}) " +
-             p"dst=${dss.io.coldestSet} (coldLevel=${dss.io.coldestLevel}) cycle=${cyc}\n")
     }
 
     // ---- periodic per-set saturation dump + DSS snapshot ----
