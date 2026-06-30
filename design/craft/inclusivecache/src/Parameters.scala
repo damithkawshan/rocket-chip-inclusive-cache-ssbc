@@ -128,7 +128,11 @@ case class InclusiveCacheMicroParameters(
   migrationClearThreshold: Int = 2,       // T_lo: stop forming associations below this (hysteresis)
   dssEntries:              Int = 8,         // Destination Set Selector candidate slots
   sbcDebug:                Boolean = false, // sim-only SBC debug printfs (nothing elaborated when off)
-  sbcAutoMigrate:          Boolean = false) // debug: fire one migration without SW ARM (ignores armed[])
+  sbcAutoMigrate:          Boolean = false, // debug: fire one migration without SW ARM (ignores armed[])
+  // --- SBC debug repro knobs (compile-time; zero hardware when off) ---
+  sbcForceDstSet:          Int = -1,        // >=0: force every migration to target this set (-1 = off, DSS pick)
+  sbcGateStallCycles:      Int = 0)         // >0: hold the dst fence (dstValid) low N extra cycles after a
+                                            //     migration starts, widening the [advice->gate] collision window
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
@@ -137,6 +141,7 @@ case class InclusiveCacheMicroParameters(
   require (satCounterBits > 0)
   require (migrationThreshold >= migrationClearThreshold)
   require (dssEntries >= 1)
+  require (sbcGateStallCycles >= 0)
 }
 
 case class InclusiveCacheControlParameters(

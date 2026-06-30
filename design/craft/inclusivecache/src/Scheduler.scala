@@ -188,24 +188,19 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // (defaults keep the baseline path untouched when set-balancing is disabled).
   val adviceMigrate = WireInit(false.B)
   val adviceDstSet  = WireInit(0.U(params.setBits.W))
-  // SBC Phase 2: stall any request whose set is reserved as a migration destination by an in-flight
-  // MSHR (dstValid). dstValid rises at the MSHR's eviction gate (== migrating), which is also when
-  // migDstSet is committed, so this term fences the whole dst set from the moment migration is real
-  // — covering the 2nd dir-read that picks dstWay. We deliberately do NOT fence on the speculative
-  // migrate-allocate window (allocate→gate): nothing is reserved in dst yet there, and fencing it
-  // would wrongly stall demand traffic on the hit / ineligible-victim path (CPU hang). A second
-  // migration racing into that window is still prevented by `!migTokenPending` in adviceMigrate.
+  // SBC Phase 2 (dst-collision fix): fence a live migration's destination set. A request whose set is
+  // a migrant's dstSet must neither be consumed (request.ready) NOR allocate an MSHR / read the
+  // directory for one — it is held at the sink until the migration retires and dstValid clears.
+  // Gating request.ready alone is insufficient: the fresh-allocation path still committed. So the same
+  // condition also gates allocation via `allocReady`. Bit-exact when SBC off (dstSetConflict is const-false).
   val dstSetConflict = mshrs.map { m =>
     m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set
   }.reduce(_ || _)
-  if (params.micro.sbcDebug) {
-    when (request.valid && dstSetConflict) {
-      printf(p"[SBC][SCHED] DST-FENCE blocked reqSet=${request.bits.set}\n")
-    }
-  }
+  val allocReady = alloc && !dstSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
   // destination reservation (dstValid).
   val anyMigrating = mshrs.map(m => m.io.status.valid && m.io.status.bits.dstValid).reduce(_ || _)
+
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
   val blockC = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockC)) && request.bits.prio(2)
@@ -299,7 +294,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // Fanout the request to the appropriate handler (if any)
   val bypassQueue = schedule.reload && bypassMatches
   val request_alloc_cases =
-     (alloc && !mshr_uses_directory_assuming_no_bypass && mshr_free) ||
+     (allocReady && !mshr_uses_directory_assuming_no_bypass && mshr_free) ||
      (nestB && !mshr_uses_directory_assuming_no_bypass && !bc_mshr.io.status.valid && !c_mshr.io.status.valid) ||
      (nestC && !mshr_uses_directory_assuming_no_bypass && !c_mshr.io.status.valid)
   request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) && !dstSetConflict
@@ -339,7 +334,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   val mshr_insertOH = ~(leftOR(~mshr_validOH) << 1) & ~mshr_validOH & prioFilter
   (mshr_insertOH.asBools zip mshrs) map { case (s, m) =>
-    when (request.valid && alloc && s && !mshr_uses_directory_assuming_no_bypass) {
+    when (request.valid && allocReady && s && !mshr_uses_directory_assuming_no_bypass) {
       m.io.allocate.valid := true.B
       m.io.allocate.bits.viewAsSupertype(chiselTypeOf(request.bits)) := request.bits
       m.io.allocate.bits.repeat := false.B
@@ -456,7 +451,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val isDemandA = request.bits.prio(0) && !request.bits.control
     sbu.io.migrateQuery.valid := request.valid
     sbu.io.migrateQuery.bits  := request.bits.set
-    val coldDst = sbu.io.migrateResp.destSet
+    // SBC debug repro: sbcForceDstSet (>=0) pins every migration's destination to a fixed set so the
+    // dst-collision race is reproducible. Off (-1) = normal DSS pick (Scala if -> zero hardware off).
+    // We override only WHERE a migration goes, not WHETHER — `migrateResp.migrate` (source must be
+    // hot) and the `dstSetOwned` guard below are preserved, so the natural race is unchanged.
+    val coldDst = if (params.micro.sbcForceDstSet >= 0) params.micro.sbcForceDstSet.U(params.setBits.W)
+                  else sbu.io.migrateResp.destSet
     // SBC Phase 2b (Q1 gate): never reserve a destination equal to the source set, nor a set
     // already owned by an active MSHR's primary set. With anyMigrating (≤1 migration) and the
     // dstSetConflict fence, this guarantees a single writer per directory set for the whole window.

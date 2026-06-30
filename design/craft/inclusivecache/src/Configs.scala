@@ -59,7 +59,10 @@ class WithInclusiveCache(
   // (Phase 0 is observation-only: no datapath/behavior change.) Set false for a quiet build.
   enableSetBalancing: Boolean = true,
   sbcDebug: Boolean = true,
-  sbcAutoMigrate: Boolean = false
+  sbcAutoMigrate: Boolean = false,
+  // SBC debug repro knobs (off by default; zero hardware when off)
+  sbcForceDstSet: Int = -1,
+  sbcGateStallCycles: Int = 0
 ) extends Config((site, here, up) => {
   case InclusiveCacheKey => InclusiveCacheParams(
       sets = (capacityKB * 1024)/(site(CacheBlockBytes) * nWays * up(SubsystemBankedCoherenceKey, site).nBanks),
@@ -111,7 +114,9 @@ class WithInclusiveCache(
         outerBuf = bufOuterInterior,
         enableSetBalancing = enableSetBalancing,
         sbcDebug = sbcDebug,
-        sbcAutoMigrate = sbcAutoMigrate),
+        sbcAutoMigrate = sbcAutoMigrate,
+        sbcForceDstSet = sbcForceDstSet,
+        sbcGateStallCycles = sbcGateStallCycles),
       l2Ctrl))
 
     def skipMMIO(x: TLClientParameters) = {

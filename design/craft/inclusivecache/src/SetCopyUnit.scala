@@ -231,4 +231,58 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
       state := s_idle
     }
   }
+
+  // SBC stall classifier (sbcDebug only — zero hardware when off). Each cycle we are mid-copy,
+  // classify why the copy port is not advancing so we can tell apart:
+  //   ARB-STALL    : port valid but the BankedStore arbiter didn't grant (lowest-priority starvation).
+  //   HAZARD-STALL : port valid deasserted because copy_safe/copy_wsafe (RaW/WaR) is low.
+  //   DEGENERATE   : in a copy state but the port never even asserts valid (H2: FSM/data-path bug).
+  // stallCtr counts cycles since the last copy-port fire and RESETS on a fire. Read it as:
+  //   grows monotonically, never resets -> H1 true starvation (a priority bump on the copy port helps);
+  //   hits a bound then resets each beat -> bounded delay, reorder buys nothing;
+  //   port fires but the beat counter is stuck -> H2 data-path bug, not priority.
+  // No assert — we deliberately let the sim run to watch the counter saturate vs reset.
+  if (params.micro.sbcDebug) {
+    val STALL_W  = 14
+    val stallMax = ((1 << STALL_W) - 1).U
+    val stallCtr = RegInit(0.U(STALL_W.W))   // cycles since last copy-port fire
+    val hazCtr   = RegInit(0.U(STALL_W.W))   // subset: cycles blocked specifically by a hazard
+
+    val active    = (state =/= s_idle) && (state =/= s_done)
+    val portValid = io.bs_radr.valid || io.bs_wadr.valid
+    val portFire  = io.bs_radr.fire  || io.bs_wadr.fire
+    val curBeat   = Mux(state === s_write,  wrBeat,
+                    Mux(state === s_verify, vrAdrBeat, rdAdrBeat))
+
+    // We *wanted* to drive the port this cycle but a hazard held valid low.
+    val hazBlocked = (state === s_wsafe                          && !io.copy_wsafe) ||
+                     (state === s_read  && rdAdrBeat < nBeats.U  && !io.copy_safe)  ||
+                     (state === s_write && wrBeat    < nBeats.U  && !io.copy_wsafe)
+    // Port asserted valid but lost arbitration (no fire this cycle).
+    val arbBlocked = portValid && !portFire
+
+    when (portFire || !active) {
+      stallCtr := 0.U
+      hazCtr   := 0.U
+    } .otherwise {
+      stallCtr := Mux(stallCtr === stallMax, stallMax, stallCtr + 1.U)
+      when (hazBlocked) { hazCtr := Mux(hazCtr === stallMax, stallMax, hazCtr + 1.U) }
+    }
+
+    // Emit exactly once as the counter crosses each escalating threshold.
+    val cross = active && !portFire &&
+      (stallCtr === 64.U || stallCtr === 256.U || stallCtr === 1024.U || stallCtr === 4096.U)
+    when (cross) {
+      when (hazBlocked) {
+        printf("[SBC] [SetCopyUnit]  STALL HAZARD-STALL state=%d beat=%d cyc=%d hazCyc=%d safe=%d wsafe=%d\n",
+          state, curBeat, stallCtr, hazCtr, io.copy_safe, io.copy_wsafe)
+      } .elsewhen (arbBlocked) {
+        printf("[SBC] [SetCopyUnit]  STALL ARB-STALL state=%d beat=%d cyc=%d (port valid, BankedStore not ready)\n",
+          state, curBeat, stallCtr)
+      } .otherwise {
+        printf("[SBC] [SetCopyUnit]  STALL DEGENERATE state=%d beat=%d cyc=%d (port idle in copy state, H2 candidate)\n",
+          state, curBeat, stallCtr)
+      }
+    }
+  }
 }

@@ -139,17 +139,27 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val victimLTE  = Cat(victimSums.map { _ <= victimLFSR }.reverse)
   val victimSimp = Cat(0.U(1.W), victimLTE(params.cache.ways-1, 1), 1.U(1.W))
   val victimWayOHLFSR = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
-  // SBC Phase 1: never victimize a displaced way; prefer invalid, else the LFSR victim among
-  // non-displaced ways (preferInvalid makes "destination set full?" a precise test).
+  // SBC: prefer invalid, else the LFSR victim among non-displaced ways (preferInvalid makes
+  // "destination set full?" a precise test). Displaced ways are only victimized as a last resort —
+  // see the displaced-reclaim tier below.
   val invalidWayOH   = Cat(ways.map(_.state === INVALID).reverse)
   val nonDisplacedOH = Cat(ways.map(!_.displaced).reverse)
   val lfsrVictimOH   = victimWayOHLFSR & nonDisplacedOH
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
   // writeback), no clients (no probe), not displaced. The migration source read prefers one.
   val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
+  // SBC Phase 2: last-resort displaced reclaim. Displaced ways are excluded from every tier above, so
+  // a set that fills with them would have victimWayOH = 0 and trip the PopCount assert below. When no
+  // non-displaced way exists, victimize a displaced way (lowest priority — taken only when nothing
+  // native is left). Safe: a displaced entry is clean + client-free by construction (the MSHR install
+  // invariant), so the MSHR drops it silently (no writeback, no probe). When SBC is off no way is ever
+  // displaced, so nonDisplacedOH is all-ones and this branch is unreachable — baseline-exact.
+  val displacedOH = ~nonDisplacedOH
   val victimWayOH = Mux(preferInvalid && invalidWayOH.orR, PriorityEncoderOH(invalidWayOH),
                     Mux(preferEvictable && evictableOH.orR, PriorityEncoderOH(evictableOH),
-                    Mux(lfsrVictimOH.orR, lfsrVictimOH, PriorityEncoderOH(nonDisplacedOH))))
+                    Mux(lfsrVictimOH.orR, lfsrVictimOH,
+                    Mux(nonDisplacedOH.orR, PriorityEncoderOH(nonDisplacedOH),
+                    PriorityEncoderOH(displacedOH)))))
   val victimWay = OHToUInt(victimWayOH)
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone

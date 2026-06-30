@@ -218,7 +218,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.bits.blockC := !meta_valid
   io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
   // SBC Phase 1: drive the migration reservation while this MSHR owns a migration
-  io.status.bits.dstValid := migrating
+  if (params.micro.sbcGateStallCycles > 0) {
+    // SBC debug repro FALLBACK: deliberately hold the destination fence (dstValid) low for the first
+    // N cycles after `migrating` rises, widening the unfenced [advice->gate] window so a hammering
+    // demand reliably collides with the migrant. Internal migrate sequencing uses `migrating`, not
+    // this status bit, so only the external fence is delayed. Zero hardware unless the knob is set.
+    val gateCtr = RegInit(0.U(log2Ceil(params.micro.sbcGateStallCycles + 1).W))
+    when (!migrating)                                        { gateCtr := 0.U }
+    .elsewhen (gateCtr =/= params.micro.sbcGateStallCycles.U) { gateCtr := gateCtr + 1.U }
+    io.status.bits.dstValid := migrating && (gateCtr === params.micro.sbcGateStallCycles.U)
+  } else {
+    io.status.bits.dstValid := migrating
+  }
   io.status.bits.dstSet   := migDstSet
   io.status.bits.dstWay   := migDstWay
   // The w_grantfirst in nestC is necessary to deal with:
@@ -371,7 +382,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   displacedEntry.tag       := meta.tag
   displacedEntry.displaced := true.B
   assert(!mig_dir1 || (!meta.dirty && !meta.clients.orR), "migrate source must be clean+client-free")
-  assert(!(meta_valid && meta.displaced && (!s_release || !s_writeback)), "SBC: release/writeback of a displaced victim")
+  // SBC: a displaced victim must never be RELEASED — its address maps to a different set than the one
+  // it sits in, so a Release would carry the wrong address. It is dropped silently instead (see the
+  // displaced-reclaim branch in the eviction logic). The directory writeback IS allowed: reclaim
+  // overwrites the displaced way with a fresh native line (final_meta_writeback.displaced = false).
+  assert(!(meta_valid && meta.displaced && !s_release), "SBC: release of a displaced victim (wrong address); displaced victims must be dropped silently")
 
   // Just because a client says BtoT, by the time we process the request he may be N.
   // Therefore, we must consult our own meta-data state to confirm he owns the line still.
@@ -665,8 +680,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       printf(p"[SBC] DREAD-RESULT srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way} state=${io.directory.bits.state} dirty=${io.directory.bits.dirty} clients=${io.directory.bits.clients} displaced=${io.directory.bits.displaced}\n")
     }
     w_dread := true.B
-    // 2b: accept a free (INVALID) way, or a clean/client-free/non-displaced way we can silently
-    // overwrite (coherence-identical to a normal clean-victim eviction — no writeback, no probe).
+    // 2b: accept a free (INVALID) way, or a clean/client-free/non-displaced way we silently overwrite
+    // (coherence-identical to a normal clean-victim eviction — no writeback, no probe). The dst set is
+    // fenced at allocation (Scheduler dstSetConflict → allocReady), so no other MSHR can be on it during
+    // the copy — a collision can no longer reach here.
     val dstFree      = io.directory.bits.state === INVALID
     val dstEvictable = io.directory.bits.state =/= INVALID && !io.directory.bits.dirty &&
                        !io.directory.bits.clients.orR && !io.directory.bits.displaced
@@ -679,7 +696,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       if (params.micro.sbcDebug) {
         when (!dstFree) { printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}\n") }
       }
-    } .otherwise {                               // dstSet has no free or evictable way → fall back
+    } .otherwise {                               // dst set has no free or evictable way → fall back
       migrating    := false.B
       migAbort     := true.B   // aborted++
       s_release    := false.B  // release the (clean, client-free) victim and refill normally
@@ -779,6 +796,16 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           s_dread    := false.B  // 2nd dir-read of dstSet (preferInvalid) picks dstWay or falls back
           w_dread    := false.B
           migAttempt := true.B   // attempted++
+        } .elsewhen (new_meta.displaced) {
+          // SBC Phase 2: reclaim a displaced victim (the last-resort directory victim). A displaced
+          // line is clean + client-free by construction and its address maps to a DIFFERENT set than
+          // the one it sits in, so it can be neither written back nor released — a Release would carry
+          // the wrong address (this is what the displaced-victim assert below guards). Drop it
+          // silently: no release, no probe. The demand refill (s_acquire/s_writeback, set in the
+          // acquire block) overwrites this way with the demanded line.
+          if (params.micro.sbcDebug) {
+            printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${new_request.set} srcWay=${new_meta.way}\n")
+          }
         } .otherwise {
           if (params.micro.sbcDebug) {
             printf(p"[SBC] EVICT-NORMAL srcSet=${new_request.set} srcWay=${new_meta.way}\n")
