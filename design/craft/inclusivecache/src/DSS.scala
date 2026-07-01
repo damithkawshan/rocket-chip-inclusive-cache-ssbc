@@ -20,6 +20,7 @@ class DSS(params: InclusiveCacheParameters, d: Int) extends Module
 {
   val io = IO(new Bundle {
     val update       = Flipped(Valid(new DSSUpdate(params)))
+    val clear        = Input(Bool())
     val coldestValid = Output(Bool())
     val coldestSet   = Output(UInt(params.setBits.W))
     val coldestLevel = Output(UInt(params.micro.satCounterBits.W))
@@ -57,6 +58,12 @@ class DSS(params: InclusiveCacheParameters, d: Int) extends Module
       setIdx(maxIdx) := io.update.bits.set
       level(maxIdx)  := io.update.bits.level
     }
+  }
+
+  // SBC reset: drop all candidates. setIdx/level become don't-care once invalid.
+  // Placed after the update block so it wins on a same-cycle collision.
+  when (io.clear) {
+    valid.foreach(_ := false.B)
   }
 
   // Coldest candidate = min level among valid slots

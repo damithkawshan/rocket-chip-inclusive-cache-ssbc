@@ -40,6 +40,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val sbcStats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
     // SBC MMIO: SW arm pulse in (a write to SBC_BalanceSet)
     val sbcBalanceSet = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC MMIO: SW reset pulse in (a write to SBC_Reset)
+    val sbcReset      = Input(Bool())
   })
 
   val sourceA = Module(new SourceA(params))
@@ -436,6 +438,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.dirTap     := directory.io.tap
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
+    sbu.io.clear      := io.sbcReset
     // SBC Phase 2: migration counter pulses (OR across MSHRs; the token keeps ≤1 in flight)
     sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
     sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)

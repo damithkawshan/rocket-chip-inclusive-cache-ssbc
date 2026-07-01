@@ -68,6 +68,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // aborted at the dst-full fallback).
     val migAttempt = Input(Bool())
     val migAbort   = Input(Bool())
+    // SBC reset: SW pulse from MMIO SBC_Reset — zeroes all counters, saturation, AT and the DSS.
+    val clear = Input(Bool())
     // MMIO
     val satReadSet = Input(UInt(params.setBits.W))
     val stats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
@@ -100,7 +102,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.update.valid      := io.dirTap.valid
   dss.io.update.bits.set   := tapSet
   dss.io.update.bits.level := nxt
-
+  dss.io.clear             := io.clear
   // Advisory query responses. migrateResp is the Phase-2 migrate advice; it is assigned below,
   // after `armed`/thresholds are declared.
   io.assocResp.activeSource := at(io.assocQuery.bits).valid && !at(io.assocQuery.bits).sd
@@ -142,6 +144,19 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     at(io.commit.bits.dst).valid    := true.B
     at(io.commit.bits.dst).sd       := true.B             // destination side
     at(io.commit.bits.dst).assocSet := io.commit.bits.src
+  }
+
+  // SBC reset: a write to MMIO SBC_Reset zeroes every piece of SBC observation state in one cycle.
+  // Placed after all update logic above so a same-cycle dirTap update / commit loses to the clear.
+  when (io.clear) {
+    sat.foreach   (_ := 0.U)
+    armed.foreach (_ := false.B)
+    // TODO(phase3): once the AT is wired into the live secondary-search/teardown path, clearing it
+    // while displaced lines still exist would orphan them (the AT is their home-set recovery info).
+    at.foreach    (_ := 0.U.asTypeOf(new ATEntry(params)))
+    nAttempt := 0.U
+    nAbort   := 0.U
+    nCommit  := 0.U
   }
 
   // Read-only stats for MMIO.

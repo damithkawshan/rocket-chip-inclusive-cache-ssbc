@@ -60,6 +60,9 @@ class WithInclusiveCache(
   enableSetBalancing: Boolean = true,
   sbcDebug: Boolean = true,
   sbcAutoMigrate: Boolean = false,
+  satCounterBits: Int = -1,        // -1 = auto-derive: ceil(log2(2*nWays))
+  migrationThreshold: Int = -1,    // -1 = auto-derive: 2*nWays-1 (T_hi, counter's own max = fully saturated)
+  migrationClearThreshold: Int = -1, // -1 = auto-derive: nWays (T_lo)
   // SBC debug repro knobs (off by default; zero hardware when off)
   sbcForceDstSet: Int = -1,
   sbcGateStallCycles: Int = 0
@@ -115,6 +118,9 @@ class WithInclusiveCache(
         enableSetBalancing = enableSetBalancing,
         sbcDebug = sbcDebug,
         sbcAutoMigrate = sbcAutoMigrate,
+        satCounterBits = if (satCounterBits < 0) BigInt(2 * nWays - 1).bitLength else satCounterBits,
+        migrationThreshold = if (migrationThreshold < 0) (2 * nWays - 1) else migrationThreshold,
+        migrationClearThreshold = if (migrationClearThreshold < 0) nWays else migrationClearThreshold,
         sbcForceDstSet = sbcForceDstSet,
         sbcGateStallCycles = sbcGateStallCycles),
       l2Ctrl))

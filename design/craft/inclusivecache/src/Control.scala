@@ -45,6 +45,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
       // SBC: SW arm pulse out (a write to SBC_BalanceSet → 1-cycle valid+set)
       val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
+      // SBC: SW reset pulse out (a write to SBC_Reset → 1-cycle high; zeroes all SBC observation state)
+      val sbc_reset = Output(Bool())
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -100,6 +102,10 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     io.sbc_balanceSet.valid := sbcArmPulse
     io.sbc_balanceSet.bits  := sbcArmSet
 
+    // SBC: reset pulse — a write to SBC_Reset emits a 1-cycle high downstream.
+    val sbcResetPulse = WireInit(false.B)
+    io.sbc_reset := sbcResetPulse
+
     val sbcSetSelField = RegField(sbcSetBits, sbcSetSel,
       RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back"))
     val sbcSetSatField = RegField.r(sbcSatBits, io.sbc_stats.satReadValue,
@@ -128,6 +134,12 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcAbortedField = RegField.r(32, io.sbc_stats.aborted,
       RegFieldDesc("SBC_Aborted", "Migrations aborted (ineligible source/destination)", volatile=true))
 
+    // SBC: zero all SBC observation state (write-only). A write of any value pulses io.sbc_reset.
+    val sbcResetField = RegField.w(32, RegWriteFn((ivalid, oready, data) => {
+      when (ivalid) { sbcResetPulse := true.B }
+      (true.B, ivalid)  // ready always; ack immediately when the write arrives
+    }), RegFieldDesc("SBC_Reset", "Write any value to zero all SBC saturation counters, AT, DSS and event counters"))
+
     val regmap = ctrlnode.regmap(
       0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
@@ -142,7 +154,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x338 -> Seq(sbcSecMissField),
       0x340 -> RegFieldGroup("SBC_Ctrl", Some("Set-Balancing Cache control/counters"), Seq(sbcBalanceSetField)),
       0x348 -> Seq(sbcAttemptedField),
-      0x350 -> Seq(sbcAbortedField)
+      0x350 -> Seq(sbcAbortedField),
+      0x358 -> RegFieldGroup("SBC_Reset", Some("Zero all SBC observation state"), Seq(sbcResetField))
     )
   }
 }
