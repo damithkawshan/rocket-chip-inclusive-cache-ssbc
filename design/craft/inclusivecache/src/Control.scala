@@ -127,7 +127,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
     val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
       when (ivalid) { sbcArmPulse := true.B; sbcArmSet := data }
-      (true.B, ivalid)  // ready always; ack immediately when write arrives
+      (true.B, true.B)  // fire-and-forget: ovalid must not track ivalid, or the D beat never fires on real fabric (hangs on FPGA, not sim).
     }), RegFieldDesc("SBC_BalanceSet", "Arm SBC migration for the written source-set index"))
     val sbcAttemptedField = RegField.r(32, io.sbc_stats.attempted,
       RegFieldDesc("SBC_Attempted", "Migrations attempted (setup reached)", volatile=true))
@@ -137,7 +137,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     // SBC: zero all SBC observation state (write-only). A write of any value pulses io.sbc_reset.
     val sbcResetField = RegField.w(32, RegWriteFn((ivalid, oready, data) => {
       when (ivalid) { sbcResetPulse := true.B }
-      (true.B, ivalid)  // ready always; ack immediately when the write arrives
+      (true.B, true.B)  // fire-and-forget: ovalid must not track ivalid, or the D beat never fires on real fabric (hangs on FPGA, not sim).
     }), RegFieldDesc("SBC_Reset", "Write any value to zero all SBC saturation counters, AT, DSS and event counters"))
 
     val regmap = ctrlnode.regmap(
