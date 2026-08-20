@@ -316,7 +316,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.e.valid := !s_grantack && w_grantfirst
   io.schedule.bits.x.valid := !s_flush && w_releaseack
   io.schedule.bits.dir.valid := (!s_release && w_rprobeackfirst) || (!s_writeback && no_wait && mig_ready) || mig_dir1
-  io.schedule.bits.reload := no_wait
+  // SBC: must match the retire condition below. Phase 2 added mig_ready there but not here, so an
+  // MSHR advertised itself free mid-migration and got reset without retiring.
+  io.schedule.bits.reload := no_wait && mig_ready
   // SBC Phase 1: copy lane — driven only while this MSHR owns a migration whose copy is pending.
   io.schedule.bits.copy.valid       := migrating && !s_copy
   io.schedule.bits.copy.bits.srcSet := request.set
@@ -919,6 +921,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_execute        := true.B
     w_grantack       := true.B
     s_writeback      := true.B
+    // SBC: reload now waits for mig_ready, so a migration can never be reset away here.
+    assert (!migrating, "SBC: migration dropped at assess-reset without retiring")
     // SBC Phase 1: migration scoreboard defaults (inert unless cleared by a migrate request)
     s_copy           := true.B
     w_copy           := true.B
