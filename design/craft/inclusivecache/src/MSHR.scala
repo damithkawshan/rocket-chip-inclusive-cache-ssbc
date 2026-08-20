@@ -64,6 +64,10 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val dstValid = Bool()
   val dstSet   = UInt(params.setBits.W)
   val dstWay   = UInt(params.wayBits.W)
+  // SBC Phase 2.5: this MSHR intends to migrate but is still waiting for its eviction probe.
+  // No destination is reserved yet (dstValid is still false), but the one-migration-per-bank
+  // token must already be held, or a second MSHR could start a migration in this window.
+  val migPending = Bool()
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -173,6 +177,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migSrcWay        = Reg(UInt(params.wayBits.W))
   val s_dread          = RegInit(true.B)  // schedule the 2nd dir-read (dstSet, preferInvalid)
   val w_dread          = RegInit(true.B)  // waiting for the 2nd dir-read result
+  // SBC Phase 2.5 (probe-then-migrate): the victim is clean but the directory says a client still
+  // holds it. That bit is CONSERVATIVE - rocket's L1 drops clean lines silently (silentDrop=true),
+  // so it is usually stale. Rather than reject the victim, run the eviction probe we would have
+  // sent anyway and decide afterwards. While this is set the migrate/release decision is still
+  // open: neither `migrating` nor `s_release` has been committed.
+  val migDeferred      = RegInit(false.B)
   // SBC Phase 2: migrate advice latched at allocate (valid = migrate allowed; bits = dstSet)
   val migAdviceValidReg = RegInit(false.B)
   val migAdviceDstReg   = Reg(UInt(params.setBits.W))
@@ -217,6 +227,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // own inner probes. Thus every probe wakes exactly one MSHR.
   io.status.bits.blockC := !meta_valid
   io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
+  // SBC Phase 2.5: hold the migration token across the deferred probe window (see Scheduler's
+  // anyMigrating). Deliberately NOT folded into dstValid - no destination is reserved yet, and
+  // fencing the destination set before the probe completes would add a hold-and-wait edge
+  // ("migration holds set d while waiting on the L1") that the baseline does not have.
+  io.status.bits.migPending := migDeferred
   // SBC Phase 1: drive the migration reservation while this MSHR owns a migration
   if (params.micro.sbcGateStallCycles > 0) {
     // SBC debug repro FALLBACK: deliberately hold the destination fence (dstValid) low for the first
@@ -250,7 +265,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 2: while migrating, hold the demand Acquire until the victim copy has been fully
   // read (w_copy). This sequences the 2nd dir-read + copy first and provides the A2 copy<->refill
   // interlock (the memory refill of (s,vWay) cannot precede copy-read-done).
-  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy)
+  // SBC Phase 2.5 (R1 - REQUIRED FOR DEADLOCK FREEDOM, DO NOT REMOVE): while migDeferred is set we
+  // have committed to neither path, so `s_release` is still true and `migrating` still false - both
+  // existing guards read as "nothing to wait for" and this gate would open mid-probe. Two failures
+  // follow: (a) the refill overwrites the victim before the copy engine reads it (silent data loss),
+  // and (b) per note [1] above, the scheduler is all-or-none, so firing s_acquire alongside the
+  // pending rprobe stalls BOTH (outA cannot make progress while we hold blockB, and the probe is the
+  // only thing that clears blockB) - a circular wait. On the baseline path `s_release := false` is
+  // what keeps this gate shut during a probe; here that register is not available yet.
+  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy) && !migDeferred
   io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
   io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
   io.schedule.bits.d.valid := !s_execute && w_pprobeack && w_grant
@@ -281,15 +304,25 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (migrating) {
         printf(p"[SBC] SCHED-FIRE srcSet=${request.set} dstSet=${migDstSet} a_valid=${io.schedule.bits.a.valid} dread=${migrating && !s_dread} copy=${migrating && !s_copy} dir1=${mig_dir1} retire=${no_wait && mig_ready} s_acq=${s_acquire} w_copy=${w_copy} w_dread=${w_dread}\n")
       }
-      // BUG-A smoke detector: s_acquire being marked done without the Acquire actually firing
-      when (s_release && s_pprobe && !s_acquire && !io.schedule.bits.a.valid) {
+      // BUG-A smoke detector: a pending refill that the gate is holding for a reason we did NOT
+      // anticipate. The two legitimate holds (deferred probe, and the A2 copy interlock) are excluded,
+      // so anything this prints is a new drift between a.valid and the rest of the FSM.
+      when (s_release && s_pprobe && !s_acquire && !io.schedule.bits.a.valid &&
+            !migDeferred && (!migrating || w_copy)) {
         printf(p"[SBC] BUG-A-DETECT srcSet=${request.set} s_acquire SET WITHOUT ACQUIRE FIRING mig=${migrating} w_copy=${w_copy} w_dread=${w_dread}\n")
       }
     }
                                     s_rprobe     := true.B
     when (w_rprobeackfirst)       { s_release    := true.B }
                                     s_pprobe     := true.B
-    when (s_release && s_pprobe)  { s_acquire    := true.B }
+    // SBC Phase 2.5 (BUG-A fix): retire s_acquire only when the Acquire ACTUALLY issued. The old
+    // condition `s_release && s_pprobe` mirrored a.valid by hand and silently drifted every time a
+    // term was added to that gate: with `!migDeferred` (and, before it, `!migrating || w_copy`) the
+    // schedule can fire for the B-channel probe while a.valid is low, and this would then mark the
+    // refill "done" without sending it - the MSHR waits forever for a grant that never comes.
+    // Keying off a.valid itself cannot drift. Baseline-identical: with SBC off a.valid reduces to
+    // `!s_acquire && s_release && s_pprobe`, and re-setting an already-true s_acquire was a no-op.
+    when (io.schedule.bits.a.valid) { s_acquire    := true.B }
     when (w_releaseack)           { s_flush      := true.B }
     when (w_pprobeackfirst)       { s_probeack   := true.B }
     when (w_grantfirst)           { s_grantack   := true.B }
@@ -377,11 +410,24 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // the migrated victim's tag/state, is clean + client-free, and is flagged displaced.
   val displacedEntry = Wire(new DirectoryEntry(params))
   displacedEntry.dirty     := meta.dirty
-  displacedEntry.state     := meta.state
-  displacedEntry.clients   := meta.clients
+  // SBC Phase 2.5: the parked entry must be SELF-CONSISTENT after the probe. TRUNK encodes "exactly
+  // one client owns this exclusively", and the directory asserts `state === TRUNK => clients =/= 0`
+  // (MSHR.scala:139). Probe-then-migrate can now migrate a victim that was TRUNK, and since we zero
+  // the client mask below, leaving the state at TRUNK installs an impossible entry that trips that
+  // assert the next time the way is read. The client relinquished the line (toN, no data - a
+  // ProbeAckData would have set meta.dirty and aborted the migration), so the L2 copy is current and
+  // unshared: TRUNK collapses to TIP. Same rule the ordinary path uses at MSHR.scala:357.
+  displacedEntry.state     := Mux(meta.state === TRUNK, TIP, meta.state)
+  // SBC Phase 2.5 (R2): `meta.clients` is the mask latched at allocate and is NOT updated by probes -
+  // the post-probe set is `meta.clients & ~probes_toN`. Under probe-then-migrate the raw mask would
+  // mark the parked copy as client-held, breaking the displaced => clean+client-free invariant that
+  // lets the displaced-reclaim tier drop a parked way silently (no probe, no release). Always use the
+  // post-probe value; on the migrate path it is provably zero (the eviction rprobe asks toN).
+  displacedEntry.clients   := meta.clients & ~probes_toN
   displacedEntry.tag       := meta.tag
   displacedEntry.displaced := true.B
-  assert(!mig_dir1 || (!meta.dirty && !meta.clients.orR), "migrate source must be clean+client-free")
+  assert(!mig_dir1 || (!meta.dirty && (meta.clients & ~probes_toN) === 0.U), "migrate source must be clean+client-free")
+  assert(!mig_dir1 || displacedEntry.state =/= TRUNK, "SBC: displaced entry must not be TRUNK (TRUNK implies a client, displaced has none)")
   // SBC: a displaced victim must never be RELEASED — its address maps to a different set than the one
   // it sits in, so a Release would carry the wrong address. It is dropped silently instead (see the
   // displaced-reclaim branch in the eviction logic). The directory writeback IS allowed: reclaim
@@ -606,6 +652,49 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // However, meta-data updates need to be done more cautiously
     when (meta.state =/= INVALID && io.sinkc.bits.tag === meta.tag && io.sinkc.bits.data) { meta.dirty := true.B } // !!!
   }
+  // SBC Phase 2.5: probe-then-migrate decision point. Runs the cycle AFTER the last probe ack, so
+  // both `meta.dirty` (set by a ProbeAckData in the SinkC block above) and `probes_toN` have settled.
+  // The eviction rprobe always asks toN (see b.bits.param), so by here every client is at N and the
+  // victim is client-free for real - a stronger guarantee than the stale bit we used to test.
+  when (migDeferred && w_rprobeacklast) {
+    migDeferred := false.B
+    when (!meta.dirty) {
+      // The client did not return data: the line is still clean and now provably unheld. Migrate.
+      migrating  := true.B
+      migDstSet  := migAdviceDstReg
+      s_dread    := false.B  // 2nd dir-read of dstSet picks dstWay or falls back
+      w_dread    := false.B
+      migAttempt := true.B
+      if (params.micro.sbcDebug) {
+        printf(p"[SBC] MIG-PROBE-CLEAR srcSet=${request.set} srcWay=${migSrcWay}\n")
+        printf(p"[SBC] MIG-START srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migAdviceDstReg}\n")
+      }
+    } .otherwise {
+      // ProbeAckData came back: the client held it dirty, so the line is dirty now and cannot be
+      // migrated (a displaced copy must be clean). Fall back to a normal eviction - w_rprobeackfirst
+      // is already true, so SourceC fires immediately and c.bits.opcode picks ReleaseData for us.
+      s_release    := false.B
+      w_releaseack := false.B
+      if (params.micro.sbcDebug) {
+        printf(p"[SBC] MIG-PROBE-DIRTY srcSet=${request.set} srcWay=${migSrcWay}\n")
+      }
+    }
+  }
+
+  // SBC Phase 2.5: liveness + invariant checks for the deferred window. migDeferred clears on exactly
+  // one condition (w_rprobeacklast), so the only way to hang is a probe that never returns. The
+  // watchdog turns that hang - which in Verilator looks like a run that simply never finishes - into
+  // a named assert with a cycle count.
+  if (params.micro.enableSetBalancing) {
+    assert (!(migDeferred && io.schedule.bits.a.valid), "SBC: outer Acquire issued during deferred probe (R1 gate broken)")
+    assert (!(migDeferred && io.status.bits.dstValid),  "SBC: destination fenced before the probe completed (adds hold-and-wait)")
+    assert (!(migDeferred && migrating),                "SBC: migDeferred and migrating are mutually exclusive")
+    assert (!(migDeferred && !s_release),               "SBC: release committed while the migrate decision was still open")
+    val migDeferCtr = RegInit(0.U(16.W))
+    when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
+    assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
+  }
+
   when (io.sinkd.valid) {
     when (io.sinkd.bits.opcode === Grant || io.sinkd.bits.opcode === GrantData) {
       sink := io.sinkd.bits.sink
@@ -782,7 +871,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         // at allocate) and the victim is clean, client-free, and not already displaced, migrate the
         // victim to a cold set instead of releasing it; the demand refill then reuses the freed way.
         // Otherwise fall through to a normal eviction (bit-identical to baseline).
-        val migEligible = !new_meta.dirty && !new_meta.clients.orR && !new_meta.displaced
+        // SBC Phase 2.5 (probe-then-migrate): the test is split around the eviction probe.
+        //   migClean    - what we can decide up front. Dirty and already-displaced victims can never
+        //                 migrate, and no probe changes that.
+        //   migEligible - the fast path: the victim is already client-free, so migrate at once with
+        //                 no probe. This is exactly the Phase-2 behaviour and must stay free.
+        //   migProbe    - NEW: clean, but the directory claims a client holds it. That bit is stale
+        //                 far more often than not (rocket's L1 drops clean lines silently), and a
+        //                 normal eviction of this victim would send the very probe that settles it.
+        //                 So send it, and decide when it comes back.
+        val migClean    = !new_meta.dirty && !new_meta.displaced
+        val migEligible = migClean && !new_meta.clients.orR
+        val migProbe    = migClean && (!params.firstLevel).B && new_meta.clients.orR
         if (params.micro.sbcDebug) {
           printf(p"[SBC] EVICT-ASSESS srcSet=${new_request.set} way=${new_meta.way} adviceValid=${migAdviceValidReg} adviceDst=${migAdviceDstReg} eligible=${migEligible} dirty=${new_meta.dirty} clients=${new_meta.clients} displaced=${new_meta.displaced}\n")
         }
@@ -796,6 +896,19 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           s_dread    := false.B  // 2nd dir-read of dstSet (preferInvalid) picks dstWay or falls back
           w_dread    := false.B
           migAttempt := true.B   // attempted++
+        } .elsewhen (params.micro.enableSetBalancing.B && migAdviceValidReg && migProbe) {
+          // Schedule the eviction probe and STOP. Deliberately do NOT set s_release/w_releaseack here
+          // (that would commit to throwing the line away) and do NOT set migrating (that would reserve
+          // a destination before we know the victim is really migratable). The decision block above
+          // resumes on w_rprobeacklast. `new_meta.way` is only valid this cycle, so latch it now.
+          migDeferred      := true.B
+          migSrcWay        := new_meta.way
+          s_rprobe         := false.B
+          w_rprobeackfirst := false.B
+          w_rprobeacklast  := false.B
+          if (params.micro.sbcDebug) {
+            printf(p"[SBC] MIG-DEFER srcSet=${new_request.set} srcWay=${new_meta.way} clients=${new_meta.clients}\n")
+          }
         } .elsewhen (new_meta.displaced) {
           // SBC Phase 2: reclaim a displaced victim (the last-resort directory victim). A displaced
           // line is clean + client-free by construction and its address maps to a DIFFERENT set than

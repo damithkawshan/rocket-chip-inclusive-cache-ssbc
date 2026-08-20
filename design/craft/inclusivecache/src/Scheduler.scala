@@ -201,7 +201,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val allocReady = alloc && !dstSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
   // destination reservation (dstValid).
-  val anyMigrating = mshrs.map(m => m.io.status.valid && m.io.status.bits.dstValid).reduce(_ || _)
+  // SBC Phase 2.5: the token must also cover the deferred-probe window. A migrant that is waiting on
+  // its eviction probe has not reserved a destination yet (dstValid is still false), so without
+  // migPending a second MSHR could take the token and start its own migration inside that window,
+  // breaking the one-migration-per-bank assumption the Phase-2 fences were designed under.
+  val anyMigrating = mshrs.map(m => m.io.status.valid &&
+                                    (m.io.status.bits.dstValid || m.io.status.bits.migPending)).reduce(_ || _)
 
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
