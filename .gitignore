@@ -4,6 +4,7 @@ sw/**/*_riscv
 sw/**/*.o
 sw/**/*.asm
 target/*
+sw/verilator_logs
 
 # Research data (large, regenerated per run)
 results/
@@ -20,3 +21,4 @@ results/
 .claude/
 sw/bench/*
 evaluation/examples/*
+design/craft/inclusivecache/src/MSHR.scala.original
