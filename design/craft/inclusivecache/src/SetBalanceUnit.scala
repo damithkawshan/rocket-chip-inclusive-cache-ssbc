@@ -51,6 +51,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     val migrateResp  = Output(new Bundle {
       val migrate = Bool()
       val destSet = UInt(params.setBits.W)
+      // SBC Phase 2.5b: destination-side validity on its own. The Scheduler publishes a live
+      // destination offer built from this, so it does not have to re-derive the T_lo threshold.
+      // `migrate` keeps its old meaning: source hot AND a destination exists.
+      val destOk  = Bool()
     })
     val assocQuery = Flipped(Valid(UInt(params.setBits.W)))
     val assocResp  = Output(new Bundle {
@@ -123,8 +127,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // Scheduler ANDs in the one-migration token. "migrate" = source is hot (armed/auto + sat>=T_hi)
   // AND a genuinely cold destination exists.
   val qSet = io.migrateQuery.bits
+  io.migrateResp.destOk  := dss.io.coldestValid && (dss.io.coldestLevel < tLo)
   io.migrateResp.migrate := (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi) &&
-                            dss.io.coldestValid && (dss.io.coldestLevel < tLo)
+                            io.migrateResp.destOk
   io.migrateResp.destSet := dss.io.coldestSet
 
   // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------

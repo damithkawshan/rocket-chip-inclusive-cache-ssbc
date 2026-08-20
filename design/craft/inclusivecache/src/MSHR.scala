@@ -114,8 +114,28 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val nestedwb  = Flipped(new NestedWriteback(params))
     // SBC Phase 1: SetCopyUnit done pulse for this MSHR (routed by mshrId in Scheduler)
     val copy_done = Input(Bool())
-    // SBC Phase 2: migrate advice latched at allocate (valid = migrate allowed; bits = dstSet)
-    val migAdvice = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 2: migrate advice latched at allocate. SOURCE-SIDE ONLY: "my set is a hot migration
+    // source". The destination used to ride along here and was read many cycles later; it does not
+    // any more (see migOffer/migWant/migGrant below).
+    val migAdvice = Input(Bool())
+    // SBC Phase 2.5b (late destination binding). The destination is read at the moment the migration
+    // actually starts, never latched at allocate.
+    //   migOffer - the live candidate the Scheduler publishes to THIS MSHR this cycle, already
+    //              filtered: a cold set exists, no live MSHR owns it, and no OTHER MSHR is mid
+    //              migration. The "other" masking is what makes an arbiter unnecessary — see the
+    //              one-asker-per-cycle argument on dstClaim below.
+    val migOffer = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 2.5b: same-cycle destination claim, consumed ONLY by the Scheduler's dstSetConflict
+    // fence, so the [claim -> fence] window is zero cycles. Deliberately kept separate from
+    // status.dstValid: dstValid feeds the one-migration masking, and folding a combinational claim
+    // into it would close the loop claim -> offer -> claim.
+    //
+    // No arbiter guards this, because at most one MSHR can claim in a cycle by construction:
+    //   * the fast path needs io.directory.valid, and directoryFanout is one-hot (Scheduler ~:389),
+    //     so only one MSHR is assessing a victim in any cycle;
+    //   * the deferred path needs migPending, which masks the offer away from every other MSHR.
+    // The Scheduler asserts PopCount(dstClaim) <= 1 to keep that argument honest.
+    val dstClaim = Valid(UInt(params.setBits.W))
     // SBC Phase 1: migration counter pulses to the SBU (attempted at alloc, aborted/committed at retire)
     val migAttempt = Output(Bool())
     val migAbort   = Output(Bool())
@@ -183,9 +203,25 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // sent anyway and decide afterwards. While this is set the migrate/release decision is still
   // open: neither `migrating` nor `s_release` has been committed.
   val migDeferred      = RegInit(false.B)
-  // SBC Phase 2: migrate advice latched at allocate (valid = migrate allowed; bits = dstSet)
+  // SBC Phase 2: migrate advice latched at allocate. Source-side only — "this set is hot".
   val migAdviceValidReg = RegInit(false.B)
-  val migAdviceDstReg   = Reg(UInt(params.setBits.W))
+
+  // SBC Phase 2.5b (late destination binding): two decide points can ask for a destination — the
+  // fast path (victim was already client-free) and the deferred path (post-probe). They are mutually
+  // exclusive; the assert in the deferred-window check below holds that.
+  // exclusive; the assert in the deferred-window check below holds that.
+  //
+  // LOOP FREEDOM (this is load-bearing — an earlier version of this deadlocked elaboration): every
+  // term feeding these two wires must be a REGISTER or a register-derived Scheduler signal. In
+  // particular they must not touch io.allocate.bits.*, which is combinationally tied to allocReady,
+  // which is what dstClaim feeds. That is why the fast-path condition below is spelled out from
+  // io.directory.bits / request rather than reusing new_meta / new_request.
+  val migFastWantW  = WireInit(false.B)
+  val migDeferWantW = WireInit(false.B)
+  val migStartNow   = migFastWantW || migDeferWantW
+  val migStartDst   = io.migOffer.bits
+  io.dstClaim.valid := migStartNow
+  io.dstClaim.bits  := migStartDst
 
   // SBC Phase 1: migration counter pulses (driven false here; asserted in the setup/retire logic).
   val migAttempt = WireInit(false.B)
@@ -656,27 +692,84 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // both `meta.dirty` (set by a ProbeAckData in the SinkC block above) and `probes_toN` have settled.
   // The eviction rprobe always asks toN (see b.bits.param), so by here every client is at N and the
   // victim is client-free for real - a stronger guarantee than the stale bit we used to test.
+  // SBC Phase 2.5b: ask for a destination in THIS cycle rather than acting on one picked back at
+  // allocate. The probe round-trip is unbounded, so an allocate-time pick is arbitrarily stale here.
+  val migDeferWant = migDeferred && w_rprobeacklast && !meta.dirty &&
+                     io.migOffer.valid && io.migOffer.bits =/= request.set
+  when (migDeferWant) { migDeferWantW := true.B }
+
+  // SBC Phase 2.5b: the fast path (victim was already client-free) takes its destination late too.
+  // The eviction assess block runs on the directory RESULT, not on the allocate cycle, so a pick
+  // latched at allocate is already stale there by the dir-read latency.
+  //
+  // Spelled out from io.directory.bits / request instead of new_meta / new_request ON PURPOSE: those
+  // two are Muxes on io.allocate.*, and BOTH io.allocate.valid and io.allocate.bits.* are
+  // combinationally tied to allocReady — which is what dstClaim feeds. Touching either closes a
+  // combinational loop (elaboration catches it; both forms were tried).
+  //   * request.set is exact, not an approximation: the Scheduler forces
+  //     allocate.bits.set := status.bits.set (= request.set), so new_request.set === request.set.
+  //   * In the rare cycle where this MSHR is reloaded (io.allocate.valid) at the same time a
+  //     directory result lands, new_meta/new_request may disagree with the io.directory.bits/request
+  //     form used here. That can only produce a SPURIOUS want: the migrate action below is guarded by
+  //     `!(io.allocate.valid && io.allocate.bits.repeat)` so it never fires on mismatched metadata,
+  //     and the cost is one wasted cycle of destination fencing. Using io.allocate inside the action
+  //     is safe — only this wire feeds dstClaim.
+  migFastWantW := params.micro.enableSetBalancing.B && migAdviceValidReg &&
+                  io.directory.valid &&
+                  !(migrating && !w_dread) &&                                   // not the 2nd dir-read branch
+                  request.prio(0) && !request.control &&                        // A-channel demand
+                  !io.directory.bits.hit && io.directory.bits.state =/= INVALID && // eviction needed
+                  !io.directory.bits.dirty && !io.directory.bits.displaced &&   // migClean
+                  !io.directory.bits.clients.orR &&                             // migEligible (fast path)
+                  io.migOffer.valid && io.migOffer.bits =/= request.set
+
+  // Declined: the victim was migratable but no destination was on offer. The assess block's
+  // when-chain falls through to its normal-eviction `.otherwise` on its own, so nothing else is
+  // needed here — approved decline-and-skip.
+  val migFastDecline = params.micro.enableSetBalancing.B && migAdviceValidReg &&
+                       io.directory.valid &&
+                       !(migrating && !w_dread) &&
+                       request.prio(0) && !request.control &&
+                       !io.directory.bits.hit && io.directory.bits.state =/= INVALID &&
+                       !io.directory.bits.dirty && !io.directory.bits.displaced &&
+                       !io.directory.bits.clients.orR &&
+                       !io.migOffer.valid
+  when (migFastDecline) {
+    migAbort := true.B
+    if (params.micro.sbcDebug) {
+      printf(p"[SBC] MIG-DECLINE srcSet=${request.set} srcWay=${io.directory.bits.way} reason=no-offer\n")
+    }
+  }
   when (migDeferred && w_rprobeacklast) {
     migDeferred := false.B
-    when (!meta.dirty) {
+    when (migDeferWantW) {
       // The client did not return data: the line is still clean and now provably unheld. Migrate.
       migrating  := true.B
-      migDstSet  := migAdviceDstReg
+      migDstSet  := migStartDst
       s_dread    := false.B  // 2nd dir-read of dstSet picks dstWay or falls back
       w_dread    := false.B
       migAttempt := true.B
       if (params.micro.sbcDebug) {
         printf(p"[SBC] MIG-PROBE-CLEAR srcSet=${request.set} srcWay=${migSrcWay}\n")
-        printf(p"[SBC] MIG-START srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migAdviceDstReg}\n")
+        printf(p"[SBC] MIG-START srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migStartDst}\n")
       }
     } .otherwise {
-      // ProbeAckData came back: the client held it dirty, so the line is dirty now and cannot be
-      // migrated (a displaced copy must be clean). Fall back to a normal eviction - w_rprobeackfirst
-      // is already true, so SourceC fires immediately and c.bits.opcode picks ReleaseData for us.
+      // Two ways to land here, both falling back to a normal eviction - w_rprobeackfirst is already
+      // true, so SourceC fires immediately and c.bits.opcode picks ReleaseData/Release for us.
+      //   dirty   - ProbeAckData came back, so the line is dirty now and can never be migrated
+      //             (a displaced copy must be clean).
+      //   decline - the line IS migratable, but no destination was on offer this cycle (none cold,
+      //             one already owned, another migration in flight, or another MSHR won the grant).
+      //             Approved Phase-3 semantics: decline and skip, never re-pick or stall.
       s_release    := false.B
       w_releaseack := false.B
+      migAbort     := !meta.dirty   // count declines apart from dirty rejects
       if (params.micro.sbcDebug) {
-        printf(p"[SBC] MIG-PROBE-DIRTY srcSet=${request.set} srcWay=${migSrcWay}\n")
+        when (meta.dirty) {
+          printf(p"[SBC] MIG-PROBE-DIRTY srcSet=${request.set} srcWay=${migSrcWay}\n")
+        } .otherwise {
+          printf(p"[SBC] MIG-DECLINE srcSet=${request.set} srcWay=${migSrcWay} reason=post-probe offerValid=${io.migOffer.valid} offerSet=${io.migOffer.bits}\n")
+        }
       }
     }
   }
@@ -690,6 +783,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!(migDeferred && io.status.bits.dstValid),  "SBC: destination fenced before the probe completed (adds hold-and-wait)")
     assert (!(migDeferred && migrating),                "SBC: migDeferred and migrating are mutually exclusive")
     assert (!(migDeferred && !s_release),               "SBC: release committed while the migrate decision was still open")
+    // SBC Phase 2.5b: the two decide points must never both ask in one cycle - they would both act on
+    // the single grant and both set `migrating`.
+    assert (!(migFastWantW && migDeferWantW),           "SBC: both migrate decide points fired in one cycle")
+    assert (!migStartNow || io.migOffer.valid,          "SBC: migration started off an invalid destination offer")
+    assert (!migStartNow || migStartDst =/= request.set, "SBC: migration destination equals its own source set")
     val migDeferCtr = RegInit(0.U(16.W))
     when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
     assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
@@ -757,8 +855,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     request_valid := true.B
     request := io.allocate.bits
     // SBC Phase 2: latch migrate advice for this set (suppressed on repeat allocations).
-    migAdviceValidReg := io.migAdvice.valid && !io.allocate.bits.repeat
-    migAdviceDstReg   := io.migAdvice.bits
+    migAdviceValidReg := io.migAdvice && !io.allocate.bits.repeat
   }
 
   // Create execution plan
@@ -884,14 +981,16 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         val migEligible = migClean && !new_meta.clients.orR
         val migProbe    = migClean && (!params.firstLevel).B && new_meta.clients.orR
         if (params.micro.sbcDebug) {
-          printf(p"[SBC] EVICT-ASSESS srcSet=${new_request.set} way=${new_meta.way} adviceValid=${migAdviceValidReg} adviceDst=${migAdviceDstReg} eligible=${migEligible} dirty=${new_meta.dirty} clients=${new_meta.clients} displaced=${new_meta.displaced}\n")
+          printf(p"[SBC] EVICT-ASSESS srcSet=${new_request.set} way=${new_meta.way} adviceValid=${migAdviceValidReg} offerValid=${io.migOffer.valid} offerSet=${io.migOffer.bits} eligible=${migEligible} dirty=${new_meta.dirty} clients=${new_meta.clients} displaced=${new_meta.displaced}\n")
         }
-        when (params.micro.enableSetBalancing.B && migAdviceValidReg && migEligible) {
+        // The `!(allocate.valid && repeat)` guard makes new_meta === io.directory.bits, which is the
+        // form migFastWantW was evaluated from — see the loop-freedom note at its definition.
+        when (migFastWantW && !(io.allocate.valid && io.allocate.bits.repeat)) {
           if (params.micro.sbcDebug) {
-            printf(p"[SBC] MIG-START srcSet=${new_request.set} srcWay=${new_meta.way} dstSet=${migAdviceDstReg}\n")
+            printf(p"[SBC] MIG-START srcSet=${new_request.set} srcWay=${new_meta.way} dstSet=${migStartDst}\n")
           }
           migrating  := true.B
-          migDstSet  := migAdviceDstReg
+          migDstSet  := migStartDst
           migSrcWay  := new_meta.way
           s_dread    := false.B  // 2nd dir-read of dstSet (preferInvalid) picks dstWay or falls back
           w_dread    := false.B

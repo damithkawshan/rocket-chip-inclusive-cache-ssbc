@@ -189,14 +189,24 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 2: migrate advice for the current allocating request. Driven by the SBC block below
   // (defaults keep the baseline path untouched when set-balancing is disabled).
   val adviceMigrate = WireInit(false.B)
-  val adviceDstSet  = WireInit(0.U(params.setBits.W))
+  // SBC Phase 2.5b (late destination binding): the destination is published as a LIVE offer and taken
+  // by the MSHR in the cycle it decides, instead of being latched at allocate and used cycles later.
+  //   dstOffer - the candidate this cycle, already filtered (cold, and not owned by a live MSHR).
+  //              The "no other migration in flight" term is applied PER MSHR below, because the
+  //              asking MSHR must not be blocked by its own in-flight state.
+  val dstOfferValid = WireInit(false.B)
+  val dstOfferSet   = WireInit(0.U(params.setBits.W))
   // SBC Phase 2 (dst-collision fix): fence a live migration's destination set. A request whose set is
   // a migrant's dstSet must neither be consumed (request.ready) NOR allocate an MSHR / read the
   // directory for one — it is held at the sink until the migration retires and dstValid clears.
   // Gating request.ready alone is insufficient: the fresh-allocation path still committed. So the same
   // condition also gates allocation via `allocReady`. Bit-exact when SBC off (dstSetConflict is const-false).
+  // SBC Phase 2.5b: the second term is the same-cycle claim. A migrant picks its destination and
+  // claims it in one cycle, so the fence sees the claim immediately and the [pick -> fence] window is
+  // zero. This is what replaces the migTokenPending/migPendCtr timer that used to paper over it.
   val dstSetConflict = mshrs.map { m =>
-    m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set
+    (m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set) ||
+    (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set)
   }.reduce(_ || _)
   val allocReady = alloc && !dstSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
@@ -274,10 +284,23 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   }
 
   // SBC Phase 2: deliver migrate advice to every MSHR; each latches it only on its own allocate.
-  mshrs.foreach { m =>
-    m.io.migAdvice.valid := adviceMigrate
-    m.io.migAdvice.bits  := adviceDstSet
+  // SBC Phase 2.5b: the advice is source-side only. The destination rides the live offer instead, and
+  // comes back as a per-MSHR grant in the cycle the MSHR asks for it.
+  // The one-migration rule is applied by masking each MSHR's offer with "is any OTHER MSHR already
+  // mid-migration". Masking per MSHR rather than globally matters: a deferred migrant raises
+  // migPending itself, so a global mask would take the offer away from exactly the MSHR that is about
+  // to need it, and every deferred migration would decline.
+  val migBusy = VecInit(mshrs.map(m => m.io.status.valid &&
+                                       (m.io.status.bits.dstValid || m.io.status.bits.migPending))).asUInt
+  mshrs.zipWithIndex.foreach { case (m, i) =>
+    m.io.migAdvice       := adviceMigrate
+    m.io.migOffer.valid  := dstOfferValid && !(migBusy & ~(1.U(params.mshrs.W) << i).asUInt).orR
+    m.io.migOffer.bits   := dstOfferSet
   }
+  // At most one MSHR may claim a destination per cycle. Holds by construction (one-hot directoryFanout
+  // for the fast path; migPending masking for the deferred path), so this is a check, not a mechanism.
+  assert (PopCount(VecInit(mshrs.map(_.io.dstClaim.valid)).asUInt) <= 1.U,
+          "SBC: more than one MSHR claimed a migration destination in one cycle")
 
   // Determine which of the queued requests to pop (supposing will_pop)
   val prio_requests = ~(~requests.io.valid | (requests.io.valid >> params.mshrs) | (requests.io.valid >> 2*params.mshrs))
@@ -322,7 +345,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // we can silently overwrite. Without this term the dread fell back to the LFSR victim (usually
   // dirty or client-held) on a full dst set, so every migration hit the ABORT-DST path — which is
   // why zero migrations committed. The MSHR already requests preferEvictable on its dread bundle.
-  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
+  // SBC Phase 2.5b: `adviceMigrate` lost its destination-side terms when the destination moved to a
+  // live offer, so on its own it would raise this hint on evictions that then decline — perturbing
+  // victim selection away from baseline for no gain. AND in the offer to keep the hint as rare as it
+  // was before. It stays a hint either way (correctness never depends on it).
+  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate && dstOfferValid) ||
                                             mshr_uses_directory_for_dread
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
@@ -450,50 +477,46 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     io.sbcStats       := sbu.io.stats
 
     // SBC Phase 2: migrate advice for the demand-allocating set. The SBU reports the source set is
-    // hot and a cold destination exists; here we add the demand-A filter and the one-migration
-    // token. `anyMigrating` covers a reservation already raised; `migTokenPending` covers the
-    // allocate→dstValid window (one cycle) so a second migrate can't slip through.
-    val migTokenPending = RegInit(false.B)
-    val migTokenDstSet  = Reg(UInt(params.setBits.W))
-    val migPendCtr      = RegInit(0.U(4.W))  // bounds the pending fence so it can never stick
+    // hot and a cold destination exists; here we add the demand-A filter and the one-migration token.
+    // SBC Phase 2.5b: the advice latched at allocate is now SOURCE-SIDE ONLY ("this set is hot").
+    // Every destination-side condition moved to the live offer below, evaluated in the same cycle the
+    // MSHR takes it. That deleted migTokenPending/migTokenDstSet/migPendCtr: all three existed purely
+    // to survive the allocate→gate window with a pre-committed destination, and there is no such
+    // window any more.
     val isDemandA = request.bits.prio(0) && !request.bits.control
     sbu.io.migrateQuery.valid := request.valid
     sbu.io.migrateQuery.bits  := request.bits.set
     // SBC debug repro: sbcForceDstSet (>=0) pins every migration's destination to a fixed set so the
     // dst-collision race is reproducible. Off (-1) = normal DSS pick (Scala if -> zero hardware off).
     // We override only WHERE a migration goes, not WHETHER — `migrateResp.migrate` (source must be
-    // hot) and the `dstSetOwned` guard below are preserved, so the natural race is unchanged.
+    // hot) and the `dstOfferOwned` guard below are preserved, so the natural race is unchanged.
     val coldDst = if (params.micro.sbcForceDstSet >= 0) params.micro.sbcForceDstSet.U(params.setBits.W)
                   else sbu.io.migrateResp.destSet
-    // SBC Phase 2b (Q1 gate): never reserve a destination equal to the source set, nor a set
-    // already owned by an active MSHR's primary set. With anyMigrating (≤1 migration) and the
-    // dstSetConflict fence, this guarantees a single writer per directory set for the whole window.
-    val dstSelfCollision = coldDst === request.bits.set
-    val dstSetOwned      = mshrs.map { m => m.io.status.valid && m.io.status.bits.set === coldDst }.reduce(_ || _)
-    adviceMigrate := isDemandA && sbu.io.migrateResp.migrate && !anyMigrating && !migTokenPending &&
-                     !dstSelfCollision && !dstSetOwned
-    adviceDstSet  := coldDst
-    val migrateAllocFire = request.valid && request.ready && alloc && adviceMigrate
+    // SBC Phase 2: source-side advice only — is this a demand miss on a hot set, with no migration
+    // already in flight. Latched by the allocating MSHR; staleness here is harmless (it only means an
+    // MSHR may ask for a destination and be told no).
+    adviceMigrate := isDemandA && sbu.io.migrateResp.migrate && !anyMigrating
+
+    // SBC Phase 2b (Q1 gate), now evaluated LIVE at the moment the destination is taken rather than
+    // at allocate: never hand out a destination that an active MSHR already owns as its primary set,
+    // and never one equal to the taker's own source set (checked inside the MSHR, which knows its own
+    // set). With anyMigrating (≤1 migration) and the dstSetConflict fence, this still guarantees a
+    // single writer per directory set for the whole migration window.
+    // LOOP FREEDOM: dstOfferValid is built only from REGISTERED state (status.valid/dstValid/
+    // migPending/set plus the SBU and DSS registers). Nothing on the
+    // offer → dstClaim → dstSetConflict → allocReady path feeds back into the offer, and the MSHRs
+    // must likewise keep io.allocate.bits.* out of their claim logic (see the note in MSHR.scala).
+    val dstOfferOwned = mshrs.map { m => m.io.status.valid && m.io.status.bits.set === coldDst }.reduce(_ || _)
+    dstOfferValid := sbu.io.migrateResp.destOk && !dstOfferOwned
+    dstOfferSet   := coldDst
+
     if (params.micro.sbcDebug) {
-      when (migrateAllocFire) {
-        printf(p"[SBC][SCHED] ADVICE-MIG srcSet=${request.bits.set} dstSet=${adviceDstSet}\n")
+      when (request.valid && request.ready && alloc && adviceMigrate) {
+        printf(p"[SBC][SCHED] ADVICE-MIG srcSet=${request.bits.set} offerValid=${dstOfferValid} offerSet=${dstOfferSet}\n")
       }
-    }
-    // migTokenPending only suppresses a *second* migrate-advise during the first migration's
-    // allocate→gate window (it feeds `!migTokenPending` in adviceMigrate above); it no longer
-    // fences demand traffic. Hold it until the owning MSHR raises dstValid (handoff) or a bounded
-    // timeout fires — the timeout covers the hit / ineligible-victim path where the latched advice
-    // never produces an eviction, so dstValid never rises.
-    val pendingOwnerLive = mshrs.map { m =>
-      m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === migTokenDstSet
-    }.reduce(_ || _)
-    when (migrateAllocFire) {
-      migTokenPending := true.B
-      migTokenDstSet  := adviceDstSet
-      migPendCtr      := 8.U
-    } .elsewhen (migTokenPending) {
-      when (pendingOwnerLive || migPendCtr === 0.U) { migTokenPending := false.B }
-      .otherwise                                    { migPendCtr := migPendCtr - 1.U }
+      when (mshrs.map(_.io.dstClaim.valid).reduce(_ || _)) {
+        printf(p"[SBC][SCHED] MIG-CLAIM dstSet=${dstOfferSet}\n")
+      }
     }
 
     // advisory assoc query unused until Phase 3
