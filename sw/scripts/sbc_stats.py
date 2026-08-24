@@ -24,6 +24,8 @@ RE_TAG      = re.compile(r"\[SBC\](?:\[[A-Z]+\])?\s+([A-Z][A-Z-]*)")
 RE_MIGREQ   = re.compile(r"\[SBC\] MIGREQ src=(\d+) \(sat=(\d+)\) dst=(\d+) \(coldLevel=(\d+)\)")
 RE_ABRT_SRC = re.compile(r"\[SBC\] ABORT-SRC set=(\d+) state=(\d+) dirty=(\d+) clients=(\d+) disp=(\d+)")
 RE_ABRT_DST = re.compile(r"\[SBC\] ABORT-DST srcSet=(\d+) dstSet=(\d+)")
+RE_DREAD    = re.compile(r"\[SBC\] DREAD-RESULT srcSet=(\d+) dstSet=(\d+) dstWay=(\d+) "
+                         r"state=(\d+) dirty=(\d+) clients=(\d+) displaced=(\d+)")
 RE_COMMIT   = re.compile(r"\[SBC\](?:\[[A-Z]+\])?\s+MIG-COMMIT\b.*?srcSet=(\d+).*?dstSet=(\d+)")
 
 # correctness / crash markers (looked for in sibling *.log / *.out)
@@ -63,6 +65,11 @@ def parse(sbc_log):
     abort_src_set = Counter()
     abort_dst_pairs = Counter()
     commits = Counter()
+    # Destination-probe outcome, mirroring the dstFree/dstEvictable test in MSHR.scala.
+    dread_outcome = Counter()
+    dread_cause = Counter()      # exact combination of set reject bits
+    dread_presence = Counter()   # per-bit, overlapping
+    dread_reject_set = Counter()
     with open(sbc_log, errors="replace") as f:
         for line in f:
             m = RE_TAG.search(line)
@@ -79,12 +86,28 @@ def parse(sbc_log):
             m = RE_ABRT_DST.search(line)
             if m:
                 abort_dst_pairs[(int(m.group(1)), int(m.group(2)))] += 1
+            m = RE_DREAD.search(line)
+            if m:
+                _src, dst, _way, st, dy, cl, dp = map(int, m.groups())
+                bits = [n for n, v in (("dirty", dy), ("clients", cl), ("displaced", dp)) if v]
+                if st == 0:
+                    dread_outcome["accept-free"] += 1
+                elif not bits:
+                    dread_outcome["accept-evictable"] += 1
+                else:
+                    dread_outcome["reject"] += 1
+                    dread_cause["+".join(bits)] += 1
+                    for n in bits:
+                        dread_presence[n] += 1
+                    dread_reject_set[dst] += 1
             m = RE_COMMIT.search(line)
             if m:
                 commits[(int(m.group(1)), int(m.group(2)))] += 1
     return dict(tags=tags, migreq_pairs=migreq_pairs,
                 abort_src_reason=abort_src_reason, abort_src_set=abort_src_set,
-                abort_dst_pairs=abort_dst_pairs, commits=commits)
+                abort_dst_pairs=abort_dst_pairs, commits=commits,
+                dread_outcome=dread_outcome, dread_cause=dread_cause,
+                dread_presence=dread_presence, dread_reject_set=dread_reject_set)
 
 
 def render(sbc_log, run_dir, d, correctness, crashes):
@@ -119,6 +142,27 @@ def render(sbc_log, run_dir, d, correctness, crashes):
     for tag, n in tags.most_common():
         w(f"  {n:6d}  {tag}")
     w("")
+
+    if d["dread_outcome"]:
+        o = d["dread_outcome"]
+        tot = sum(o.values())
+        rej = o.get("reject", 0)
+        w("---- DREAD-RESULT : why destination probes fail ----")
+        w(f"  probes            : {tot}")
+        for k in ("accept-free", "accept-evictable", "reject"):
+            n = o.get(k, 0)
+            w(f"  {k:<18}: {n:8d}  ({100.0*n/tot:.2f}%)")
+        if rej:
+            w("  reject cause (exact combination):")
+            for cause, n in d["dread_cause"].most_common():
+                w(f"    {cause:<26} {n:8d}  ({100.0*n/rej:.2f}% of rejects)")
+            w("  reject cause (presence, overlapping):")
+            for cause, n in d["dread_presence"].most_common():
+                w(f"    {cause:<26} {n:8d}  ({100.0*n/rej:.2f}%)")
+            w("  rejects by dstSet:")
+            for st, n in sorted(d["dread_reject_set"].items()):
+                w(f"    set {st}: {n}")
+        w("")
 
     if d["abort_src_reason"]:
         w("---- ABORT-SRC reason (why source victim ineligible) ----")
