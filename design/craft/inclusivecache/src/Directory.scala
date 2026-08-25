@@ -62,6 +62,9 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
   // SBC Phase 1: when set, prefer a migration-eligible way (valid, clean, no clients, not displaced)
   // as the victim (used by the migration source read). Baseline reads leave this false.
   val preferEvictable = Bool()
+  // SBC: this read is cache-internal machinery (migrate probe), not a demand access. It must not
+  // tag-match and must not reach the observation tap. Baseline reads leave this false.
+  val internalRead = Bool()
 }
 
 class DirectoryResult(params: InclusiveCacheParameters) extends DirectoryEntry(params)
@@ -130,6 +133,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val set = params.dirReg(RegEnable(io.read.bits.set, ren), ren1)
   val preferInvalid = params.dirReg(RegEnable(io.read.bits.preferInvalid, ren), ren1)
   val preferEvictable = params.dirReg(RegEnable(io.read.bits.preferEvictable, ren), ren1)
+  val internalRead = params.dirReg(RegEnable(io.read.bits.internalRead, ren), ren1)
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
 
@@ -166,11 +170,11 @@ class Directory(params: InclusiveCacheParameters) extends Module
   assert (!ren2 || PopCount(victimWayOH) === 1.U)
 
   val setQuash = bypass_valid && bypass.set === set
-  val tagMatch = bypass.data.tag === tag
+  val tagMatch = !internalRead && bypass.data.tag === tag
   val wayMatch = bypass.way === victimWay
 
   val hits = Cat(ways.zipWithIndex.map { case (w, i) =>
-    w.tag === tag && w.state =/= INVALID && !w.displaced && (!setQuash || i.U =/= bypass.way)
+    !internalRead && w.tag === tag && w.state =/= INVALID && !w.displaced && (!setQuash || i.U =/= bypass.way)
   }.reverse)
   val hit = hits.orR
 
@@ -181,7 +185,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
 
   // SBC observation tap: aligned to the result (uses the already result-aligned `set` wire so the
   // SetBalanceUnit gets a correct (set, hit) pair without re-deriving the read->result latency).
-  io.tap.valid    := ren2
+  io.tap.valid    := ren2 && !internalRead
   io.tap.bits.set := set
   io.tap.bits.hit := io.result.bits.hit
   io.tap.bits.way := io.result.bits.way

@@ -140,6 +140,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val migAttempt = Output(Bool())
     val migAbort   = Output(Bool())
     val migCommit  = Output(Bool())
+    // SBC: the destination set this MSHR probed and found unusable. Blocks it in the DSS so the
+    // next migration picks a different set.
+    val migRejectDst = Valid(UInt(params.setBits.W))
   })
 
   val request_valid = RegInit(false.B)
@@ -227,9 +230,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migAttempt = WireInit(false.B)
   val migAbort   = WireInit(false.B)
   val migCommit  = WireInit(false.B)
+  val migRejectDst = WireInit(false.B)
   io.migAttempt := migAttempt
   io.migAbort   := migAbort
   io.migCommit  := migCommit
+  io.migRejectDst.valid := migRejectDst
+  io.migRejectDst.bits  := migDstSet
   // [1]: We cannot issue outer Acquire while holding blockB (=> outA can stall)
   // However, inB and outC are higher priority than outB, so s_release and s_pprobe
   // may be safely issued while blockB. Thus we must NOT try to schedule the
@@ -332,6 +338,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.tag      := 0.U
   io.schedule.bits.dread.bits.preferInvalid := true.B
   io.schedule.bits.dread.bits.preferEvictable := true.B  // 2b: accept a clean evictable dst way
+  io.schedule.bits.dread.bits.internalRead    := true.B  // probe, not a demand access
+  // NOTE: tag is 0 here. internalRead suppresses the comparison, so it no longer matters.
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||
                        io.schedule.bits.dir.valid || io.schedule.bits.copy.valid || io.schedule.bits.dread.valid
@@ -887,6 +895,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     } .otherwise {                               // dst set has no free or evictable way → fall back
       migrating    := false.B
       migAbort     := true.B   // aborted++
+      migRejectDst := true.B   // block this dst in the DSS so the next pick rotates
       s_release    := false.B  // release the (clean, client-free) victim and refill normally
       w_releaseack := false.B
       if (params.micro.sbcDebug) { printf(p"[SBC] ABORT-DST srcSet=${request.set} dstSet=${migDstSet}\n") }

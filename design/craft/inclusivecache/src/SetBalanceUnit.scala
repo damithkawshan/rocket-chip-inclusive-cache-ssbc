@@ -72,6 +72,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // aborted at the dst-full fallback).
     val migAttempt = Input(Bool())
     val migAbort   = Input(Bool())
+    // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
+    // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
+    val migReject  = Flipped(Valid(UInt(params.setBits.W)))
     // SBC reset: SW pulse from MMIO SBC_Reset — zeroes all counters, saturation, AT and the DSS.
     val clear = Input(Bool())
     // MMIO
@@ -106,6 +109,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.update.valid      := io.dirTap.valid
   dss.io.update.bits.set   := tapSet
   dss.io.update.bits.level := nxt
+  dss.io.reject            := io.migReject
   dss.io.clear             := io.clear
   // Advisory query responses. migrateResp is the Phase-2 migrate advice; it is assigned below,
   // after `armed`/thresholds are declared.

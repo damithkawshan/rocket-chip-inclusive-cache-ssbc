@@ -337,6 +337,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.tag := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.tag,
                                 Mux(mshr_uses_directory_for_lb,    requests.io.data.tag, request.bits.tag))
   directory.io.read.bits.preferInvalid := mshr_uses_directory_for_dread // only the migration probe
+  // SBC: the dread lane is the migrate probe - internal machinery, so no tag match and no tap.
+  directory.io.read.bits.internalRead := mshr_uses_directory_for_dread
   // SBC Phase 2: a demand miss to a hot migration-source set prefers a clean, client-free victim
   // so the migrate-on-eviction gate in the MSHR finds an eligible line.
   // SBC Phase 2b (Bug A fix): the 2nd dir-read (the dstSet probe) must ALSO prefer an evictable way,
@@ -474,6 +476,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC Phase 2: migration counter pulses (OR across MSHRs; the token keeps ≤1 in flight)
     sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
     sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)
+    // SBC: a destination that refused a migration is blocked in the DSS. One-hot by the token.
+    val migRejectOH = VecInit(mshrs.map(_.io.migRejectDst.valid))
+    sbu.io.migReject.valid := migRejectOH.asUInt.orR
+    sbu.io.migReject.bits  := Mux1H(migRejectOH, mshrs.map(_.io.migRejectDst.bits))
+    assert (PopCount(migRejectOH) <= 1.U)
     io.sbcStats       := sbu.io.stats
 
     // SBC Phase 2: migrate advice for the demand-allocating set. The SBU reports the source set is
