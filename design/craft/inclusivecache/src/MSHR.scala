@@ -125,6 +125,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     //              migration. The "other" masking is what makes an arbiter unnecessary — see the
     //              one-asker-per-cycle argument on dstClaim below.
     val migOffer = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 3: "my set is a paired source, and this is my partner". Latched at allocate; the
+    // lookup side tolerates staleness (a search in the wrong set just finds nothing).
+    val pairInfo = Flipped(Valid(UInt(params.setBits.W)))
     // SBC Phase 2.5b: same-cycle destination claim, consumed ONLY by the Scheduler's dstSetConflict
     // fence, so the [claim -> fence] window is zero cycles. Deliberately kept separate from
     // status.dstValid: dstValid feeds the one-migration masking, and folding a combinational claim
@@ -208,6 +211,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migDeferred      = RegInit(false.B)
   // SBC Phase 2: migrate advice latched at allocate. Source-side only — "this set is hot".
   val migAdviceValidReg = RegInit(false.B)
+  // SBC Phase 3: this set's pairing, latched at allocate alongside the advice.
+  val pairValidReg      = RegInit(false.B)
+  val pairSetReg        = Reg(UInt(params.setBits.W))
 
   // SBC Phase 2.5b (late destination binding): two decide points can ask for a destination — the
   // fast path (victim was already client-free) and the deferred path (post-probe). They are mutually
@@ -798,6 +804,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!(migFastWantW && migDeferWantW),           "SBC: both migrate decide points fired in one cycle")
     assert (!migStartNow || io.migOffer.valid,          "SBC: migration started off an invalid destination offer")
     assert (!migStartNow || migStartDst =/= request.set, "SBC: migration destination equals its own source set")
+    // SBC Phase 3 (1f): a paired source may only ever spill into its own partner.
+    if (params.micro.sbcForceDstSet < 0) {
+      assert (!io.dstClaim.valid || !pairValidReg || io.dstClaim.bits === pairSetReg,
+              "SBC: paired source migrated outside its partner set")
+    }
     val migDeferCtr = RegInit(0.U(16.W))
     when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
     assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
@@ -866,6 +877,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     request := io.allocate.bits
     // SBC Phase 2: latch migrate advice for this set (suppressed on repeat allocations).
     migAdviceValidReg := io.migAdvice && !io.allocate.bits.repeat
+    // SBC Phase 3: latch this set's partner the same way.
+    pairValidReg      := io.pairInfo.valid && !io.allocate.bits.repeat
+    pairSetReg        := io.pairInfo.bits
   }
 
   // Create execution plan

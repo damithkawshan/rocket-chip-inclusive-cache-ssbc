@@ -48,6 +48,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     val dirTap = Flipped(Valid(new DirectoryTap(params)))
     // advisory queries (stubbed in Phase 0)
     val migrateQuery = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 3: the destination question, keyed to the MSHR that is deciding right now. Split from
+    // migrateQuery because the two questions are about two different sets once pairings exist.
+    val destQuery    = Flipped(Valid(UInt(params.setBits.W)))
     val migrateResp  = Output(new Bundle {
       val migrate = Bool()
       val destSet = UInt(params.setBits.W)
@@ -106,7 +109,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
 
   // DSS, fed with the post-update level of the touched set.
   val dss = Module(new DSS(params, params.micro.dssEntries))
-  dss.io.update.valid      := io.dirTap.valid
+  // SBC Phase 3: a set already in a pairing is not a destination candidate, so keep it out of the DSS.
+  dss.io.update.valid      := io.dirTap.valid && !at(tapSet).valid
   dss.io.update.bits.set   := tapSet
   dss.io.update.bits.level := nxt
   dss.io.reject            := io.migReject
@@ -126,15 +130,27 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   when (io.dirTap.valid && nxt < tLo) { armed(tapSet)     := false.B } // cooled -> disarm
   when (io.arm.valid)                 { armed(io.arm.bits) := true.B }  // SW arm (wins same-cycle)
 
-  // ---- SBC Phase 2: migrate advice for the demand-allocating set ------------------------------
-  // The Scheduler queries with the allocating set; the MSHR re-checks victim eligibility and the
-  // Scheduler ANDs in the one-migration token. "migrate" = source is hot (armed/auto + sat>=T_hi)
-  // AND a genuinely cold destination exists.
-  val qSet = io.migrateQuery.bits
-  io.migrateResp.destOk  := dss.io.coldestValid && (dss.io.coldestLevel < tLo)
-  io.migrateResp.migrate := (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi) &&
-                            io.migrateResp.destOk
-  io.migrateResp.destSet := dss.io.coldestSet
+  // ---- SBC Phase 2/3: two questions, two keys -------------------------------------------------
+  // Advice ("is the ALLOCATING set a hot source that could spill somewhere") is latched at allocate.
+  // Destination ("where does the DECIDING MSHR's migration actually go") is read many cycles later by
+  // a different MSHR. Phase 2 could merge them because the answer ignored the asker; under pinning the
+  // answer IS the asker's partner, so they must be keyed separately.
+  val qSet      = io.migrateQuery.bits
+  val qEntry    = at(qSet)
+  val dssPick   = dss.io.coldestSet
+  // A fresh pairing may only consume a set that is genuinely cold AND in no pairing (strict 1:1).
+  val dssOK     = dss.io.coldestValid && (dss.io.coldestLevel < tLo) && !at(dssPick).valid
+  val hotOK     = (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi)
+  io.migrateResp.migrate := hotOK && !(qEntry.valid && qEntry.sd) &&
+                            Mux(qEntry.valid && !qEntry.sd, true.B, dssOK)
+
+  val dSet      = io.destQuery.bits
+  val dEntry    = at(dSet)
+  val dIsSource = dEntry.valid && !dEntry.sd   // already paired -> pinned to its partner
+  val dIsDest   = dEntry.valid &&  dEntry.sd   // someone's destination -> must never source
+  // A pinned source gets NO coldness test: the partner is the partner regardless of temperature.
+  io.migrateResp.destOk  := !dIsDest && Mux(dIsSource, true.B, dssOK)
+  io.migrateResp.destSet := Mux(dIsSource, dEntry.assocSet, dssPick)
 
   // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
   // attempted/aborted come from dedicated MSHR pulses; migrations from commit{MIGRATE}.
@@ -145,7 +161,22 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   when (io.migAbort)   { nAbort   := nAbort + 1.U }
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
-  when (io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE) {
+  val migrateCommit = io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE
+  // SBC Phase 3 (1d): pinning must hold at every commit. The force-destination debug knob breaks 1:1
+  // on purpose, so it carves these out (Scala if -> no hardware either way).
+  if (params.micro.sbcForceDstSet < 0) {
+    assert(!migrateCommit || !at(io.commit.bits.src).valid ||
+           (!at(io.commit.bits.src).sd && at(io.commit.bits.src).assocSet === io.commit.bits.dst),
+           "SBC: commit would re-pair an already-paired source (pinning broken)")
+    assert(!migrateCommit || !at(io.commit.bits.dst).valid ||
+           (at(io.commit.bits.dst).sd && at(io.commit.bits.dst).assocSet === io.commit.bits.src),
+           "SBC: commit targets a destination already in another pairing (1:1 broken)")
+  }
+  // Both halves of the pairing leave the DSS candidate pool (see DSS.io.remove).
+  dss.io.remove.valid    := migrateCommit
+  dss.io.remove.bits.src := io.commit.bits.src
+  dss.io.remove.bits.dst := io.commit.bits.dst
+  when (migrateCommit) {
     nCommit := nCommit + 1.U
     at(io.commit.bits.src).valid    := true.B
     at(io.commit.bits.src).sd       := false.B            // source side

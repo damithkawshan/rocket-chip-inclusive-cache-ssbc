@@ -196,6 +196,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   //              asking MSHR must not be blocked by its own in-flight state.
   val dstOfferValid = WireInit(false.B)
   val dstOfferSet   = WireInit(0.U(params.setBits.W))
+  // SBC Phase 3: "my set is a paired source, and this is my partner", latched by the allocating MSHR.
+  // Lookup side only - staleness is harmless here (a search in the wrong set finds nothing).
+  val pairInfoValid = WireInit(false.B)
+  val pairInfoSet   = WireInit(0.U(params.setBits.W))
   // SBC Phase 2 (dst-collision fix): fence a live migration's destination set. A request whose set is
   // a migrant's dstSet must neither be consumed (request.ready) NOR allocate an MSHR / read the
   // directory for one — it is held at the sink until the migration retires and dstValid clears.
@@ -215,8 +219,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // its eviction probe has not reserved a destination yet (dstValid is still false), so without
   // migPending a second MSHR could take the token and start its own migration inside that window,
   // breaking the one-migration-per-bank assumption the Phase-2 fences were designed under.
-  val anyMigrating = mshrs.map(m => m.io.status.valid &&
-                                    (m.io.status.bits.dstValid || m.io.status.bits.migPending)).reduce(_ || _)
+  // SBC Phase 3: one migration per bank, so this is one-hot. Also used per-MSHR in the offer fanout
+  // below (that used to be a separate `migBusy` wire spelling the same expression).
+  val migrantOH    = VecInit(mshrs.map(m => m.io.status.valid &&
+                                    (m.io.status.bits.dstValid || m.io.status.bits.migPending))).asUInt
+  val anyMigrating = migrantOH.orR
+  assert (PopCount(migrantOH) <= 1.U, "SBC: more than one migration in flight")
 
   // If a same-set MSHR says that requests of this type must be blocked (for bounded time), do it
   val blockB = Mux1H(setMatches, mshrs.map(_.io.status.bits.blockB)) && request.bits.prio(1)
@@ -290,12 +298,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // mid-migration". Masking per MSHR rather than globally matters: a deferred migrant raises
   // migPending itself, so a global mask would take the offer away from exactly the MSHR that is about
   // to need it, and every deferred migration would decline.
-  val migBusy = VecInit(mshrs.map(m => m.io.status.valid &&
-                                       (m.io.status.bits.dstValid || m.io.status.bits.migPending))).asUInt
   mshrs.zipWithIndex.foreach { case (m, i) =>
     m.io.migAdvice       := adviceMigrate
-    m.io.migOffer.valid  := dstOfferValid && !(migBusy & ~(1.U(params.mshrs.W) << i).asUInt).orR
+    m.io.migOffer.valid  := dstOfferValid && !(migrantOH & ~(1.U(params.mshrs.W) << i).asUInt).orR
     m.io.migOffer.bits   := dstOfferSet
+    m.io.pairInfo.valid  := pairInfoValid
+    m.io.pairInfo.bits   := pairInfoSet
   }
   // At most one MSHR may claim a destination per cycle. Holds by construction (one-hot directoryFanout
   // for the fast path; migPending masking for the deferred path), so this is a check, not a mechanism.
@@ -351,7 +359,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // live offer, so on its own it would raise this hint on evictions that then decline — perturbing
   // victim selection away from baseline for no gain. AND in the offer to keep the hint as rare as it
   // was before. It stays a hint either way (correctness never depends on it).
-  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate && dstOfferValid) ||
+  // SBC Phase 3: the `&& dstOfferValid` term is gone. After the advice/destination split that wire
+  // describes some OTHER MSHR's destination, so it says nothing about the allocating set. Hint only.
+  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
                                             mshr_uses_directory_for_dread
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
@@ -493,6 +503,16 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val isDemandA = request.bits.prio(0) && !request.bits.control
     sbu.io.migrateQuery.valid := request.valid
     sbu.io.migrateQuery.bits  := request.bits.set
+    // SBC Phase 3: who takes a destination this cycle - a migration already in flight (deferred path),
+    // else the MSHR whose directory result lands now (fast path). `migrantOH` is all-zero in the exact
+    // cycle a fast-path MSHR decides, which is why this needs both terms and not one query port.
+    val decidingOH = Mux(anyMigrating, migrantOH, directoryFanout.asUInt)
+    sbu.io.destQuery.valid := decidingOH.orR
+    sbu.io.destQuery.bits  := Mux1H(decidingOH, mshrs.map(_.io.status.bits.set))
+    // A claim can only happen in a cycle where that MSHR is the one the query was made for.
+    val claimOH = VecInit(mshrs.map(_.io.dstClaim.valid)).asUInt
+    assert ((claimOH & ~decidingOH) === 0.U,
+            "SBC: destination claimed by an MSHR the destination query was not made for")
     // SBC debug repro: sbcForceDstSet (>=0) pins every migration's destination to a fixed set so the
     // dst-collision race is reproducible. Off (-1) = normal DSS pick (Scala if -> zero hardware off).
     // We override only WHERE a migration goes, not WHETHER — `migrateResp.migrate` (source must be
@@ -526,9 +546,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       }
     }
 
-    // advisory assoc query unused until Phase 3
-    sbu.io.assocQuery.valid   := false.B
-    sbu.io.assocQuery.bits    := 0.U
+    // SBC Phase 3: partner lookup for the allocating request. Gated to a FRESH allocate: the reload
+    // path drives allocate.bits.set from the MSHR's own prior set, not request.bits.set, so an ungated
+    // query would latch the wrong set's pairing on a secondary pop.
+    sbu.io.assocQuery.valid   := request.valid && alloc
+    sbu.io.assocQuery.bits    := request.bits.set
+    pairInfoValid := sbu.io.assocQuery.valid && sbu.io.assocResp.activeSource
+    pairInfoSet   := sbu.io.assocResp.assocSet
     // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).
     val migCommit = mshrs.map(_.io.migCommit)
     sbu.io.commit.valid     := migCommit.reduce(_ || _)

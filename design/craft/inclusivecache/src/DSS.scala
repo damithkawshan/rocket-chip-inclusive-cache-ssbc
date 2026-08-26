@@ -23,6 +23,12 @@ class DSS(params: InclusiveCacheParameters, d: Int) extends Module
     // SBC: a set that refused a migration (no free or evictable way) is blocked as a destination
     // until every candidate has been tried. Saturation alone cannot see that a set is full.
     val reject       = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC Phase 3: both halves of a new pairing leave the candidate pool permanently (1:1 pinning).
+    // Unlike `reject` this never wears off; teardown lets a set back in via the normal update path.
+    val remove       = Flipped(Valid(new Bundle {
+      val src = UInt(params.setBits.W)
+      val dst = UInt(params.setBits.W)
+    }))
     val clear        = Input(Bool())
     val coldestValid = Output(Bool())
     val coldestSet   = Output(UInt(params.setBits.W))
@@ -83,6 +89,16 @@ class DSS(params: InclusiveCacheParameters, d: Int) extends Module
   val retry = RegInit(0.U(10.W))
   retry := retry + 1.U
   when (!elig.asUInt.orR || retry === 0.U) { blocked.foreach(_ := false.B) }
+
+  // SBC Phase 3: a set that just entered a pairing is no longer a destination candidate. Placed after
+  // the update block so a same-cycle update loses to the removal.
+  when (io.remove.valid) {
+    (0 until d).foreach { i =>
+      when (valid(i) && (setIdx(i) === io.remove.bits.src || setIdx(i) === io.remove.bits.dst)) {
+        valid(i) := false.B
+      }
+    }
+  }
 
   // SBC reset: drop all candidates. setIdx/level become don't-care once invalid.
   // Placed after the update block so it wins on a same-cycle collision.
