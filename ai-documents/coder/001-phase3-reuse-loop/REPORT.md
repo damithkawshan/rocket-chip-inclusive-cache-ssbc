@@ -504,8 +504,72 @@ new one.
 - No deadlock: under strict 1:1 a destination is never a source, so the MSHR holding D never searches
   and can never be waiting on us.
 
-⚠️ **Commit 4 is uncommitted pending this being verified.** If the fence does not fix both cases, the
-diagnosis is wrong again and I will report rather than keep patching.
+⚠️ **The fence did NOT fix it.** Both cases still failed. The diagnosis above is wrong — recorded here
+rather than deleted, because the reasoning looked sound and someone will otherwise re-derive it.
+
+### Bisect: the erase is innocent, the serve path is the bug
+
+I stopped patching and bisected. Keeping the search and the erase but never serving
+(`when ((secTip || !req_needT) && SEC_SERVE.B)` with `SEC_SERVE = false`):
+
+| case | serve ON | serve OFF |
+|---|---|---|
+| case_full_dirty_dst | **FAIL** | **PASS** |
+| case_reaccess_migrated | **FAIL** | **PASS** |
+| all others | PASS | PASS |
+
+So the partner search, the erase of the parked copy, and the partner fence are all fine. **Serving the
+copied block is what corrupts.** A second bisect ruled out the migrate/repatriate concurrency
+(`&& !migrating` — both cases still failed), so it is not the interaction I was most worried about
+either. It is the copy-and-serve itself.
+
+### The strongest lead, and it was written down before I started
+
+`CLAUDE.md`, on `s_verify` (the copy-verification state deleted in `a2975d6`):
+
+> **Rebuild in Phase 3 behind a non-starvable read path — now a hard prereq, since Phase 3 serves copies.**
+
+**Phase 2's copies have never been read back.** A displaced line could not hit, so a subtly wrong copy
+was invisible. Commit 4 is the first thing in this project that ever *reads* a copied block — and it
+finds it wrong.
+
+The SetCopyUnit's own hazard argument says why that is plausible
+([SetCopyUnit.scala:100-107](../../../design/craft/inclusivecache/src/SetCopyUnit.scala#L100)):
+
+> *"The destination fence (dstSetConflict -> allocReady in the Scheduler) stops any new request to
+> dstSet from allocating, so no fresh SourceD read of dstSet can start once we pass this point — which
+> is what makes copy_wsafe stable high for the rest of the copy."*
+
+That argument holds for a **migration**, whose destination is a fenced cold set. It does **not** hold for
+a **repatriation**, whose destination is `request.set` — this MSHR's own live home set, which SourceD is
+actively working on. The SCU's WaR reasoning is being used outside the conditions it was written for.
+
+I have **not** proven this is the cause. I have been wrong four times on this bug today and I am not
+going to assert a fifth diagnosis without evidence. What is established is the bisect: the serve path,
+and only the serve path.
+
+### State of the tree
+
+Commit 4 is **written and working but uncommitted** — `MSHR.scala`, `Scheduler.scala`,
+`SetBalanceUnit.scala` are modified. That includes the partner fence (`secValid`/`secSet` +
+`partnerBusy`), which was built on the wrong diagnosis and is **not proven necessary**. I have not
+stripped it because I cannot prove it unnecessary either, and I would rather hand you that decision than
+quietly leave unjustified mechanism in the RTL or quietly delete a guard that turns out to matter.
+
+Also uncommitted: two debug printfs (`SEC-STUCK` in MSHR, `STALL` and `DIR-WRITE` in Scheduler), all
+`sbcDebug`-gated. `DIR-WRITE` in particular is expensive and should go before anything lands.
+
+### Separate defect found, not touched
+
+`migration_stress_test` case 7 tripped a **pre-existing Phase-2 assert** on one run:
+
+```
+SBC: both migrate decide points fired in one cycle
+  MSHR.scala:916  assert (!(migFastWantW && migDeferWantW))
+```
+
+The partner search changes MSHR timing enough to make it reachable. It did not reproduce on the next
+run, so it is intermittent. Unrelated to the serve-path corruption.
 
 ---
 
