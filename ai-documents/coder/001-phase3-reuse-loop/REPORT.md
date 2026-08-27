@@ -394,9 +394,118 @@ assert (!(repatriating && migrating) || !(migDstSet === pairSetReg && migDstWay 
 Nothing today prevents the DSS handing a set itself as its own destination — it cannot happen while
 `tHi > tLo` (a set cannot be both hot and coldest), but that is a numeric coincidence, not an invariant.
 
-### Results
+### Bug found in bring-up: trap 4, again, in my own code
 
-_(pending — elaborates clean, no combinational loops; building)_
+The first run **deadlocked at cycle 12,655**, immediately after the first repatriation's copy finished.
+The stall dump named it in one line:
+
+```
+SEC-STUCK repat=1 s_sinval=1 s_exec=1 s_writeback=0 w_grantack=0 no_wait=0 schedV=0 dirV=0 dV=0
+```
+
+`s_exec=1` — the Grant was marked as sent. `w_grantack=0` — no client GrantAck ever came. Nothing was
+schedulable, and the MSHR waited forever for a reply to a message it had never transmitted.
+
+Cause: `d.valid` and its completion are siblings that must carry the identical condition.
+
+```scala
+io.schedule.bits.d.valid := !s_execute && w_pprobeack && w_grant && (!repatriating || w_scopy)   // I added a term here
+when (io.schedule.ready) { when (w_pprobeack && w_grant) { s_execute := true.B } }                // ...and not here
+```
+
+With `d.valid` false but the completion's condition true, **any other schedule item firing marked the
+Grant as sent.** The MSHR was scheduled for its `sec_dir1` directory write, and that retired `s_execute`
+without a Grant ever reaching the client.
+
+This is TASK §5 trap 4 verbatim — *"a gate added in one place and missed in its sibling; `707445c` was
+exactly this"* — and I walked into it while holding the warning. Fixed structurally rather than locally,
+so it cannot recur: the condition is named once and both sites use the name.
+
+```scala
+val d_ready = w_pprobeack && w_grant && (!repatriating || w_scopy)
+io.schedule.bits.d.valid := !s_execute && d_ready
+...
+when (d_ready) { s_execute := true.B }
+```
+
+### And my aliasing assert was wrong twice
+
+After the deadlock fix the run got further (3 secondary hits, 2 completed copies) and then tripped my own
+`migration parked into the way being repatriated` assert. Two iterations of narrowing before I stopped
+guessing and pulled the full event log:
+
+```
+DREAD-RESULT srcSet=5 dstSet=7 dstWay=7 state=3 dirty=0 clients=0 displaced=1
+ABORT-DST    srcSet=5 dstSet=7            <- probe correctly refuses the displaced way
+...
+SEC-HIT      set=5 partner=7 way=7        <- our line is at (7,7)
+MIG-START    srcSet=5 srcWay=0 dstSet=7   <- new migration, probe not yet answered
+```
+
+**The invariant holds; the guard was wrong.** `migDstWay` keeps a stale value from an earlier aborted
+attempt until `w_dread` resolves, and the assert was reading it before the destination was bound. The
+underlying claim is confirmed by the log itself: the probe *did* see the displaced way and *did* refuse
+it (`ABORT-DST`). The assert now requires `w_dread`.
+
+Worth recording separately: `ABORT-DST` is markedly more frequent than before commit 2, because the LFSR
+victim tier now returns displaced ways and the destination probe rejects them. That is a real commit-2
+side effect on migration success rate. It is inside the "do not touch destination eligibility" boundary,
+so I have only noted it.
+
+### Results — the loop closes, but commit 4 is NOT landable yet
+
+**The reuse loop works.** `migration_stress_test`, first full run:
+
+| | |
+|---|---:|
+| **SEC-HIT (secondary hits)** | **2,287** |
+| SEC-COPY-DONE (lines repatriated) | 2,287 |
+| SEC-MISS | 39,738 |
+| asserts | 0 |
+
+Per pairing, secondary hits versus migrations: `1->3` **1,770** hits / 1,773 migrations; `5->7` **662** /
+666; `6->0` 189 / 14,357. For the first two pairings **nearly every parked line is later found and
+brought home** — which is what a stress test that deliberately re-touches the same lines should produce,
+and it is the first time in this project that a parked line has ever returned anything.
+
+**But two stress cases fail, with zero asserts — i.e. silently wrong data:**
+
+```
+case_free_dst         PASS      case_full_dirty_dst      FAIL
+case_full_clean_dst   PASS      case_reaccess_migrated   FAIL
+case_dirty_victims    PASS      case_hazard_rw           PASS
+```
+
+Both failures are reads returning the wrong value. `case_full_dirty_dst` also finds **cold-set** lines
+wrong, not just hot-set ones — the damage is in the partner set, not only in the repatriated line.
+
+### Diagnosis: the partner set is not fenced
+
+A migration's *destination* set is fenced (`dstSetConflict`, the Phase-2 collision fix). A search's
+*partner* set is not. Between the search reading D and the erase of `(D, secWay)`, another MSHR can
+allocate D, evict the parked way and refill it. Two things then go wrong, and the second explains the
+cold-set corruption:
+
+1. the copy reads whatever now occupies `(D, secWay)` and installs it under our tag; and
+2. `sec_dir1` erases `(D, secWay)` — **destroying the line that took its place**, with no writeback,
+   because the erase writes `invalid` unconditionally.
+
+My first race check found nothing, and it was a bad check: it looked for eviction printfs, but a refill
+into a way that is already INVALID emits none. That is the case that bites.
+
+**Fix implemented (untested at the time of writing):** extend the existing fence rather than invent a
+new one.
+
+- `MSHRStatus` gains `secValid` / `secSet`, held from the moment the search is armed until the parked
+  copy is erased; `dstSetConflict` ORs it in. This keeps *new* allocations out of D.
+- That is not sufficient on its own: an MSHR that **already** owns D is unaffected by an allocation
+  fence, and the partner is fixed by the AT so we cannot pick a free set the way a migration does. So
+  the MSHR also gains `partnerBusy` and holds `doSearch` until no other MSHR owns D.
+- No deadlock: under strict 1:1 a destination is never a source, so the MSHR holding D never searches
+  and can never be waiting on us.
+
+⚠️ **Commit 4 is uncommitted pending this being verified.** If the fence does not fix both cases, the
+diagnosis is wrong again and I will report rather than keep patching.
 
 ---
 
