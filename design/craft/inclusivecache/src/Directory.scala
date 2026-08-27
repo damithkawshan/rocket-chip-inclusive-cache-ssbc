@@ -143,21 +143,21 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val victimLTE  = Cat(victimSums.map { _ <= victimLFSR }.reverse)
   val victimSimp = Cat(0.U(1.W), victimLTE(params.cache.ways-1, 1), 1.U(1.W))
   val victimWayOHLFSR = victimSimp(params.cache.ways-1,0) & ~(victimSimp >> 1)
-  // SBC: prefer invalid, else the LFSR victim among non-displaced ways (preferInvalid makes
-  // "destination set full?" a precise test). Displaced ways are only victimized as a last resort —
-  // see the displaced-reclaim tier below.
+  // SBC: prefer invalid, else the plain LFSR victim (preferInvalid makes "destination set full?"
+  // a precise test).
   val invalidWayOH   = Cat(ways.map(_.state === INVALID).reverse)
   val nonDisplacedOH = Cat(ways.map(!_.displaced).reverse)
-  val lfsrVictimOH   = victimWayOHLFSR & nonDisplacedOH
+  // SBC Phase 3: displaced ways compete for the LFSR victim like any other way. They used to be
+  // masked out (`& nonDisplacedOH`), which quarantined them: unable to hit AND unable to be evicted,
+  // so a partner set clogged and teardown could never fire. See TASK 001 Amendment 1 A3.
+  val lfsrVictimOH   = victimWayOHLFSR
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
   // writeback), no clients (no probe), not displaced. The migration source read prefers one.
   val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
-  // SBC Phase 2: last-resort displaced reclaim. Displaced ways are excluded from every tier above, so
-  // a set that fills with them would have victimWayOH = 0 and trip the PopCount assert below. When no
-  // non-displaced way exists, victimize a displaced way (lowest priority — taken only when nothing
-  // native is left). Safe: a displaced entry is clean + client-free by construction (the MSHR install
-  // invariant), so the MSHR drops it silently (no writeback, no probe). When SBC is off no way is ever
-  // displaced, so nonDisplacedOH is all-ones and this branch is unreachable — baseline-exact.
+  // SBC: displaced-reclaim backstop. The LFSR tier above is always one-hot, so these last two Mux
+  // arms are unreachable today; they stay as the guarantee that victimWayOH can never be zero and
+  // trip the PopCount assert below. Safe either way: a displaced entry is clean + client-free by
+  // construction (the MSHR install invariant), so the MSHR drops it silently (no writeback, no probe).
   val displacedOH = ~nonDisplacedOH
   val victimWayOH = Mux(preferInvalid && invalidWayOH.orR, PriorityEncoderOH(invalidWayOH),
                     Mux(preferEvictable && evictableOH.orR, PriorityEncoderOH(evictableOH),

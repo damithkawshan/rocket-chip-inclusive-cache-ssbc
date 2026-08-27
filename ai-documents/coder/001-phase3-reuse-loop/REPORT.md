@@ -1,7 +1,7 @@
 # REPORT 001 — Phase 3: close the reuse loop
 
 **Coder:** Claude (coder session) · **Status:** `in progress`
-**Last updated:** 2026-08-26
+**Last updated:** 2026-08-27
 
 > Written as I go. Newest facts appended per section.
 
@@ -62,12 +62,179 @@ confirmation of the 2026-08-25 conclusion that Phase-2 migration without reuse i
 
 ## Commits
 
+Plan as revised by **Amendment 1** (2026-08-26). Branch: `sbc-paper-aligned`.
+
 | # | Commit | What | Landed? |
 |---|---|---|---|
 | 1 | `97b0d54` | Pinning (§1a/§1b/§1d/§1e/§1f) + §2b pulled forward | ✅ yes |
-| 2 | | Building blocks (§2a directory secondary-search) | |
-| 3 | | **Search + swap + replay** ⭐ | |
-| 4 | | Teardown | |
+| 2 | `f435658` | **Displaced lines evictable** — drop `& nonDisplacedOH`. Single-variable experiment (A3/A4) | ✅ yes |
+| 3 | | Building blocks (§2a directory secondary-search) | |
+| 4 | | **Search + serve in place** ⭐ (was: swap + replay — dropped per A2) | |
+| 5 | | Teardown | |
+
+The commit-2/3 work written before Amendment 1 (the §2a directory secondary-search) is unchanged and
+parked in the scratchpad; it simply moves from slot 2 to slot 3. Nothing was lost.
+
+---
+
+## Commit 2 — displaced lines evictable (Amendment 1 A3/A4)
+
+**The change is one line.** [Directory.scala:153](../../../design/craft/inclusivecache/src/Directory.scala#L153):
+
+```scala
+-  val lfsrVictimOH   = victimWayOHLFSR & nonDisplacedOH
++  val lfsrVictimOH   = victimWayOHLFSR
+```
+
+Comments around it updated to match (the old ones asserted the quarantine as an invariant, which is
+exactly the kind of stale comment that let the `s_wsafe` fix be deleted in a previous cleanup pass).
+
+**What I deliberately did NOT change**, per A4:
+
+- `evictableOH` still carries `!w.displaced`. That tier picks a **migration source**, and a displaced
+  line can never be one — its address cannot be reconstructed, so it cannot be re-parked elsewhere.
+- `displacedOH` and the last-resort Mux arms stay. With the mask gone, `lfsrVictimOH` is always exactly
+  one-hot, so the last two arms are unreachable today; they remain as the structural guarantee that
+  `victimWayOH` can never be zero and trip `assert(PopCount(victimWayOH) === 1.U)`.
+- Nothing in destination eligibility or the ABORT-DST path.
+
+**Baseline-exactness is preserved.** With SBC off no entry is ever `displaced`, so `nonDisplacedOH` is
+all-ones and `victimWayOHLFSR & nonDisplacedOH === victimWayOHLFSR`. The removed term was the identity.
+
+### Evidence this was worth doing (measured on the commit-1 build, before the change)
+
+| | matmult | stress test |
+|---|---:|---:|
+| MIG-COMMIT (lines parked) | 11 | 19,126 |
+| EVICT-DISPLACED-RECLAIM (lines freed) | **2** | 19,107 |
+| still parked at end of run | **9 of 11** | ~19 |
+
+The quarantine only bites when migration is rare. Under the stress test's hammer the sets fill fast
+enough that the last-resort tier fires constantly and everything recycles — so **the stress test cannot
+detect this class of bug**, and did not. On matmult, 9 of the 11 parked lines were never freed: they
+could not hit and could not be evicted. Teardown could never have fired. A3 confirmed.
+
+### Results — correctness gate: PASS
+
+`migration_stress_test`, `VerilatorRocket8KL116KL2Config`:
+
+- **7/7 PASS**, `*** PASSED *** Completed after 22,227,006 cycles`, **0 asserts**
+- `COPY-DONE 17,356 == MIG-COMMIT 17,356`
+- 1:1 invariant **OK** — pairings `1->0`, `5->7`, `6->3`; no source with two destinations, no set on
+  both sides (commit 1's pairings were `1->3`, `5->7`, `6->0`; different destinations are expected,
+  the DSS sees different timing)
+
+| stress-test event | commit 1 (masked) | commit 2 (unmasked) | |
+|---|---:|---:|---|
+| OUTER-A | 160,896 | **147,202** | −8.5% |
+| EVICT-NORMAL | 97,128 | 85,235 | −12.2% |
+| MIG-COMMIT | 19,126 | 17,356 | −9.3% |
+| EVICT-DISPLACED-RECLAIM | 19,107 | 17,347 | |
+| ABORT-DST | 25,217 | 26,550 | +5.3% |
+| MIG-DECLINE | 253 | 650 | +157% |
+| HOT | 8,276 | 22,317 | +170% |
+
+### A4's warning, measured: displaced lines do die young
+
+`sbc_life.py` pairs each `COPY-DONE (dstSet,dstWay)` with the next `EVICT-DISPLACED-RECLAIM` of the same
+way and uses the `C0:` trace as the clock. Commit-2 stress run, 17,347 matched park/reclaim pairs:
+
+| lifetime (cycles) | share |
+|---|---:|
+| 0 .. 100 | **5.2%** |
+| 100 .. 1,000 | 36.6% |
+| 1,000 .. 10,000 | 57.6% |
+| > 10,000 | 0.6% |
+
+median **1,366 cycles**, mean 3,736, p10 203. Only 9 lines were still parked at the end of the run.
+
+### ...but against the commit-1 baseline the effect is the **opposite** of what A4 feared
+
+I re-ran the commit-1 build on the same test to get a true single-variable comparison (the original
+`.out` had been overwritten). Verilator is deterministic, so the two are directly comparable:
+
+| displaced-line lifetime | commit 1 (quarantined) | commit 2 (evictable) |
+|---|---:|---:|
+| median | **131 cycles** | **1,366 cycles** |
+| mean | 109 | 3,736 |
+| p10 | 0 | 203 |
+| max | 2,047 | 10,028,150 |
+| died within 100 cycles | **41.3%** | **5.2%** |
+| died within 1,000 cycles | 100.0% | 41.8% |
+| total cycles | 22,302,276 | 22,227,006 |
+
+**Removing the mask made parked lines live 10x LONGER, not shorter.** A4 predicted the reverse, and the
+reasoning behind the prediction was sound — random replacement gives a freshly-copied line no
+protection. What that reasoning missed is what the quarantine actually left behind:
+
+> With the mask, a displaced way could be victimized **only** by the last-resort tier — and that tier is
+> `PriorityEncoderOH(displacedOH)`, which always picks the **lowest-indexed** displaced way. So once a
+> set filled with parked lines, the same way was killed over and over, deterministically. Removing the
+> mask hands displaced ways to the LFSR, which spreads eviction across all 8 ways.
+
+So the quarantine was not protecting displaced lines. It was condemning them to a degenerate,
+deterministic reclaim, and 41% of them died inside 100 cycles of being copied in — **the exact failure
+mode A4 warned the change would cause was already happening before the change.** The lines that fixed
+this ordering are not new: this is the same last-resort tier described in `CLAUDE.md` as verified only
+under forcing. It is now measured on a real run, and it was worse than assumed.
+
+No temporary-protection mechanism is needed. Do not build one.
+
+### matmult — the run that decides commit 2
+
+```
+Matrix multiplication successful. Checksum: 29824
+*** PASSED *** Completed after 15,699,736 simulation cycles      0 asserts
+```
+
+| `bringup_matmult` N=32 | cycles | vs SBC-off | OUTER-A | vs SBC-off |
+|---|---:|---:|---:|---:|
+| SBC **off** (`NoSbcConfig`) | 15,683,316 | — | 13,147 | — |
+| SBC, pre-pinning (2026-08-25) | 22,278,686 | +42.0% | 122,144 | 9.29x |
+| SBC + pinning (commit 1) | 19,088,476 | +21.7% | 64,923 | 4.94x |
+| **SBC + pinning + evictable (commit 2)** | **15,699,736** | **+0.10%** | **13,146** | **1.00x** |
+
+**The entire measured cost of SBC was the quarantine.** Not migration, not the copies, not the fence —
+one `&` term in the victim-select. OUTER-A is now 13,146 against the no-SBC control's 13,147: one fewer
+DRAM fetch than not having SBC at all. Per-set OUTER-A matches the control set for set (6,071 vs 6,037
+on set 0, within 4% on every other set). Overhead is +0.10% of cycles, which at this scale is noise.
+
+Migration behaviour is unchanged from commit 1 — **the same 11 migrations, the same 11 commits.** What
+changed is what happens to the parked lines afterwards:
+
+| | commit 1 | commit 2 |
+|---|---:|---:|
+| MIG-COMMIT | 11 | 11 |
+| EVICT-DISPLACED-RECLAIM | **2** | **11** |
+| still parked at end of run | **9** | **0** |
+| median parked lifetime | — | 4,831 cycles |
+
+### Why 9 stuck lines cost 4.94x the DRAM traffic
+
+That ratio looks impossible until you look at where the 9 lines were. Commit 1's pairings were `5->0`
+and `7->6`, with **8 of the 11 migrations going into set 0**. This L2 has **8 ways**. So set 0 ended the
+run with all eight ways displaced — and a displaced way could neither hit nor be evicted except by the
+last-resort tier, which needs `!nonDisplacedOH.orR`, i.e. *every* way displaced. It fired twice. Each
+time it freed exactly one way, that way became native, `nonDisplacedOH` went non-zero, and the tier shut
+off again — leaving set 0 cycling through **a single usable way**.
+
+Set 0 was effectively direct-mapped for the rest of the benchmark, and set 0 is the hottest set in this
+workload (6,000 of 13,000 DRAM fetches even with SBC off). That is the 4.94x.
+
+This is the caveat `CLAUDE.md` already records — *"a 7/8-displaced set recycles its one native way until
+Phase-3 spreading"* — reaching its worst case: **8/8 displaced.** It was written down as a known
+limitation and it turned out to be the single dominant cost in the whole design.
+
+### What commit 2 does NOT do
+
+**Zero secondary hits, still.** SBC is now roughly free rather than expensive, but free is not the goal —
+it still returns nothing. `SBC_SecHits` is tied to `0.U`
+([SetBalanceUnit.scala:211](../../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L211)) and
+nothing reads a parked line. The payoff is still commits 3-4.
+
+One thing commit 2 *does* buy for commit 4: parked lines now live a median of **4,831 cycles** on matmult
+(min 134, p90 23,538) instead of being frozen forever or, on the stress test, killed inside 131. That is
+a window a secondary search can actually hit in.
 
 ---
 
@@ -117,16 +284,123 @@ See F2/F3/F4 above.
 
 ## Open questions for the thinker
 
-_(none yet)_
+### Q1 — "serve in place" (A2) breaks `displaced => clean + client-free`, and it breaks it *silently*
+
+Raised now rather than at commit 4 because it changes what commit 4 is.
+
+Granting a line to the CPU sets its `clients` bit — an inclusive L2 has no choice, it must track the
+L1 copy. So a displaced line that has been served in place is **client-held**. Three RTL facts then
+collide with that:
+
+| RTL | what it does |
+|---|---|
+| [MSHR.scala:482](../../../design/craft/inclusivecache/src/MSHR.scala#L482) | `assert(!mig_dir1 \|\| (!meta.dirty && (meta.clients & ~probes_toN) === 0.U), "migrate source must be clean+client-free")` |
+| [MSHR.scala:487](../../../design/craft/inclusivecache/src/MSHR.scala#L487) | `assert(!(meta_valid && meta.displaced && !s_release), ...)` — a displaced victim may never be Released |
+| [MSHR.scala:1038-1046](../../../design/craft/inclusivecache/src/MSHR.scala#L1038) | the reclaim branch drops a displaced victim with **no probe and no release** |
+
+The install-side assert only guards the *install*, and the release-side assert only fires if something
+tries to Release. **Neither catches the case that matters**: a client-held displaced line reaching the
+reclaim branch is dropped with no probe, so the L1 keeps a block the L2 has forgotten. That is an
+inclusivity violation with no assert behind it — it would show up as wrong data, not as a crash.
+
+The reason none of this is currently a problem is the same reason the whole thing is safe today: a
+displaced line's address cannot be reconstructed. `expandAddress(tag, physicalSet, off)` uses the set
+the entry *sits in*, and a displaced entry sits in the wrong one, so any probe or release it generates
+carries the wrong address.
+
+**Two ways out. This is a design call, not mine:**
+
+- **(A) Faithful serve-in-place.** Allow client-held (and eventually dirty) displaced lines, and
+  reconstruct their address through the AT: `AT[D].assocSet` is the source set `S`, so the real address
+  is `expandAddress(tag, AT[D].assocSet, off)`. This is sound *only* because commit 1's strict 1:1
+  pinning guarantees D holds displaced lines from exactly one source — which is a good argument that
+  pinning was the right prerequisite after all. Cost: probe and release paths must learn to take their
+  set from the AT rather than from the entry's location, and the reclaim tier must stop being silent.
+- **(B) Serve by repatriation.** On a secondary hit, install L natively in S's victim way and invalidate
+  the displaced copy in D; the ordinary hit path then grants it. This is the original half-swap with the
+  parking step removed — one internal block copy (the SCU already does exactly this move), two directory
+  writes, and **the invariant is untouched**. Costs one copy per secondary hit; the paper's measurement
+  that swapping "had a negligible impact on performance" is evidence that paying it is not fatal.
+
+Note the paper's argument for serve-in-place ("the line goes to L1, so later accesses hit there") is
+weakest exactly where A2 already flags it — **our L1 is 4 lines.** The copy falls out almost at once,
+and under (A) every re-reference pays another partner search, whereas under (B) it is a native hit.
+
+I have no result that settles this. I will keep going with commits 2 and 3, which are needed either
+way, and hold at the commit-4 boundary for your call.
 
 ---
 
 ## Numbers
 
-_(pending)_
+### Owed from Amendment 1 §A5 — the pinned run's **completed** figures
+
+`bringup_matmult` N=32, `VerilatorRocket8KL116KL2Config`, run to `*** PASSED ***` (not windowed):
+
+| run | cycles | vs SBC-off | OUTER-A | vs SBC-off |
+|---|---:|---:|---:|---:|
+| SBC **off** (`NoSbcConfig`) | 15,683,316 | — | 13,147 | — |
+| SBC, pre-pinning (2026-08-25) | 22,278,686 | **+42.0%** | 122,144 | **9.29x** |
+| SBC + pinning (commit 1, `97b0d54`) | **19,088,476** | **+21.7%** | **64,923** | **4.94x** |
+
+**Pinning halved the overhead.** It is still 21.7% worse than not having SBC at all, which is expected:
+migration without reuse is pure cost, so the only way commit 1 could help was by migrating less — and it
+did (11 commits vs 1,737). This is movement toward the bottom row for the wrong reason. It is not a win,
+it is confirmation of the diagnosis.
+
+Checksum 29824 on all three runs. 0 asserts.
+
+### ⚠️ Two things I told you on 2026-08-26 that were wrong
+
+1. **"The 2026-08-25 reference figures are from a truncated 10M-cycle window."** They are not. Both
+   reference runs reach `*** PASSED ***` (22,278,686 and 15,683,316 cycles). The table above is sound.
+2. **"`variables.mk:258` appends `+max-cycles=$(TIMEOUT_CYCLES)` after the caller's `SIM_FLAGS`, so my
+   `+max-cycles` was ignored."** Also wrong — the caller's value does win. My commit-1 run was never
+   capped; it ran the full 19,088,476 cycles and passed.
+
+What actually happened: the previous session exited while the sim was running, which killed the
+`spike-dasm`/`tee` pipeline and froze the **instruction trace** in `bringup_matmult.out` at cycle
+7,942,442. The simulator kept going and its final `*** PASSED *** Completed after 19088476` line still
+reached the file. I read the truncated trace and inferred a cap that was not there. The windowed
+0..7.9M comparison in the Verdict section above is still internally valid (both sides windowed the same
+way) but is superseded by the completed-run table.
+
+### Commit-1 full-run SBC event totals (matmult)
+
+| event | count | | event | count |
+|---|---:|---|---|---:|
+| OUTER-A | 64,923 | | MIG-START | 13 |
+| EVICT-ASSESS | 64,859 | | MIG-COMMIT | 11 |
+| EVICT-NORMAL | 64,844 | | COPY-DONE | 11 |
+| HOT | 5,665 | | ABORT-DST | 2 |
+| ADVICE-MIG | 17 | | EVICT-DISPLACED-RECLAIM | **2** |
+
+`EVICT-DISPLACED-RECLAIM = 2` against `MIG-COMMIT = 11` is the A3 quarantine, measured: **9 of the 11
+parked lines were still sitting in their partner sets when the benchmark ended.** They could not hit and
+could not be evicted, so teardown could never have fired. Amendment 1 A3 is confirmed on this workload.
+
+For contrast, on `migration_stress_test` the same commit-1 build shows `EVICT-DISPLACED-RECLAIM = 19,107`
+against `MIG-COMMIT = 19,126` — i.e. under the stress test's hammer, the last-resort reclaim tier *does*
+recycle essentially every parked line. The quarantine only bites when migration is rare, which is exactly
+the regime matmult is in. That is worth knowing: **the stress test cannot detect this class of bug.**
 
 ---
 
 ## Reproducing
 
-_(pending)_
+Use `make run-binary` exactly as TASK §6 says. Two notes worth having:
+
+- **Pass `TIMEOUT_CYCLES=` as a make variable, not `SIM_FLAGS=+max-cycles=`.** Both work, but only the
+  make variable is unambiguous — `variables.mk:258` appends its own `+max-cycles` to `SIM_FLAGS`, so the
+  command line ends up with two of them.
+- **Do not pipe the simulator's stderr through `awk`/`grep` to filter it live.** I tried that to get
+  cycle-stamped `[SBC]` lines cheaply. With `+verbose` the stderr stream is the full instruction trace,
+  and the filter becomes the bottleneck: the simulator blocks on the pipe and runs roughly 100x slower.
+  It looked exactly like a hang — 250 `[SBC]` lines in six minutes, zero growth, cycle stuck at 54 — and
+  I nearly reported the commit-2 RTL change as a deadlock. The same run under `make run-binary` reached
+  stress-test case 5 in 45 seconds. `spike-dasm` keeps up; a shell filter does not. Post-process the
+  `.out` afterwards.
+
+The lifetime analysis in this report comes from `sbc_life.py` (in the session scratchpad), which pairs
+`COPY-DONE dstSet/dstWay` with the next `EVICT-DISPLACED-RECLAIM srcSet/srcWay` for the same way and
+uses the interleaved `C0: <cycle>` trace lines as the clock.
