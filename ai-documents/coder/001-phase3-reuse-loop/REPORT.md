@@ -682,6 +682,11 @@ Use `make run-binary` exactly as TASK §6 says. Two notes worth having:
   I nearly reported the commit-2 RTL change as a deadlock. The same run under `make run-binary` reached
   stress-test case 5 in 45 seconds. `spike-dasm` keeps up; a shell filter does not. Post-process the
   `.out` afterwards.
+- **Never let two `make run-binary` invocations for the same CONFIG overlap.** They write the same
+  `output/<config>/<test>.out` and `.log`, and the result is a silently interleaved file that looks
+  like a real run. I lost a debugging cycle reading a bisect result that was half another build's
+  output. `pkill -f <script>` is not enough — it kills the wrapper and leaves the `make`, the two
+  `bash -c` pipeline halves and the simulator behind. Kill the `make run-binary` PID and its children.
 
 The lifetime analysis in this report comes from `sbc_life.py` (in the session scratchpad), which pairs
 `COPY-DONE dstSet/dstWay` with the next `EVICT-DISPLACED-RECLAIM srcSet/srcWay` for the same way and
