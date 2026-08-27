@@ -68,7 +68,7 @@ Plan as revised by **Amendment 1** (2026-08-26). Branch: `sbc-paper-aligned`.
 |---|---|---|---|
 | 1 | `97b0d54` | Pinning (§1a/§1b/§1d/§1e/§1f) + §2b pulled forward | ✅ yes |
 | 2 | `522c540` | **Displaced lines evictable** — drop `& nonDisplacedOH`. Single-variable experiment (A3/A4) | ✅ yes |
-| 3 | | Building blocks (§2a directory secondary-search) | |
+| 3 | | Building blocks (§2a directory secondary-search) | 🔄 in progress |
 | 4 | | **Search + serve in place** ⭐ (was: swap + replay — dropped per A2) | |
 | 5 | | Teardown | |
 
@@ -237,6 +237,83 @@ nothing reads a parked line. The payoff is still commits 3-4.
 One thing commit 2 *does* buy for commit 4: parked lines now live a median of **4,831 cycles** on matmult
 (min 134, p90 23,538) instead of being frozen forever or, on the stress test, killed inside 131. That is
 a window a secondary search can actually hit in.
+
+---
+
+## Commit 3 — directory secondary search (§2a)
+
+Written before Amendment 1 and unchanged by it; it only moved from slot 2 to slot 3. Additive only —
+nothing drives `secondarySearch` yet, so the expectation is **event-for-event identical behaviour**.
+
+`DirectoryRead` gains `secondarySearch`; `DirectoryResult` gains `secondaryHit` / `secondaryWay` /
+`secondaryEntry` / `displacedOther`. `secHits` is the exact mirror of `hits` — displaced ways included,
+native ways excluded — plus a write-bypass match, because a displaced entry written this cycle is not in
+`ways` yet and missing it would let a refill install a second copy (the stale-twin hole). `secondaryEntry`
+returns the whole entry, not just hit/way, because installing the line natively needs its `state`.
+
+`Scheduler.scala` stops assuming the `dread` lane is always the migrate probe and routes
+`preferInvalid` / `internalRead` / `preferEvictable` / `secondarySearch` from `schedule.dread.bits`.
+The MSHR drives all four to their previous constants, so this is a no-op today.
+
+### Two asserts added (TASK §5 trap 6, "Assert it")
+
+```scala
+assert (!ren2 || PopCount(secHits) <= 1.U, "SBC: two displaced copies of the same line in one set")
+assert (!ren2 || (displacedValidOH & displacedOwedOH) === 0.U,
+        "SBC: displaced way is dirty or client-held (its address cannot be reconstructed)")
+```
+
+The second is the read-side check for `displaced => clean + client-free`. Until now that invariant was
+only asserted at *install* ([MSHR.scala:482](../../../design/craft/inclusivecache/src/MSHR.scala#L482)),
+which is exactly why the Q1 hazard would have been silent. It now fires on the next read of the set.
+It holds today (the install path guarantees it), so it costs nothing and turns a data-corruption bug
+into a crash if commit 4 goes the serve-in-place route.
+
+### Results — no behaviour change, proved rather than argued
+
+`migration_stress_test` on commit 3 is **event-for-event identical to commit 2**:
+
+| | commit 2 | commit 3 |
+|---|---:|---:|
+| cycles | 22,227,006 | 22,227,006 |
+| OUTER-A | 147,202 | 147,202 |
+| MIG-COMMIT / COPY-DONE | 17,356 / 17,356 | 17,356 / 17,356 |
+| EVICT-DISPLACED-RECLAIM | 17,347 | 17,347 |
+| ABORT-DST | 26,550 | 26,550 |
+| pairings | `1->0 x17338`, `5->7 x7`, `6->3 x11` | identical |
+
+7/7 PASS, **0 asserts** — including the new displaced-invariant assert, which held across 17,356
+migrations and 17,347 reclaims. Every other event count matches too; the histograms are the same file.
+
+The generated Verilog confirms it structurally: `secondarySearch` is tied to `false.B`, so `secHits`
+folds to a constant and firtool deletes the entire secondary-search datapath (`grep secondary
+Directory.sv` returns nothing, and the stale-twin assert is folded away as vacuously true). The
+displaced-invariant assert *does* survive into the Verilog, because it does not depend on
+`secondarySearch`. That is exactly the intended shape: new machinery costs nothing until commit 4
+drives it.
+
+### Prerequisite this surfaced for commit 4
+
+[MSHR.scala:882](../../../design/craft/inclusivecache/src/MSHR.scala#L882) clears the partner latch on a
+repeat allocate:
+
+```scala
+pairValidReg := io.pairInfo.valid && !io.allocate.bits.repeat
+```
+
+That gating is right for what commit 1 needed (trap 2: on a reload, `io.pairInfo` describes the *incoming*
+request's set, not this MSHR's). But once commit 4 exists, a secondary pop would reload with no partner,
+skip the search, and **refill from DRAM while a displaced copy of the same line is still parked** — a
+stale twin, and the new `PopCount(secHits) <= 1` assert would catch it only on the next search.
+
+The set does not change on a repeat, so the fix is to hold rather than clear:
+
+```scala
+pairValidReg := Mux(io.allocate.bits.repeat, pairValidReg, io.pairInfo.valid)
+pairSetReg   := Mux(io.allocate.bits.repeat, pairSetReg,   io.pairInfo.bits)
+```
+
+Not applied here — it is inert until something consumes the latch, and it belongs with commit 4.
 
 ---
 

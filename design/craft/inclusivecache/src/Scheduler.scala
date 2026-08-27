@@ -344,9 +344,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
                                 Mux(mshr_uses_directory_for_lb,    scheduleSet, request.bits.set))
   directory.io.read.bits.tag := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.tag,
                                 Mux(mshr_uses_directory_for_lb,    requests.io.data.tag, request.bits.tag))
-  directory.io.read.bits.preferInvalid := mshr_uses_directory_for_dread // only the migration probe
-  // SBC: the dread lane is the migrate probe - internal machinery, so no tag match and no tap.
-  directory.io.read.bits.internalRead := mshr_uses_directory_for_dread
+  // SBC Phase 3: the dread lane now carries two different reads (migrate probe, partner search), so
+  // route its flags from the MSHR's bundle instead of assuming which one it is.
+  directory.io.read.bits.preferInvalid   := mshr_uses_directory_for_dread && schedule.dread.bits.preferInvalid
+  directory.io.read.bits.internalRead    := mshr_uses_directory_for_dread && schedule.dread.bits.internalRead
+  directory.io.read.bits.secondarySearch := mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch
   // SBC Phase 2: a demand miss to a hot migration-source set prefers a clean, client-free victim
   // so the migrate-on-eviction gate in the MSHR finds an eligible line.
   // SBC Phase 2b (Bug A fix): the 2nd dir-read (the dstSet probe) must ALSO prefer an evictable way,
@@ -362,7 +364,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 3: the `&& dstOfferValid` term is gone. After the advice/destination split that wire
   // describes some OTHER MSHR's destination, so it says nothing about the allocating set. Hint only.
   directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
-                                            mshr_uses_directory_for_dread
+                                            (mshr_uses_directory_for_dread && schedule.dread.bits.preferEvictable)
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
       printf(p"[SBC][SCHED] DREAD-SCHED dstSet=${schedule.dread.bits.set} mshr=${mshr_select}\n")

@@ -345,6 +345,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.preferInvalid := true.B
   io.schedule.bits.dread.bits.preferEvictable := true.B  // 2b: accept a clean evictable dst way
   io.schedule.bits.dread.bits.internalRead    := true.B  // probe, not a demand access
+  io.schedule.bits.dread.bits.secondarySearch := false.B // migrate probe; the swap drives this
   // NOTE: tag is 0 here. internalRead suppresses the comparison, so it no longer matters.
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
                        io.schedule.bits.d.valid || io.schedule.bits.e.valid || io.schedule.bits.x.valid ||

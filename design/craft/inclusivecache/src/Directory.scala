@@ -65,12 +65,22 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
   // SBC: this read is cache-internal machinery (migrate probe), not a demand access. It must not
   // tag-match and must not reach the observation tap. Baseline reads leave this false.
   val internalRead = Bool()
+  // SBC Phase 3: match a DISPLACED way by tag - the mirror of the normal hit, which excludes them.
+  val secondarySearch = Bool()
 }
 
 class DirectoryResult(params: InclusiveCacheParameters) extends DirectoryEntry(params)
 {
   val hit = Bool()
   val way = UInt(params.wayBits.W)
+  // SBC Phase 3 (secondary search): the mirror of `hit` - a DISPLACED way whose tag matches. Only
+  // meaningful when the read asked for it; constant false on every other read.
+  val secondaryHit   = Bool()
+  val secondaryWay   = UInt(params.wayBits.W)
+  val secondaryEntry = new DirectoryEntry(params)
+  // SBC Phase 3 (teardown): does this set still hold a displaced way OTHER than secondaryWay? Read as
+  // "once the way this read identified is vacated, is the parked pool empty?"
+  val displacedOther = Bool()
 }
 
 class Directory(params: InclusiveCacheParameters) extends Module
@@ -134,6 +144,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val preferInvalid = params.dirReg(RegEnable(io.read.bits.preferInvalid, ren), ren1)
   val preferEvictable = params.dirReg(RegEnable(io.read.bits.preferEvictable, ren), ren1)
   val internalRead = params.dirReg(RegEnable(io.read.bits.internalRead, ren), ren1)
+  val secondarySearch = params.dirReg(RegEnable(io.read.bits.secondarySearch, ren), ren1)
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
 
@@ -178,10 +189,38 @@ class Directory(params: InclusiveCacheParameters) extends Module
   }.reverse)
   val hit = hits.orR
 
+  // SBC Phase 3: secondary search - the exact mirror of `hits`. Displaced ways are INCLUDED and
+  // native ones excluded. Under strict 1:1 pinning every displaced way in the partner set belongs to
+  // the searching set, so a tag match here IS the line we are looking for.
+  val secHits = Cat(ways.zipWithIndex.map { case (w, i) =>
+    secondarySearch && w.tag === tag && w.state =/= INVALID && w.displaced && (!setQuash || i.U =/= bypass.way)
+  }.reverse)
+  // A displaced entry written this cycle is not in `ways` yet. Missing it would let the refill install
+  // a second copy of the same line - the stale-twin hole - so match the write bypass too.
+  val secBypassHit = secondarySearch && setQuash && bypass.data.tag === tag &&
+                     bypass.data.state =/= INVALID && bypass.data.displaced
+  // Displaced ways still parked here after the matched way is vacated (the teardown test).
+  val displacedValidOH = Cat(ways.zipWithIndex.map { case (w, i) =>
+    w.state =/= INVALID && w.displaced && (!setQuash || i.U =/= bypass.way)
+  }.reverse)
+  // SBC Phase 3: two parked copies of one line is the stale-twin hole - the search would serve a copy
+  // another path can still write. Mux1H(secHits) needs one-hot anyway.
+  assert (!ren2 || PopCount(secHits) <= 1.U, "SBC: two displaced copies of the same line in one set")
+  // SBC: `displaced => clean + client-free` is load-bearing - a parked line sits at the wrong physical
+  // set, so it can be neither written back nor probed. Checked on read, not only at install.
+  val displacedOwedOH = Cat(ways.map(w => w.dirty || w.clients.orR).reverse)
+  assert (!ren2 || (displacedValidOH & displacedOwedOH) === 0.U,
+          "SBC: displaced way is dirty or client-held (its address cannot be reconstructed)")
+
   io.result.valid := ren2
   io.result.bits.viewAsSupertype(chiselTypeOf(bypass.data)) := Mux(hit, Mux1H(hits, ways), Mux(setQuash && (tagMatch || wayMatch), bypass.data, Mux1H(victimWayOH, ways)))
   io.result.bits.hit := hit || (setQuash && tagMatch && bypass.data.state =/= INVALID && !bypass.data.displaced)
   io.result.bits.way := Mux(hit, OHToUInt(hits), Mux(setQuash && tagMatch, bypass.way, victimWay))
+  io.result.bits.secondaryHit   := secHits.orR || secBypassHit
+  io.result.bits.secondaryWay   := Mux(secHits.orR, OHToUInt(secHits), bypass.way)
+  io.result.bits.secondaryEntry := Mux(secHits.orR, Mux1H(secHits, ways), bypass.data)
+  io.result.bits.displacedOther := (displacedValidOH & ~secHits).orR ||
+                                   (setQuash && bypass.data.state =/= INVALID && bypass.data.displaced && !secBypassHit)
 
   // SBC observation tap: aligned to the result (uses the already result-aligned `set` wire so the
   // SetBalanceUnit gets a correct (set, hit) pair without re-deriving the read->result latency).
