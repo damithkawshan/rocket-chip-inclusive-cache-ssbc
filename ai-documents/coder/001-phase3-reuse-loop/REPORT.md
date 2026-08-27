@@ -212,8 +212,15 @@ changed is what happens to the parked lines afterwards:
 ### Why 9 stuck lines cost 4.94x the DRAM traffic
 
 That ratio looks impossible until you look at where the 9 lines were. Commit 1's pairings were `5->0`
-and `7->6`, with **8 of the 11 migrations going into set 0**. This L2 has **8 ways**. So set 0 ended the
-run with all eight ways displaced — and a displaced way could neither hit nor be evicted except by the
+and `7->6`; under commit 2 the identical 11 migrations split `5->0 x8`, `7->6 x3`. This L2 has **8
+ways**, so if commit 1 split them the same way, set 0 ended the run with all eight ways displaced.
+
+⚠️ **The split is the one part of this explanation I have not yet verified for commit 1** — I recorded
+its pairing *map* but not the per-pair counts, and the `.out` was overwritten. A commit-1 rerun is in
+flight to confirm it; the headline numbers above do not depend on it. What follows is the mechanism that
+split implies.
+
+A displaced way could neither hit nor be evicted except by the
 last-resort tier, which needs `!nonDisplacedOH.orR`, i.e. *every* way displaced. It fired twice. Each
 time it freed exactly one way, that way became native, `nonDisplacedOH` went non-zero, and the tier shut
 off again — leaving set 0 cycling through **a single usable way**.
