@@ -68,7 +68,7 @@ Plan as revised by **Amendment 1** (2026-08-26). Branch: `sbc-paper-aligned`.
 |---|---|---|---|
 | 1 | `97b0d54` | Pinning (§1a/§1b/§1d/§1e/§1f) + §2b pulled forward | ✅ yes |
 | 2 | `522c540` | **Displaced lines evictable** — drop `& nonDisplacedOH`. Single-variable experiment (A3/A4) | ✅ yes |
-| 3 | | Building blocks (§2a directory secondary-search) | 🔄 in progress |
+| 3 | `b6156d4` | Building blocks (§2a directory secondary-search) | ✅ yes |
 | 4 | | **Search + serve in place** ⭐ (was: swap + replay — dropped per A2) | |
 | 5 | | Teardown | |
 
