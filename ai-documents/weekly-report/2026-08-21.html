@@ -1,0 +1,468 @@
+<title>Set-Balancing Cache Progress</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #F6F8FA;
+    --surface:    #EBEEF3;
+    --ink:        #16202B;
+    --ink-soft:   #4A5765;
+    --ink-mute:   #798796;
+    --rule:       #D2D8E1;
+    --rule-soft:  #E2E6EC;
+    --accent:     #A65423;
+    --accent-bg:  #F2E5DA;
+    --good:       #2C6B4B;
+    --good-bg:    #DEEBE3;
+    --bad:        #9E362B;
+    --bad-bg:     #F1DEDB;
+
+    --f-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    --f-body:    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #11171E;
+      --surface:   #1A222B;
+      --ink:       #E3E8EE;
+      --ink-soft:  #AAB6C2;
+      --ink-mute:  #7E8B99;
+      --rule:      #2C3742;
+      --rule-soft: #222B35;
+      --accent:    #D8894E;
+      --accent-bg: #2E2118;
+      --good:      #6FBE90;
+      --good-bg:   #16281F;
+      --bad:       #E08575;
+      --bad-bg:    #2C1A17;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #11171E;
+    --surface:   #1A222B;
+    --ink:       #E3E8EE;
+    --ink-soft:  #AAB6C2;
+    --ink-mute:  #7E8B99;
+    --rule:      #2C3742;
+    --rule-soft: #222B35;
+    --accent:    #D8894E;
+    --accent-bg: #2E2118;
+    --good:      #6FBE90;
+    --good-bg:   #16281F;
+    --bad:       #E08575;
+    --bad-bg:    #2C1A17;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 74ch;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 1rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 6vw, 3.1rem);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .lede {
+    font-size: 1.14rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem 1.1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    color: var(--ink-mute);
+  }
+  .stamp b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---- headline result ---- */
+  .verdict {
+    background: var(--good-bg);
+    border-left: 3px solid var(--good);
+    padding: 1.4rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .verdict .big {
+    font-family: var(--f-display);
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--good);
+    letter-spacing: -0.01em;
+  }
+  .verdict p { margin: 0; color: var(--ink-soft); font-size: 0.98rem; }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 1rem; }
+
+  h2 {
+    font-family: var(--f-display);
+    font-size: 1.42rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    line-height: 1.25;
+    margin: 0;
+    text-wrap: balance;
+    padding-bottom: 0.65rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  p { margin: 0; max-width: 66ch; }
+  .muted { color: var(--ink-soft); }
+
+  /* ---- the three fixes: a real sequence, each unblocked the next ---- */
+  .fix {
+    display: grid;
+    grid-template-columns: 3.1rem 1fr;
+    gap: 0 1.15rem;
+    padding: 1.5rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .fix:last-of-type { border-bottom: 0; }
+
+  .fix .num {
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 0.28rem;
+    letter-spacing: 0.04em;
+  }
+  .fix .body { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+  .fix h3 {
+    font-family: var(--f-display);
+    font-size: 1.13rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .fix .tag {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    color: var(--ink-mute);
+    letter-spacing: 0.03em;
+  }
+
+  .qa { display: flex; flex-direction: column; gap: 0.45rem; }
+  .qa .k {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .qa p { font-size: 0.99rem; }
+
+  .outcome {
+    align-self: flex-start;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-family: var(--f-mono);
+    font-size: 0.79rem;
+    font-weight: 500;
+    padding: 0.34rem 0.7rem;
+  }
+
+  /* ---- table ---- */
+  .scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.93rem;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.62rem 0.9rem 0.62rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    white-space: nowrap;
+  }
+  th {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    border-bottom: 1px solid var(--rule);
+  }
+  td:first-child, th:first-child { white-space: normal; min-width: 15ch; }
+  td.n { font-family: var(--f-mono); }
+  .now { color: var(--good); font-weight: 600; }
+  .then { color: var(--ink-mute); }
+  .fail { color: var(--bad); }
+
+  /* ---- lists ---- */
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  li { max-width: 64ch; padding-left: 0.15rem; }
+  li::marker { color: var(--accent); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.87em;
+    background: var(--surface);
+    padding: 0.1em 0.36em;
+    color: var(--ink);
+  }
+
+  .note {
+    background: var(--surface);
+    padding: 1.35rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .note h2 { border: 0; padding: 0; font-size: 1.13rem; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    color: var(--ink-mute);
+    line-height: 1.7;
+  }
+
+  @media (max-width: 34rem) {
+    body { font-size: 16px; }
+    .wrap { padding: 2.5rem 1.15rem 4rem; gap: 2.5rem; }
+    .fix { grid-template-columns: 1fr; gap: 0.5rem; }
+    .fix .num { padding-top: 0; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Research progress · Set-Balancing Cache</p>
+    <h1>Migration now works end to end</h1>
+    <p class="lede">
+      Three bugs were keeping the cache-migration mechanism from doing its job. All three are fixed.
+      The design passes its full correctness suite for the first time, and the piece Phase&nbsp;3
+      depends on is finally producing correct data.
+    </p>
+    <div class="stamp">
+      <span><b>Platform</b> Chipyard · Rocket · Verilator</span>
+      <span><b>Design</b> L2 inclusive cache, Chisel RTL</span>
+      <span><b>Date</b> 21 Aug 2026</span>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <div class="big">7 of 7 correctness tests pass</div>
+    <p>First fully clean run. No assertion failures, clean exit. Committed migrations rose from 62 to 204 on the same workload, and migrations silently dropped fell from 94 to zero.</p>
+  </div>
+
+  <section>
+    <h2>What the design is trying to do</h2>
+    <p>
+      A cache stores each memory address in one fixed group of slots, called a <em>set</em>. Real
+      programs don't spread evenly across sets: a few sets get hammered while others sit almost
+      empty. The busy sets keep evicting useful data while capacity goes unused next door.
+    </p>
+    <p class="muted">
+      The Set-Balancing Cache moves a line out of an overloaded set into an idle one instead of
+      throwing it away. Phase&nbsp;2 built the moving machinery. Phase&nbsp;3 — the part that
+      actually produces a speedup — will look in the partner set on a miss and serve the line from
+      there rather than going to main memory.
+    </p>
+  </section>
+
+  <section>
+    <h2>The situation before this work</h2>
+    <p>
+      Phase&nbsp;2 was marked complete, but it was effectively inert. Migration fired roughly
+      <strong>once in every 5,500 opportunities</strong>. A long-standing assertion failure crashed
+      the heaviest test. Because Phase&nbsp;3's payoff scales directly with how often migration
+      happens, none of it could be justified until that rate came up.
+    </p>
+  </section>
+
+  <section>
+    <h2>What we found and fixed</h2>
+    <p class="muted">
+      These came in order, and each one had to be cleared before the next became visible.
+    </p>
+
+    <div class="fix">
+      <div class="num">01</div>
+      <div class="body">
+        <h3>The cache was refusing to move almost everything</h3>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>Before moving a line, the L2 checks whether the CPU still holds a copy. That record was
+          almost always wrong. The L1 cache quietly discards clean lines without telling anyone, so
+          the L2 believed the CPU was using lines it had long since dropped. <strong>99.7% of
+          candidates were rejected for this one stale bit.</strong></p>
+        </div>
+        <div class="qa">
+          <span class="k">Fix</span>
+          <p>Ask before deciding. A normal eviction already sends a message to the CPU to reclaim the
+          line — so send that message first, then decide whether to move. The information is free
+          because we were already paying for it.</p>
+        </div>
+        <p class="outcome">Migration rate: ~0.02% → ~78%</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">02</div>
+      <div class="body">
+        <h3>The destination was chosen far too early</h3>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>We picked which set to move into at the start of a request, then acted on that choice
+          many cycles later. Everything in between was a gap in which another request could claim the
+          same set. Four separate pieces of bookkeeping and a guessed eight-cycle timer existed only
+          to paper over that gap.</p>
+        </div>
+        <div class="qa">
+          <span class="k">Fix</span>
+          <p>Read the destination at the moment it is used, and claim it in the same cycle. The gap
+          becomes zero rather than merely short.</p>
+        </div>
+        <p class="outcome">Fixed the long-standing crash · deleted 4 state elements and the timer</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">03</div>
+      <div class="body">
+        <h3>Half of all completed migrations were being thrown away</h3>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>The tracking unit announced it was free for new work while a migration was still
+          finishing, so it was handed the next request and reset mid-flight. One line: an earlier
+          change had added a guard to the "finish" condition but missed the matching "ready for more
+          work" condition beside it.</p>
+        </div>
+        <div class="qa">
+          <span class="k">Consequence</span>
+          <p>Usually only the bookkeeping was lost — but that bookkeeping is the table Phase&nbsp;3
+          uses to find moved lines. Occasionally data was copied without the directory being
+          updated, which is a genuine correctness bug.</p>
+        </div>
+        <p class="outcome">Dropped migrations: 94 → 0</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Measured results</h2>
+    <p class="muted">Same workload and configuration throughout, so the columns are comparable.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Metric</th><th>Before</th><th>After</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Correctness suite</td><td class="n then fail">6 / 7</td><td class="n now">7 / 7</td></tr>
+          <tr><td>Migrations committed</td><td class="n then">62</td><td class="n now">204</td></tr>
+          <tr><td>Migrations silently dropped</td><td class="n then">94</td><td class="n now">0</td></tr>
+          <tr><td>Data copies vs. records kept</td><td class="n then">197 vs 103</td><td class="n now">204 vs 204</td></tr>
+          <tr><td>Assertion failures</td><td class="n then fail">crash</td><td class="n now">none</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">
+      A control run with the feature switched off also passes 7&nbsp;of&nbsp;7 — confirming the
+      benchmark and the underlying cache are sound, and that every failure we chased belonged to our
+      own mechanism.
+    </p>
+  </section>
+
+  <section>
+    <h2>Why this matters for the next phase</h2>
+    <ul>
+      <li><strong>The association table is correct for the first time.</strong> It records where each
+      moved line went, and Phase&nbsp;3 finds moved lines by consulting it. Until now roughly half of
+      all moves were never recorded, so those lines would have been invisible — permanently
+      unfindable.</li>
+      <li><strong>The migration counter can be trusted.</strong> It had been under-reporting by about
+      half, which means earlier rate measurements were wrong.</li>
+      <li><strong>Migration now happens often enough to be worth exploiting.</strong> That was the
+      standing precondition for starting Phase&nbsp;3.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Next steps</h2>
+    <ul>
+      <li><strong>Apply the same fix on the receiving side.</strong> Roughly 99% of attempts are still
+      turned away when checking the destination set — using the identical stale record that
+      fix&nbsp;01 corrected on the sending side. This is the clearest remaining win.</li>
+      <li><strong>Re-measure on a realistic workload.</strong> Current numbers come from a correctness
+      test, which is not representative of read/write behaviour in real programs.</li>
+      <li><strong>Begin Phase&nbsp;3.</strong> Search the partner set on a miss and serve the line from
+      there instead of going to memory — this is where the actual performance benefit appears.</li>
+    </ul>
+  </section>
+
+  <div class="note">
+    <h2>A note on method</h2>
+    <p class="muted">
+      The third bug was found the slow way. It came from a previous change that added a guard in one
+      place and missed an identical spot beside it — comparing the modified code against the original
+      version would have exposed it in under a minute. Instead it took several rounds of simulation
+      instrumentation, each costing about ten minutes, pursuing an incorrect theory. Comparing
+      against the pre-modification code before instrumenting is now the first step whenever this
+      subsystem misbehaves.
+    </p>
+  </div>
+
+  <footer>
+    Verified on the stock Verilator configuration (8&nbsp;sets × 8&nbsp;ways L2, single Rocket core).<br>
+    Correctness suite: seven directed corner-case tests, each checking data integrity after migration.
+  </footer>
+
+</div>
