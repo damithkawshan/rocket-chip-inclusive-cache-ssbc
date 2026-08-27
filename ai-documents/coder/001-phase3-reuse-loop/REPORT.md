@@ -211,14 +211,9 @@ changed is what happens to the parked lines afterwards:
 
 ### Why 9 stuck lines cost 4.94x the DRAM traffic
 
-That ratio looks impossible until you look at where the 9 lines were. Commit 1's pairings were `5->0`
-and `7->6`; under commit 2 the identical 11 migrations split `5->0 x8`, `7->6 x3`. This L2 has **8
-ways**, so if commit 1 split them the same way, set 0 ended the run with all eight ways displaced.
-
-⚠️ **The split is the one part of this explanation I have not yet verified for commit 1** — I recorded
-its pairing *map* but not the per-pair counts, and the `.out` was overwritten. A commit-1 rerun is in
-flight to confirm it; the headline numbers above do not depend on it. What follows is the mechanism that
-split implies.
+That ratio looks impossible until you look at where the 9 lines were. **Confirmed by a commit-1 rerun**
+(identical to the original run event for event): commit 1's 11 migrations split **`5->0 x9`, `7->6 x2`**.
+This L2 has **8 ways**. Nine lines were pushed into an eight-way set, and only two ever came back out.
 
 A displaced way could neither hit nor be evicted except by the
 last-resort tier, which needs `!nonDisplacedOH.orR`, i.e. *every* way displaced. It fired twice. Each
@@ -411,3 +406,21 @@ Use `make run-binary` exactly as TASK §6 says. Two notes worth having:
 The lifetime analysis in this report comes from `sbc_life.py` (in the session scratchpad), which pairs
 `COPY-DONE dstSet/dstWay` with the next `EVICT-DISPLACED-RECLAIM srcSet/srcWay` for the same way and
 uses the interleaved `C0: <cycle>` trace lines as the clock.
+
+### One caveat on every trace-derived number in this report
+
+**`[SBC]` printfs and the instruction trace are the same stream.** Chisel `printf` is gated on the
+harness's `verbose` condition, so `+verbose` is what turns the `[SBC]` lines on — running without it
+produces a completely empty stderr (I checked: 505 bytes of DRAMSim banner and nothing else). There is
+no way to get a cheap SBC-only log.
+
+The `.out` files stop mid-trace before the harness's own `$finish`: commit-1 matmult at cycle 7,942,442
+of 19,088,476, commit-2 at 6,248,072 of 15,699,736, the SBC-off control at 6,239,863 of 15,683,316. In
+every case the last traced instruction is the post-`exit()` spin (`c.j pc + 0` at `0x80006c9a`), the
+`.log` holds the complete program output (8,650 bytes, byte-identical across runs), and the last `[SBC]`
+event precedes the spin — so all cache activity is captured. Two independent commit-1 runs, hours apart
+under very different machine load, produced **byte-identical 295,540,538-byte** `.out` files, which
+rules out a load-dependent truncation race.
+
+So the event counts are complete for the program's execution, and all four runs are counted the same
+way. The **cycle** figures are the harness's own `Completed after N simulation cycles` and are unaffected.
