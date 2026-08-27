@@ -222,3 +222,173 @@ Two notes:
 5. A named assert covering the `partnerBusy` wait (Step 4).
 6. The Step-5 table filled in, including the honest cycle count against the control.
 7. `REPORT.md` verdict filled in.
+
+---
+
+# Amendment 1 — 2026-08-28 — Step 0 came back clean. New hypothesis, new gate.
+
+## A0. The gate result is accepted, and two of my claims are withdrawn
+
+Your negative is strong: 62,983 searches, three independent cross-checks, and the printf reads
+`pairSetReg` itself rather than inferring it. **The mis-latch is not producing wrong-partner
+searches, so it is not the cause of the corruption.** Step 0 did exactly what it was for.
+
+Two retractions, both mine:
+
+- **The `6→0` asymmetry.** Your explanation beats mine and is evidence-backed: set 0 absorbed 19,138
+  parked lines into 8 ways and reclaimed 18,881 of them, so set 6's searches correctly find nothing.
+  Destination turnover, not lookup keying. Accepted.
+- **The `partnerBusy` deadlock in Step 4 is OFF.** I argued a wrong partner voided your no-deadlock
+  premise. The partner is not wrong, so **your premise holds** and the mutual-wait scenario cannot
+  happen. Your `d_ready` attribution stands and does not need re-checking. Step 4 changes below.
+
+A check I should have run before Amendment 2 and did not: wrong-partner serving would have corrupted
+the loads-only cases too, and cases 1 and 2 passed. The pass/fail pattern already contradicted me.
+
+## A1. But do not go back to the SCU lead yet — your own report points somewhere first
+
+You wrote, correctly, that Step 0 cannot rule out the **mirror-image loss**: a reload clears a valid
+pairing, so an MSHR **skips a search it should have done**. You called it a lost-opportunity bug.
+
+**I think it is a correctness hole**, and the case order says so.
+
+### The rule the design depends on
+
+`ai-documents/diagram.md:204` states the Phase-3 safety invariant:
+
+> *Stale twins impossible: a refill only ever happens after d was searched and found empty of L.*
+
+**Never fetch a line from memory without first checking whether it is already parked.** In a normal
+cache this is free — the address decides the set, so there is only one place to look. SBC breaks
+that on purpose: a displaced line sits in a set its address does not map to, so there are now two
+places a line can be. The mandatory search is what makes that safe.
+
+### How a skipped search turns into wrong data
+
+Line **A** lives in set 5, partner set 7, value **100**.
+
+| | | native in set 5 | parked in set 7 |
+|---|---|---|---|
+| T1 | A is migrated to set 7. Set 5's way is reused. | — | **100** |
+| T2 | Miss on A in set 5. **Search skipped.** Fetch from DRAM, install natively. | **100** | 100 |
+| T3 | CPU writes A = 999. Lands on the native copy. | **999** dirty | **100 — stale** |
+| T4 | Native copy evicted, written back. DRAM correct. | — | **100 — stale** |
+| T5 | Miss on A again. **This time the search runs**, finds set 7's copy, serves it. | | → CPU gets **100** |
+
+Right line, **old version**. That is a different failure from the one Step 0 disproved (wrong line),
+with the same visible symptom. And it is still serve-only: with serve off the stale copy is merely
+erased, never read.
+
+**No assert sees it.** `PopCount(secHits) <= 1` looks *inside one set*. A twin is one **native**
+entry in set 5 and one **displaced** entry in set 7 — different sets, different entry kinds.
+
+### Why a search gets skipped
+
+An MSHR only learns "my set has a partner" on a **fresh allocate** off the input port — the only
+path where the pairing lookup describes its set. A request for a set that is already busy is queued
+behind the owning MSHR and later enters as a reload, picking up whatever the lookup happens to be
+answering. Usually nothing. **On a hammered hot set — exactly where migration happens — most misses
+take that path.**
+
+### Why it fits the results
+
+| case | | result | why |
+|---|---|---|---|
+| 1, 2 | loads only | PASS | both copies hold the same value — a twin is harmless |
+| 3 | **first stores**, to the hot set | PASS | stores make lines dirty, dirty lines are never migrated, so nothing new is parked |
+| **4, 5** | **read back values an earlier case wrote** | **FAIL** | a parked copy that predates the write is still there and gets served |
+| 6, 7 | store every iteration | PASS | their lines are permanently dirty, so nothing is parked to go stale |
+
+The two failures are exactly the first two cases that read back something written earlier.
+
+---
+
+## A2. Step 0b — the new gate. Still no re-run.
+
+Same log. For each **paired source** set (1, 5, 6):
+
+- **count its demand misses** — allocating misses on that set, and
+- **count its searches** — `SEC-HIT` + `SEC-MISS` for that set. You already have these:
+  19,657 / 23,686 / 19,640.
+
+Pick whichever printf actually marks an allocating miss on a set (`EVICT-ASSESS`, `OUTER-A`, or the
+allocate itself) and say which you used and why.
+
+- **misses == searches** → the invariant holds, this hypothesis is dead. Say so. Then see A5.
+- **misses > searches** → each unsearched miss could have created a twin. The gap size is the finding.
+
+A direct sighting is also available and worth more than the counts: an `OUTER-A` for a paired source
+with no `SEC-MISS` for that set immediately before it. **Every DRAM fetch on a paired source must be
+preceded by a search that missed.** Any that is not is a twin being created, live in the log.
+
+Report it either way, and do not implement on my say-so — same discipline as Step 0, which was right.
+
+---
+
+## A3. Step 1 is UNCHANGED. This is the useful part.
+
+**Option B fixes this too, for the same reason it fixed the other one.** Key the pairing query to the
+MSHR's own set and latch at the directory-result cycle, and it no longer matters which door the
+request came through — the MSHR asks about *its own* set at a moment when it definitely knows what
+that set is. Every real miss does a directory read, so every real miss reaches the plan block with a
+live, correctly-keyed answer. A reload with a *matching* tag does not read the directory, but that
+is a hit, not a miss, so there is nothing to search for.
+
+The second half of the rule is already in the RTL: `a.valid` carries `&& !searching`, so the fetch
+cannot overtake the search.
+
+**So Step 1 as written stands.** Sections 1a, 1b, 1d and 1e are unchanged. 1e stops being incidental
+and becomes a headline: **expect `SEC-HIT` to rise, possibly a lot.**
+
+### 1f — NEW. Assert the rule, not just the shape.
+
+Every existing check tests shape. None tests the invariant that actually matters. Add:
+
+> at the point the outer Acquire is issued — **if this set is a paired source, the search must have
+> completed.**
+
+Read the "is my set a paired source" term **live from the AT**, not from the latch, or the assert
+inherits the bug it is checking. Behind `enableSetBalancing`.
+
+This is the guard that would have caught the whole thing on run one, and it is the one I most want
+in the tree regardless of how Step 0b comes out.
+
+---
+
+## A4. Step 4 is reduced
+
+The `partnerBusy` deadlock argument is withdrawn (A0). What remains:
+
+- **Drop** item 1 — no need to re-check the `d_ready` hang attribution.
+- **Keep** item 2 — still add the watchdog assert on the `partnerBusy` wait. Cheap insurance, and it
+  converts a class of hang from "the run stops" into a named assert. It should never fire.
+
+## A4b. Step 2 gains one acceptance item
+
+After the fix, **no twin may exist**: no address should be simultaneously native in its home set and
+displaced in that set's partner. If it is cheap to check in sim, check it. If not, say so and rely on
+1f instead.
+
+---
+
+## A5. If Step 0b also comes back clean — start here, and here is what I found
+
+Then the corruption really is in the serve path and your original lead was right. The strongest
+candidate I can see in the RTL, which is your own `copy_wsafe` argument with two details added:
+
+1. **The SCU re-checks `copy_wsafe` on every write beat** ([SetCopyUnit.scala:137](../../../design/craft/inclusivecache/src/SetCopyUnit.scala#L137)),
+   so it can stall **mid-block**. If SourceD begins reading the destination while the SCU is halfway
+   through, SourceD reads a **half-new, half-old block**. Upstream never has this problem because its
+   safety argument is "no new SourceD request to the destination can start once we pass `s_wsafe`" —
+   true only because the destination is a **fenced cold set**. A repatriation's destination is
+   `request.set`, a live set.
+2. **`copy_wsafe` has a one-cycle blind spot.** It compares against `s1_req_reg` guarded by `busy`
+   ([SourceD.scala:405-409](../../../design/craft/inclusivecache/src/SourceD.scala#L405)), and `busy`
+   is a **register**. In the cycle a new SourceD request fires, `copy_wsafe` does not see it yet —
+   but SourceD issues its first bank read **that same cycle** (`s1_req = Mux(!busy, io.req.bits, …)`).
+   Upstream tolerates this because "the first cycle of SourceD falls within the occupancy of the
+   MSHR's plan" — an assumption a repatriation breaks by writing into a set an MSHR is live on.
+
+I have **not** proven either causes the corruption. They are the two places where a documented
+upstream assumption is being used outside the conditions it was written for. Start there rather than
+rebuilding `s_verify`.
