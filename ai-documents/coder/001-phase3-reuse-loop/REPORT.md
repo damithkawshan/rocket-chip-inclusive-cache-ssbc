@@ -69,7 +69,7 @@ Plan as revised by **Amendment 1** (2026-08-26). Branch: `sbc-paper-aligned`.
 | 1 | `97b0d54` | Pinning (§1a/§1b/§1d/§1e/§1f) + §2b pulled forward | ✅ yes |
 | 2 | `522c540` | **Displaced lines evictable** — drop `& nonDisplacedOH`. Single-variable experiment (A3/A4) | ✅ yes |
 | 3 | `b6156d4` | Building blocks (§2a directory secondary-search) | ✅ yes |
-| 4 | | **Search + serve in place** ⭐ (was: swap + replay — dropped per A2) | |
+| 4 | | **Search + repatriate** ⭐ (Q1 resolved to option B) | 🔄 in progress |
 | 5 | | Teardown | |
 
 The commit-2/3 work written before Amendment 1 (the §2a directory secondary-search) is unchanged and
@@ -285,6 +285,9 @@ into a crash if commit 4 goes the serve-in-place route.
 7/7 PASS, **0 asserts** — including the new displaced-invariant assert, which held across 17,356
 migrations and 17,347 reclaims. Every other event count matches too; the histograms are the same file.
 
+`bringup_matmult` is identical as well: **15,699,736 cycles, 13,146 OUTER-A, checksum 29824**, pairings
+`5->0 x8` / `7->6 x3`, 11 migrations, 11 reclaims, 0 asserts — every figure the same as commit 2.
+
 The generated Verilog confirms it structurally: `secondarySearch` is tied to `false.B`, so `secHits`
 folds to a constant and firtool deletes the entire secondary-search datapath (`grep secondary
 Directory.sv` returns nothing, and the stale-twin assert is folded away as vacuously true). The
@@ -314,6 +317,86 @@ pairSetReg   := Mux(io.allocate.bits.repeat, pairSetReg,   io.pairInfo.bits)
 ```
 
 Not applied here — it is inert until something consumes the latch, and it belongs with commit 4.
+
+---
+
+## Commit 4 — search + repatriate ⭐
+
+Built as **option (B)** from Q1, per your instruction ("search + repatriate"). On a demand miss to a
+paired source the line is brought **home** and installed natively; the parked copy is erased. Nothing is
+ever left displaced-and-client-held, so `displaced => clean + client-free` is untouched and the reclaim
+tier's silent drop stays legal.
+
+### The sequence
+
+1. Demand miss in **S**; `pairValidReg` says S is a paired source with partner **D**.
+2. Plan block arms the memory Acquire as usual but also arms the search. `a.valid` gains `&& !searching`,
+   so **nothing leaves for DRAM until the partner has answered**.
+3. Partner dir-read of D: `tag = request.tag`, `secondarySearch = 1`, `internalRead = 1` (so it neither
+   tag-matches natively nor heats D through the observation tap).
+4. Result:
+   - **not found** → `SecMiss++`, release the Acquire, ordinary DRAM refill.
+   - **found, too weak** (parked copy is BRANCH, request needs T) → `SecMiss++`, **erase the parked
+     copy**, ordinary refill.
+   - **found, servable** → `SecHit++`, cancel the Acquire, copy `(D, secWay) -> (S, meta.way)`, erase
+     the parked copy, install natively. The unmodified `final_meta_writeback` does the install: it only
+     needed `gotT`, which is set from the parked entry's state.
+5. `s_execute` then grants from `(S, meta.way)` on the ordinary hit path. No new grant datapath.
+
+**Erasing the parked copy is a correctness requirement, not an optimisation** — it happens on *every*
+search hit, including the permission reject. Refilling S from DRAM while a copy of the same line is
+still alive in D is precisely the stale twin, and the reclaim tier would later drop that copy with no
+probe.
+
+### Reuse
+
+Almost all of it is Phase 2's datapath pointed the other way:
+
+| need | existing machinery |
+|---|---|
+| read the partner set | the `dread` lane (was: the migrate probe) |
+| move a block between sets | the `copy` lane / SetCopyUnit (was: victim out to the partner) |
+| erase a directory entry | the `dir` lane, `invalid` entry (was: `mig_dir1`) |
+| install the line, grant it | untouched — `final_meta_writeback` + `s_execute` |
+
+New state is seven registers mirroring the Phase-2 scoreboard: `searching`, `s_ssearch`, `w_ssearch`,
+`repatriating`, `s_scopy`, `w_scopy`, `s_sinval`, plus `secWay`.
+
+### Ordering decisions worth challenging
+
+- **Search and migrate run concurrently.** A miss to a paired source can both pull its line home from D
+  and park its victim in D on the same request. I considered forbidding it (simpler), but that caps the
+  parked pool at one line per pairing, which would make `SecHits` unmeasurable for a reason I had
+  invented. They are safe together because the ways provably cannot alias: the migrate probe rejects
+  displaced ways (`dstEvictable` requires `!displaced`), and the search only ever matches displaced
+  ways. There is an assert for it.
+- **Search goes before the migrate probe** (`doDread` gains `&& !searching`), and **the migrate copy
+  goes before the repatriate copy** (`doSecCopy` requires `!migrating || w_copy`) — the migration reads
+  the very way the repatriated line overwrites.
+- **The repatriate copy waits for `w_releaseack && w_rprobeacklast`.** The line lands in the home victim
+  way, which the eviction is still reading out. Phase 2's SCU interlocks guard SourceD, not SourceC,
+  because until now a copy only ever wrote into the fenced destination set. This is the one genuinely
+  new hazard commit 4 introduces and I chose the conservative gate over reasoning about SourceC.
+
+### Also applied: the `pairValidReg` hold fix
+
+As flagged under commit 3 — `Mux(repeat, pairValidReg, io.pairInfo.valid)` instead of clearing. Without
+it a secondary pop reloads with no partner, skips its search, and refills next to a live parked copy.
+
+### Two new asserts
+
+```scala
+assert (!doSearch || pairSetReg =/= request.set, "SBC: a set is its own partner")
+assert (!(repatriating && migrating) || !(migDstSet === pairSetReg && migDstWay === secWay),
+        "SBC: migration parked into the way being repatriated")
+```
+
+Nothing today prevents the DSS handing a set itself as its own destination — it cannot happen while
+`tHi > tLo` (a set cannot be both hot and coldest), but that is a numeric coincidence, not an invariant.
+
+### Results
+
+_(pending — elaborates clean, no combinational loops; building)_
 
 ---
 
