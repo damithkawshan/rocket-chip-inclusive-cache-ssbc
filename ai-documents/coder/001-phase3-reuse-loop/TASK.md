@@ -373,3 +373,237 @@ Two things to take from this:
    pairings actually turn over. They only froze because ours cannot dissolve (A3).
 2. **A ~35% association success rate is normal**, not a bug. Our 83% ABORT-DST is not as far off as it
    looked. Do not chase it.
+
+---
+
+# Amendment 2 — 2026-08-28 — the serve-path corruption is diagnosed. Stop patching the copy.
+
+Written after reading your commit-4 section. **Do not continue down the `s_verify` / SCU-hazard
+lead.** I believe I have found the defect by reading the RTL, and it is not in the copy path.
+
+Read B0 → B3 before touching any file. B3 is a gate: it costs one grep on a log you already have,
+and if it comes back the other way, this whole amendment is wrong and the copy path is back on.
+
+(Optional: the same argument as diagrams is at `tmp.md` in the repo root. It adds nothing this
+amendment does not say — skip it if you prefer prose.)
+
+---
+
+## B0. First, three things you were right about and I was not
+
+- **A4's warning was wrong, and your measurement is what showed it.** I predicted removing the
+  quarantine would let copies be reclaimed instantly under random replacement. You measured the
+  reverse — median lifetime 131 → 1,366 cycles, died-within-100 41.3% → 5.2% — and found the real
+  cause: `PriorityEncoderOH(displacedOH)` always killed the lowest-indexed way. The quarantine was
+  condemning displaced lines, not protecting them. **Accepted. Do not build temporary protection.**
+- **Q1: your recommendation stands and is already the instruction** (`3284b24`) — serve by
+  repatriation, do not serve in place. Your push-back on A2 was correct: serve-in-place deletes the
+  swap but adds AT-based address reconstruction to two paths and lifts an invariant three sites lean
+  on. That was a better read of the RTL than mine was of the paper.
+- **The owed completed-run numbers arrived and settled it.** +42.0% → +21.7% → **+0.10%**. One `&`
+  term. That result stands and is not affected by anything below.
+
+---
+
+## B1. The defect — an MSHR can latch **another set's partner**
+
+The pairing lookup is keyed to the request **waiting at the input port**, broadcast to every MSHR,
+and latched by any MSHR whose allocate is not a tag-`repeat`.
+
+| what | where | why it is wrong |
+|---|---|---|
+| lookup keyed to the port | `Scheduler.scala:584-585` | `assocQuery.bits := request.bits.set` |
+| answer broadcast to all MSHRs | `Scheduler.scala:329-330` | one wire, every MSHR sees it |
+| latched on any non-repeat allocate | `MSHR.scala:999-1000` | `repeat` is a **tag** test |
+| reload keeps the MSHR's old set | `Scheduler.scala:313-314` | set unchanged, tag changed → `repeat = false` |
+| `alloc` ≠ "this request is allocating" | `Scheduler.scala:208` | it only means "no MSHR owns that set" |
+
+**`repeat` is a tag comparison being used to decide whether the MSHR's SET changed.** On a reload
+the set never changes — only the tag does. So a secondary pop with a new tag re-reads a pairing it
+had no business re-reading.
+
+### The cycle
+
+1. MSHR-A owns set **5**, retires, pops its next queued miss for set 5 with a **different tag**.
+   → `allocate.bits.set = 5` (its own), `repeat = false`, `lb_tag_mismatch = true`.
+2. That same condition sets `mshr_uses_directory_assuming_no_bypass` (`Scheduler.scala:352`), so the
+   request waiting at the port — say for set **1** — **cannot allocate** (`request_alloc_cases`
+   false, `Scheduler.scala:362`).
+3. But `alloc` is still **true** for set 1 (no MSHR owns it). So
+   `assocQuery.valid = request.valid && alloc` fires **for set 1**.
+4. AT says set 1 is a paired source with partner set **3**. `pairInfo` broadcasts `{valid, 3}`.
+5. MSHR-A, sitting on set 5, executes the latch: `pairSetReg := 3`.
+6. MSHR-A's non-repeat reload does its own directory read → the plan block
+   (`MSHR.scala:1071`) → `searching := true` (`MSHR.scala:1237`) with the poisoned value.
+7. MSHR-A now searches **set 3** for set 5's tag.
+
+**The two events are not independent.** The thing that blocks set 1 from allocating is the very
+reload that triggers the re-latch. This is not a rare alignment — it is caused.
+
+### Why the search then matches
+
+`set_addr(s,t) = DRAM_BASE + t*512 + s*64`. The `t*512` term sits entirely **above** the set-index
+bits, so **tag = f(t) only, identical in all 8 sets**. A displaced line parked in set 3 for set 1
+with tag `t` passes every rule `secHits` applies: tag match, valid, displaced, not the bypass way.
+It is a real, valid, clean parked line — **just the wrong line**.
+
+---
+
+## B2. Why this explains your report exactly
+
+| your finding | this |
+|---|---|
+| serve OFF passes, serve ON fails | erasing a foreign parked copy is **harmless** — `displaced ⇒ clean + client-free`, so dropping it loses nothing and we then fetch correctly from DRAM. **Serving** it hands the CPU another address's data. The invariant that makes SBC safe is exactly what hid this. |
+| both failures are wrong reads, zero asserts | every assert checks **shape** (one-hot, clean, not-self). None checks **identity**. |
+| `case_full_dirty_dst` finds **cold-set** lines wrong | that cold set is full of dirty lines so it is never a *destination* — but it can be a paired *source*. Its own reads then search a wrong partner and get served a foreign line. |
+| the partner fence did not fix it | the fence protects the **right** set. You were reading the **wrong** one. Your diagnosis was sound; it was aimed one level too low. |
+| `6→0` 189 hits / 14,357 migrations vs `1→3` and `5→7` near 100% | pairings behaving completely differently is the signature of a mis-keyed lookup |
+
+---
+
+## B3. GATE — confirm before writing any RTL. No re-run needed.
+
+From the commit-4 stress log you already have:
+
+1. `grep MIG-COMMIT` → the distinct `(srcSet, dstSet)` pairs. These are the **true** pairings.
+2. `grep SEC-HIT` → the distinct `(set, partner)` pairs. These are what the searches **actually used**.
+3. Compare the two sets of pairs.
+
+**Any `SEC-HIT` whose partner is not that set's committed partner is a direct sighting of this bug.**
+
+Report the two lists in `REPORT.md` either way.
+
+- If they disagree → proceed to B5.
+- If every SEC-HIT pair matches a committed pair → **this amendment is wrong.** Say so plainly, and
+  the SCU serve-path lead you were on goes back to the top. Do not implement B5 on my say-so.
+
+---
+
+## B4. Blast radius — what else this breaks
+
+**No TileLink protocol violation.** I checked each candidate:
+
+- Messages are all well formed; only the payload is wrong, which no monitor sees.
+- The cancelled outer Acquire is safe — `a.valid` carries `&& !searching`, so nothing can have left
+  before the answer arrives.
+- No inclusivity violation from the erase — `displaced` implies client-free.
+- SBC-off baseline untouched (everything is behind `enableSetBalancing`).
+
+**But four other consequences, and the first is a hang:**
+
+1. **`partnerBusy` can deadlock.** Your no-deadlock note says *"under 1:1 pinning a destination is
+   never a source, so the MSHR holding the partner never waits on us."* A **wrong** partner voids
+   that premise. MSHR-A on set X wrongly points at Z; MSHR-B on set Z wrongly points at X. Each
+   waits for the other. Neither can retire — `sec_ready = !searching && s_sinval` gates **both**
+   `reload` and the final writeback, and `!searching` also blocks the outer Acquire. Nothing breaks
+   the cycle. **There is no assert behind this — only the `sbcDebug`-gated `SEC-STUCK` printf.**
+   ⚠️ You attributed one commit-4 hang to the `d_ready` sibling-gate bug. That fix was clearly
+   right on its own terms, but please re-check whether it accounted for **every** hang you saw.
+2. **The fence protects the wrong set.** `secSet` (`MSHR.scala:328-329`) feeds `dstSetConflict`, so
+   an innocent set is stalled while the set actually being read is unfenced.
+3. **Stale twin reopens.** We install a native copy of A5 in set 5 while a *legitimate* parked copy
+   of A5 may still sit in set 5's **true** partner. Two entries, one address, different data.
+   `PopCount(secHits) <= 1` is per-set and cannot see it. If the CPU writes the native one it is
+   written back to DRAM under A5 — permanent.
+4. **Every commit-4 SecHit/SecMiss number is void.** Polluted three ways: searches that should have
+   happened did not (`pairValidReg` wrongly false), searches ran against the wrong set (false
+   SecMiss), and weak-permission rejects destroyed foreign parked lines (depressing future hits).
+   **Do not quote `f` from the current build.**
+
+### What is NOT broken — checked, not assumed
+
+- **1:1 pinning itself is fine.** It is enforced by the SBU, whose `destQuery` **is** correctly keyed
+  to the deciding MSHR's own set (`Scheduler.scala:540-541`). So **the parking is correct — only the
+  lookup is wrong.** The fix touches no parked data.
+- **Commits 1–3 stay data-safe.** There `pairValidReg` fed only an assert and `pairSetReg` fed
+  nothing live. `522c540` and its +0.10% result stand.
+
+### One weaker guard than it looks
+
+`MSHR.scala:915` — `assert(!dstClaim.valid || !pairValidReg || dstClaim.bits === pairSetReg)` — is
+skipped whenever `pairValidReg` is wrongly **false**, which is the common mis-latch outcome. It has
+been passing partly by vacuity. **If it starts firing after the fix, that is a second real finding,
+not a regression.** Report it, do not silence it.
+
+---
+
+## B5. The fix
+
+**Take Option B.** Option A is the fallback if B turns out to fight the elaboration loop-freedom
+rules (see the LOOP FREEDOM note at `MSHR.scala:249`).
+
+- **Option B — key the query to the asker.** Delete the broadcast latch. Key the pairing query to
+  the MSHR the same way `destQuery` already is (`Scheduler.scala:540-541`), and latch `pairSetReg`
+  at the moment `searching` is armed. This makes the wrong-set class **unrepresentable** rather
+  than fixed once. Note `status.bits.set` is already correct at the directory-result cycle, because
+  `request` is latched at allocate.
+- **Option A — minimum.** Add a `fresh` bit to the allocate bundle. The two paths are already
+  distinct (`Scheduler.scala:416` fresh vs `Scheduler.scala:313-314` reload). Latch the pairing
+  **and** `migAdviceValidReg` only when `fresh`; **hold** otherwise.
+
+**Fix `migAdviceValidReg` (`MSHR.scala:994`) in the same change either way.** It has the identical
+defect and has been live since Phase 2 — a reloading MSHR could latch another set's "this set is
+hot" and migrate out of a cold set. Data-safe, so nothing caught it, but it is noise in every
+migration number we have.
+
+**Both options also fix a mirror-image loss:** today a same-set reload with a new tag **clears** a
+valid pairing, so the MSHR skips a search it should have done. Expect SecHits to go **up**.
+
+**Add one identity assert.** Every existing check tests shape; none tests identity. At search time,
+assert the partner really is this set's partner, read **live from the AT**, not from the latch.
+That turns any recurrence into a crash instead of silent data. Keep it behind
+`enableSetBalancing`.
+
+---
+
+## B6. What NOT to do
+
+- **Do not rebuild `s_verify`.** The copy moves the right bytes from the place it was told to read —
+  a copy verifier would have **passed**. It is an expensive detour. (The `CLAUDE.md` note that made
+  it look like the lead is about a different failure mode; it stays parked.)
+- **Do not strip or bless the partner fence yet.** It was built on a diagnosis now known to be
+  wrong, and while the partner is wrong it is *actively harmful* (B4.1). Leave it in, fix the
+  latch, then re-test with and without it and report which way it goes. That is the right order and
+  it was right of you to hand the decision over rather than guess.
+- **Do not touch destination eligibility** or the `ABORT-DST` rise you noted. Still out of scope,
+  still correctly logged rather than acted on.
+
+---
+
+## B7. Acceptance for commit 4 (replaces §7 for this commit only)
+
+1. **B3 answered in `REPORT.md`** — the two pair lists, and which way they came out.
+2. `migration_stress_test` **7/7 PASS, 0 asserts**, including `case_full_dirty_dst` and
+   `case_reaccess_migrated`.
+3. `bringup_matmult` checksum **29824**.
+4. Every `SEC-HIT set=X partner=P` in the log has `P` equal to `X`'s committed partner.
+5. `SEC-HIT` count reported before and after the fix — it should **rise** (B5, mirror-image loss).
+6. Cycles and `OUTER-A` for matmult against the 15,683,316 / 13,147 SBC-off control. This is the
+   first build that can plausibly beat it. If it does not, say so plainly — a null result here is
+   information, not a failure.
+7. Say explicitly whether the `MSHR.scala:915` 1:1 assert stayed quiet after the fix.
+
+Then stop and report. Teardown (commit 5) is still after this.
+
+---
+
+# Amendment 3 — 2026-08-28 — close this task. The fix moves to 002.
+
+Amendment 2's diagnosis turns commit 4 from "finish the serve path" into "fix a latching defect that
+predates commit 4, then finish the serve path". That is a different work order, and this task has
+already absorbed two amendments and four commits. It stops here.
+
+**What you owe to close 001 — nothing new, just the record:**
+
+1. Fill in the **Verdict** section of `REPORT.md`. It should say, in your own words: commits 1–3
+   landed and are measured; commit 4 is written, working, and **blocked** on the partner-latch
+   defect; commit 5 (teardown) was never started.
+2. **Leave the uncommitted commit-4 tree exactly as it is.** `MSHR.scala`, `Scheduler.scala`,
+   `SetBalanceUnit.scala` and the `sbcDebug` printfs all carry forward. Task **002** owns them. Do
+   not revert, do not commit, do not clean up.
+3. Nothing else. No re-runs, no new measurements.
+
+**Amendment 2 stays here as the record of what was found and when.** Task 002 acts on it and cites
+it rather than repeating the derivation.
+
+Teardown (commit 5) becomes task **003**, opened after 002 closes.

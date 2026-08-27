@@ -1,7 +1,7 @@
 # REPORT 001 — Phase 3: close the reuse loop
 
-**Coder:** Claude (coder session) · **Status:** `in progress`
-**Last updated:** 2026-08-27
+**Coder:** Claude (coder session) · **Status:** `CLOSED` (Amendment 3, 2026-08-28)
+**Last updated:** 2026-08-28
 
 > Written as I go. Newest facts appended per section.
 
@@ -9,7 +9,50 @@
 
 ## Verdict
 
-_(pending — filled in after commit 3)_
+**Commits 1-3 landed and are measured. Commit 4 is written and working but blocked. Commit 5 was
+never started.** Closed by Amendment 3 — the remaining defect is a different work order and moves to
+task **002**.
+
+| # | What | State |
+|---|---|---|
+| 1 | Pinned 1:1 association (`97b0d54`) | ✅ landed, measured |
+| 2 | Displaced lines evictable (`522c540`) | ✅ landed, measured — **the result of this task** |
+| 3 | Directory secondary search (`b6156d4`) | ✅ landed, proved inert event-for-event |
+| 4 | Search + repatriate | 🟡 **written, working, blocked** — uncommitted in the tree |
+| 5 | Teardown | ⚪ never started → task 003 |
+
+**What this task actually bought.** Commit 2 was a one-term change (`& nonDisplacedOH` removed from
+the LFSR victim tier) and it removed **the entire measured cost of SBC**: matmult went +42.0% →
+**+0.10%** cycles and 9.29x → **1.00x** DRAM traffic, on the *same* 11 migrations. That number is
+independent of everything commit 4 does and stands on its own. The mechanism was not the one A4
+predicted — the quarantine was *condemning* displaced lines to a degenerate `PriorityEncoderOH`
+reclaim, not protecting them; removing it made parked lines live 10x **longer** (median 131 → 1,366
+cycles).
+
+**What commit 4 proved, and where it stops.** The reuse loop closes — **2,287 secondary hits**, the
+first time in this project a parked line has ever returned anything, near-1:1 with migrations on two
+of three pairings. But `case_full_dirty_dst` and `case_reaccess_migrated` fail with **0 asserts**,
+i.e. silently wrong data. I was wrong four times on the cause (partner-set eviction race, then the
+partner fence, then migrate/repatriate concurrency, then my own aliasing assert) and stopped
+guessing. The one solid result is the bisect: **search + erase alone PASS; serving the copied block
+is what corrupts.** I named `s_verify` / the SCU WaR argument as the strongest remaining lead and
+explicitly did **not** assert it as a diagnosis.
+
+**Amendment 2 supersedes that lead** and is a better read of the RTL than mine was: the copy moves
+the right bytes from the place it was told to read — an MSHR can latch **another set's partner**,
+because `repeat` is a tag comparison being used to decide whether the MSHR's *set* changed. That
+makes the copy correct and the *line* wrong, which is exactly the shape of the failure (every assert
+in the design tests shape; none tests identity). It also predates commit 4 — `migAdviceValidReg` has
+carried the identical defect since Phase 2.
+
+**Every `SecHit` / `SecMiss` figure in the commit-4 section is void** for the reason Amendment 2 B4.4
+gives, and should not be quoted as `f`. The raw counts are still useful as evidence the loop runs.
+
+**State of the tree at close (per Amendment 3):** `MSHR.scala`, `Scheduler.scala` and
+`SetBalanceUnit.scala` carry the commit-4 work **uncommitted and untouched**, including the partner
+fence (unproven either way) and the `sbcDebug` printfs `SEC-STUCK`, `STALL` and `DIR-WRITE`. Nothing
+was reverted, committed or cleaned up. **Task 002 owns them.** No re-runs were done to close this
+task.
 
 ### ⚠️ Commit 1 result the thinker needs to see NOW (TASK §8, second bullet)
 

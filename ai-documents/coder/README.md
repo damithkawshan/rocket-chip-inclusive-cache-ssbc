@@ -33,4 +33,5 @@ coder/
 
 | # | Task | Status |
 |---|---|---|
-| 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | open · **Amendment 1** (2026-08-26) |
+| 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | **closed** (2026-08-28) — commits 1-3 landed; commit 4 handed to 002 |
+| 002 | Fix the partner-set latch, then land commit 4 | **open** (2026-08-28) |
