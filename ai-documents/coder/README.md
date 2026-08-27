@@ -33,4 +33,4 @@ coder/
 
 | # | Task | Status |
 |---|---|---|
-| 001 | Phase 3 — close the reuse loop (pin → search → swap → teardown) | open |
+| 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | open · **Amendment 1** (2026-08-26) |

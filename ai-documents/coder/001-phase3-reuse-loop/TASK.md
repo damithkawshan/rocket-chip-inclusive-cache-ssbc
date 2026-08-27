@@ -221,3 +221,155 @@ uncommitted working-tree changes; a whole-file revert destroyed every SBC config
   the contradiction.**
 - If closing the loop seems to require touching destination eligibility or ABORT-DST. That is out of
   scope and §0 explains why.
+
+---
+---
+
+# Amendment 1 — 2026-08-26 — the base paper changes commits 2-4
+
+**Trigger:** we went back to the source paper (Rolán, Fraguela, Doallo, *Adaptive Line Placement with
+the Set Balancing Cache*, MICRO'09). Two of its design decisions differ from ours and both bear
+directly on what you reported in commit 1. **Commit 1 stands as landed. Everything after it changes.**
+
+Your report is answered in §A5 below.
+
+---
+
+## A1. Work has moved to a branch
+
+```
+sbc-paper-aligned      <- work here
+  9f7cdd5 docs: SBC research record through 2026-08-26
+  6c273c5 sw: port bringup-bench to Chipyard bare metal
+  97b0d54 SBC Phase 3 (1/4): pinned 1:1 association     <- your commit
+```
+
+`set_migration_refactored` is the known-good line. This branch is the experiment. If it improves the
+numbers we merge it back; if not we abandon it and nothing is lost.
+
+---
+
+## A2. Finding 1 — the paper does NOT swap. Drop swap-then-replay.
+
+Paper §2.4, verbatim:
+
+> *"the SBC does not swap lines to return them to their original set when they are found displaced in
+> another set... Experiments performing swapping of lines in the SBC to return displaced lines to their
+> original set under a hit proved that this policy had a negligible impact on performance."*
+
+On a secondary hit the paper **serves the line where it sits** and leaves it there. Their reasoning:
+the line goes up to L1, so later accesses hit there — shuffling L2 buys nothing.
+
+**Consequence for commit 4 (was 3):** build **serve-in-place**, not swap-then-replay.
+
+- No reading two blocks, no writing them crossed, no two directory writes, no replay.
+- Find the line in the partner set, grant it to the CPU from there, leave it displaced.
+- This deletes the single most complex piece of the original plan.
+
+⚠️ **Where their reasoning is weaker for us:** their L1 is 32 KB. **Ours is 256 B — 4 lines.** The copy
+falls out of L1 almost immediately, so we will re-pay the partner search more often than they did (they
+measured only ~10% of accesses needing one). That is a cost, not a correctness problem. Build the simple
+version, measure the second-search rate, and we revisit swapping only if that rate is bad.
+
+---
+
+## A3. Finding 2 — our displaced lines are quarantined. The paper's are ordinary.
+
+| | Paper | Us |
+|---|---|---|
+| Replacement policy | LRU | LFSR / random ([Directory.scala:141](../../../design/craft/inclusivecache/src/Directory.scala#L141)) |
+| Displaced line on insert | inserted **MRU** — a head start | — |
+| Displaced line afterwards | **competes normally**, ages out | **excluded from every victim tier** except last-resort reclaim |
+
+The quarantine is this line, [Directory.scala:151](../../../design/craft/inclusivecache/src/Directory.scala#L151):
+
+```scala
+val lfsrVictimOH = victimWayOHLFSR & nonDisplacedOH
+```
+
+The `& nonDisplacedOH` masks displaced ways out of normal victim selection.
+
+**Why we think this is the root cause of several problems at once:**
+
+- Sets clog with lines that cannot hit — measured: `displaced` share of destination rejects went
+  1.0% → **22.9%** on matmult.
+- **Teardown can never fire.** The rule is "dissolve when the partner holds no displaced lines"
+  (paper §3.4). That requires displaced lines to actually be evictable. Ours are not — which is very
+  likely why your two pairings froze.
+
+**This is now commit 2, and it is a single-variable experiment. Do it before anything else.**
+
+---
+
+## A4. Revised commit plan
+
+| # | What | Status |
+|---|---|---|
+| 1 | Pinning | ✅ landed `97b0d54` |
+| **2** | **Displaced lines evictable** — drop the `& nonDisplacedOH` mask. **Measure alone.** | ⭐ do first |
+| 3 | Building blocks — §2a directory secondary-search (§2b already landed in commit 1) | |
+| 4 | **Search + serve in place** (was: search + swap + replay) | ⭐ the payoff |
+| 5 | Teardown | |
+
+**Commit 2 is a standalone experiment — report before starting commit 3.** Compare against:
+
+| | cycles | OUTER-A |
+|---|---:|---:|
+| SBC today (2026-08-25) | 22,278,686 | 122,144 |
+| SBC **off** | 15,683,316 | 13,147 |
+
+Moving toward the bottom row is the win. Correctness gate unchanged: stress 7/7, matmult checksum 29824.
+
+⚠️ **Watch for the opposite failure.** The paper gets away with this because LRU + MRU-insertion gives
+a displaced line a head start. We use **random replacement**, so removing the mask gives it *no*
+protection — it may be evicted almost immediately after being copied in, making every migration
+pointless in a new way. **If you see copies being reclaimed within a few hundred cycles, say so.** The
+fix would be some temporary protection, but do not build that pre-emptively — measure the plain version
+first.
+
+⚠️ The last-resort reclaim tier and `displacedOH` must **stay**. They are what stops `victimWayOH` going
+to zero and tripping the `PopCount` assert. You are removing a mask from one tier, not deleting a tier.
+
+---
+
+## A5. Answers to your report
+
+- **F3 — removing both `src` and `dst` from the DSS: correct, and an important catch.** With
+  `dssEntries = 8` and 8 sets, every set is a permanent candidate and the hottest-candidate eviction
+  path never runs, so a paired source would have blocked `dssOK` forever. Endorsed, keep it.
+- **F2 — following §1a over §2a(f): right call**, and your reasoning is the reason. §2a(f) predates the
+  2026-08-24 rewrite of §1a.
+- **F1, F4** — agreed, no action.
+- **Your decision to continue rather than stop: right at the time.** Teardown genuinely was the designed
+  release valve. The paper then showed the valve could never open, which you could not have known.
+- **Your lockout diagnosis is accepted and it corrected mine.** I predicted a capacity freeze
+  ("4 pairings uses all 8 sets"); you showed 4 sets were still free and the real mechanism is that a
+  destination may never source, so the workload's dominant source was locked out two migrations in.
+  That distinction is why A3 matters — with evictable displaced lines and teardown, the lock releases.
+
+**Still owed from you:** the pinned run's **final** cycle count and total `OUTER-A`. The comparison in
+your report is windowed to cycles 0–7.9M, so we cannot yet say whether pinning moved us toward the
+SBC-off baseline. Please add the completed-run numbers to `REPORT.md`.
+
+---
+
+## A6. Calibration — what the paper actually achieves
+
+Useful for judging whether our numbers are sane. From paper §5.1, §7.3:
+
+| Measure | Paper (dynamic SBC) |
+|---|---:|
+| Lines displaced **per association** | **2.15** |
+| Secondary hits **per displaced line** | 3.29 |
+| Second searches that hit | 47.7% |
+| Association requests satisfied | ~35% |
+| Accesses needing a second search | 10.2% |
+| Miss-rate reduction / IPC gain | 12.8% / 5.25% |
+
+Two things to take from this:
+
+1. **Pairings are tiny and short-lived** — about two lines each, then dissolved. Our mental model of
+   long-lived pinning was wrong, and the "4 pairings freeze the cache" worry mostly evaporates once
+   pairings actually turn over. They only froze because ours cannot dissolve (A3).
+2. **A ~35% association success rate is normal**, not a bug. Our 83% ABORT-DST is not as far off as it
+   looked. Do not chase it.
