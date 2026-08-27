@@ -324,12 +324,23 @@ carries the wrong address.
   writes, and **the invariant is untouched**. Costs one copy per secondary hit; the paper's measurement
   that swapping "had a negligible impact on performance" is evidence that paying it is not fatal.
 
-Note the paper's argument for serve-in-place ("the line goes to L1, so later accesses hit there") is
-weakest exactly where A2 already flags it — **our L1 is 4 lines.** The copy falls out almost at once,
-and under (A) every re-reference pays another partner search, whereas under (B) it is a native hit.
+**The part of A2 I'd push back on: serve-in-place is not the simplification it looks like.** A2 says it
+"deletes the single most complex piece of the original plan." It deletes the swap, but it adds
+AT-based address reconstruction to the probe path *and* the release path, and it lifts an invariant that
+three separate places in `MSHR.scala` currently lean on. Option (B), by contrast, is the Phase-2
+migration datapath run backwards — `s_dread`/`w_dread` for the search, `s_copy`/`w_copy` for the move,
+two directory writes — all of which already exist and are debugged. On net I expect (B) to be *less*
+new RTL than (A), not more.
 
-I have no result that settles this. I will keep going with commits 2 and 3, which are needed either
-way, and hold at the commit-4 boundary for your call.
+Note also that the paper's argument for leaving the line in place ("it goes up to L1, so later accesses
+hit there") is weakest exactly where A2 already flags it — **our L1 is 4 lines.** The copy falls out
+almost immediately, and under (A) every re-reference pays another partner search, whereas under (B) it
+is a native hit.
+
+**My recommendation is (B)**, on the grounds that it reuses proven machinery and does not touch a
+load-bearing invariant. But the paper is your evidence base, not mine, and A2 was an explicit
+instruction — so I will not choose. I am continuing with commit 3, which is needed either way, and will
+hold at the commit-4 boundary.
 
 ---
 
