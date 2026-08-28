@@ -236,11 +236,235 @@ two reproducible failures.
 
 ## Step 1 — the fix
 
-**Not started.** Held by the Step 0 and Step 0b gates. No RTL written.
+**C1 and C3 landed. C2 deferred — as specified it is incorrect, not merely disruptive.**
+
+### C1 — key the pairing query to the asker
+
+Three edits, all inside the SBC-gated path:
+
+```scala
+// Scheduler — ask about the MSHR receiving a directory result, not the port
+sbu.io.assocQuery.valid := directoryFanout.asUInt.orR
+sbu.io.assocQuery.bits  := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.set))
+
+// MSHR — latch on the result, hold otherwise (replaces the latch in the allocate block)
+when (io.directory.valid) {
+  pairValidReg := io.pairInfo.valid
+  pairSetReg   := io.pairInfo.bits
+}
+
+// MSHR — arm the search off the LIVE answer, not the register written this same cycle
+val pairLive = io.directory.valid && io.pairInfo.valid
+when (params.micro.enableSetBalancing.B && !new_meta.hit && pairLive) { searching := true.B; ... }
+```
+
+### The timing argument, in my own words
+
+**What has to be true:** in the cycle a directory result lands in MSHR *i*,
+`mshrs(i).io.status.bits.set` must already be the set that result is about.
+
+1. `io.status.bits.set := request.set` ([MSHR.scala:301](../../../design/craft/inclusivecache/src/MSHR.scala#L301)) —
+   `status.bits.set` is nothing but the `request` register.
+2. `request := io.allocate.bits` under `when (io.allocate.valid)`, so `request` takes the new set at
+   the clock edge **ending** the allocate cycle. From the next cycle onward `status.bits.set` is the
+   new set.
+3. **The allocate and the directory read are the same cycle.** The fresh allocate fires on
+   `request.valid && allocReady && mshr_insertOH(i) && !mshr_uses_directory_assuming_no_bypass`
+   ([Scheduler.scala:415](../../../design/craft/inclusivecache/src/Scheduler.scala#L415)), and
+   `alloc_uses_directory = request.valid && request_alloc_cases`
+   ([Scheduler.scala:367](../../../design/craft/inclusivecache/src/Scheduler.scala#L367)) whose first
+   term is that same `allocReady && !mshr_uses_directory_assuming_no_bypass && mshr_free`. The read
+   address is `request.bits.set` — the very value being latched.
+4. The result cannot come back before the next cycle:
+   `directoryFanout = params.dirReg(RegNext(...))`
+   ([Scheduler.scala:441](../../../design/craft/inclusivecache/src/Scheduler.scala#L441)) is one
+   register minimum, two with `dirReg`.
+
+So: read issued at T off the port's set; `request` holds that set from T+1; result and
+`directoryFanout` arrive at T+1 (T+2 with `dirReg`). At that cycle
+`Mux1H(directoryFanout, status.bits.set)` returns exactly the set the result is about. **It is
+aligned with a cycle of margin, and the margin only grows if `dirReg` is enabled.**
+
+The reload path needs no argument at all:
+`m.io.allocate.bits.set := m.io.status.bits.set` ([Scheduler.scala:313](../../../design/craft/inclusivecache/src/Scheduler.scala#L313)),
+so a reload cannot change the set and `status.bits.set` is stable across the whole window. That is
+also precisely why the old code was wrong: it used `repeat`, a **tag** test, to decide whether the
+**set** had changed.
+
+**One-hotness** (needed for `Mux1H`): `directoryFanout` is `RegNext` of
+`Mux(mshr_uses_directory || dread, mshr_selectOH, Mux(alloc_uses_directory, dirTarget, 0.U))`.
+`mshr_selectOH` is one-hot, `dirTarget` is `mshr_insertOH` (one-hot) or a single constant bit — so
+one-hot-or-zero. Same property `decidingOH` already relies on
+([Scheduler.scala:543](../../../design/craft/inclusivecache/src/Scheduler.scala#L543)).
+
+**Loop freedom:** elaboration passed first try. As predicted this removes a dependency on
+`io.allocate.bits.*` rather than adding one — `assocQuery.bits` is now driven from `status.bits.set`,
+a register.
+
+### ⚠️ Finding — C1 as written is incomplete, and the missing half would have made things worse
+
+The amendment says to move the latch and stop there. **That alone is a regression.** `searching` is
+armed in the plan block, which runs in the *same* cycle as `io.directory.valid`
+([MSHR.scala:1242](../../../design/craft/inclusivecache/src/MSHR.scala#L1242)) — so if it kept
+reading `pairValidReg`, it would read the value from the register's state *before* this cycle's
+write, i.e. the pairing belonging to the **previous** directory result. Today's code at least latches
+something for the current request; the half-applied fix would arm searches off the previous one.
+
+Hence `pairLive`. The register is still needed, but only to carry `pairSetReg` forward to the dread,
+the copy and the erase, all of which happen at least a cycle later.
+
+**This is the same one-cycle hazard that sinks C2** — I found it on my own change first, which is
+what sent me to check C2's consumers.
+
+### C2 — DEFERRED, and the reason is a defect in the instruction
+
+C2 says to latch `migAdviceValidReg` inside `when (io.directory.valid)`. **That cannot work.** Its
+main consumer reads it combinationally in that same cycle:
+
+```scala
+migFastWantW := ... && migAdviceValidReg && io.directory.valid && ...   // MSHR.scala:819
+```
+
+A register written under `when (io.directory.valid)` does not hold the new value *during* that
+cycle. `migFastWantW` would therefore only ever see advice left over from a previous directory
+result — in practice the migrate fast path stops working. `migFastDecline`
+([MSHR.scala:831](../../../design/craft/inclusivecache/src/MSHR.scala#L831)) has the same shape.
+
+**The correct form is to delete the register, not move it.** Once the query is keyed to the asker,
+`io.pairInfo.hot` is already valid in exactly the cycle the decision is made, so the advice wants to
+be a live wire — the register only ever existed to carry the value across the allocate→result window
+that C1 has just removed. That is the same "make it unrepresentable" move C1 makes.
+
+**Why I am not doing it in this commit.** The live wire is not behaviour-neutral. The plan block also
+runs on `.elsewhen (io.allocate.valid && io.allocate.bits.repeat)`
+([MSHR.scala:1071](../../../design/craft/inclusivecache/src/MSHR.scala#L1071)) — a repeat allocate
+with **no** directory result — and the `migProbe` branch
+([MSHR.scala:1196](../../../design/craft/inclusivecache/src/MSHR.scala#L1196)) reads the advice
+there. On that path a live wire reads false where the register today reads the value latched for the
+same set, so `MIG-DEFER` behaviour changes. I checked whether that path is unreachable and it is
+**not**: the assess block needs `!new_meta.hit && state =/= INVALID`, and on a repeat allocate
+`new_meta = final_meta_writeback`, whose `hit` is set false on two paths
+([MSHR.scala:508](../../../design/craft/inclusivecache/src/MSHR.scala#L508),
+[537](../../../design/craft/inclusivecache/src/MSHR.scala#L537)) — one of which leaves `state`
+untouched when `!meta.hit`, so a non-INVALID state with `hit=false` is representable.
+
+Characterising that is a migration-behaviour change, which would contaminate C5's "essentially
+unchanged" acceptance and cannot be bisected apart from C1 if bundled. Per C2's own escape hatch and
+C6, **C1 lands alone.** The fix above is ready to write as a separate commit; it needs its own
+before/after on `MIG-DEFER` / `MIG-START` / `MIG-COMMIT`.
+
+Note also that C2's premise is now partly moot: the demand-A filter it wanted moved into the MSHR
+(`prio(0) && !control`) is **already** applied inside `migFastWantW` and `migFastDecline` from the
+MSHR's own `request`. Only the `hot` term is mis-keyed.
+
+### C3 — the invariant assert
+
+Placed in the **Scheduler**, not the MSHR, and that placement is what satisfies trap 1:
+
+```scala
+sbu.io.checkQuery := scheduleSet
+when (schedule.a.valid && mshr_selectOH.orR && schedule.a.bits.param =/= TLPermissions.BtoT) {
+  assert (!sbu.io.checkIsSource || Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.secSearched)),
+          "SBC: paired source issued an outer Acquire without searching its partner")
+}
+```
+
+- **Trap 1 (do not police the latch with the latch).** `checkIsSource` is a new assert-only read of
+  the AT in the SBU (`at(io.checkQuery).valid && !at(io.checkQuery).sd`), keyed to the scheduling
+  MSHR's own set. It never passes through `pairValidReg`, `pairInfo`, or `assocQuery`. If C1 were
+  wrong, this assert would still fire. In the MSHR there is no independent source available, which
+  is why it is not there.
+- **Trap 2 (exclude the upgrade).** No new signal needed:
+  `a.bits.param := Mux(req_needT, Mux(meta.hit, BtoT, NtoT), NtoB)`, and `s_acquire` is armed only on
+  `!hit || (BRANCH && needT)` — so an Acquire with `meta.hit` implies `req_needT`, which means
+  **`param === BtoT` ⟺ upgrade**, exactly. The assert excludes it by that term rather than by
+  depending on the run happening to contain none.
+- The "did I search" term is a new one-bit `searchedReg` (cleared at allocate, set when `searching`
+  is armed) exported as `MSHRStatus.secSearched`. It feeds only the assert, so firtool strips it.
+
+### SBC-off
+
+`pairInfoValid` defaults to `false.B` when `enableSetBalancing` is false
+([Scheduler.scala:221](../../../design/craft/inclusivecache/src/Scheduler.scala#L221)) and the whole
+SBU block is inside `if (params.micro.enableSetBalancing)`, so `pairValidReg`, `pairLive` and
+`searchedReg` all constant-fold and the assert does not exist. Verified by build below.
 
 ---
 
 ## Step 2 — correctness re-verification
+
+### ⚠️ The surprise C0 asked to hear about immediately: `case_full_dirty_dst` now PASSES
+
+```
+case_free_dst            PASS      case_full_dirty_dst      PASS  <-- was FAIL
+case_full_clean_dst      PASS      case_reaccess_migrated   FAIL  <-- still fails
+case_dirty_victims       PASS      case_hazard_rw           PASS
+case_bankstore_saturation PASS
+```
+
+**6/7, not the 5/7 C5 required.** 0 SBC asserts. C0 said this would be a surprise and asked to be
+told at once, so: told.
+
+**I do not believe the fix repaired it, and I think the PASS is a perturbation artifact.** The
+evidence is the pairing map, which changed materially:
+
+| | before | after |
+|---|---|---|
+| pairings | `1→3`, `5→7`, `6→0` | `4→3`, `5→7`, `6→0`, `1→2` |
+| migrations into **set 3** | 2,355, sourced from **set 1** | 1,723, sourced from **set 4** |
+
+`case_full_dirty_dst` is the "full dirty cold **set 3**" case. Between the two runs the set paired
+into set 3 changed identity. The latch fix alters which MSHRs search and when, which shifts DSS
+timing, which reshuffles the whole pairing map — and case 4 then stops exercising whatever corrupts.
+
+That reading is reinforced by the acceptance number itself: the fix removed **one** unsearched miss
+in 60,169. One event cannot plausibly be the difference between a reproducible data corruption and a
+clean pass. **A PASS obtained by perturbation is worse than a FAIL — it hides the defect.** I would
+not treat case 4 as fixed, and I would not let this become the reason the corruption hunt is
+narrowed.
+
+### The C5 acceptance table — the one direct measurement
+
+From `sbc_latch_check.py` (in this folder), which reproduces every "before" figure exactly from the
+preserved old log:
+
+| | before | required after | **actual after** | |
+|---|---:|---:|---:|---|
+| unsearched **post**-pairing misses | 1 | **0** | **0** | ✅ |
+| unsearched **pre**-pairing misses | 150 | ~150, unchanged | 234 | ✅ see note |
+| wrong-partner searches | 0 | 0 | **0** | ✅ |
+| native-side twins | 0 | 0 | **0** | ✅ |
+| parked-side twins (positive control) | 22,156 | — | 21,893 | detector still live |
+| native-side opportunities | 49,452 | — | 67,294 | branch still exercised |
+
+**Note on the 234.** Per set: `1: 71→69`, `5: 37→37`, `6: 42→45` — unchanged. The extra 83 is
+**set 4's own pre-pairing window**, which exists only because a fourth pairing formed. These are
+correct by definition (nothing is parked before a set has a partner), so the requirement "~150,
+unchanged" is met once the new pairing is accounted for.
+
+### `MSHR.scala:915` — did not fire
+
+Nor did the new C3 assert, nor any other SBC assert, across 21,897 migrations and 84,691 searches.
+Reported as C7 item 7 asks. Since C1 makes `pairValidReg` correct more often, 915 should now be
+running less vacuously than before — but I cannot prove it stopped being vacuous, only that it did
+not fire.
+
+### `SEC-HIT` / `SEC-MISS` — moved, but not comparably
+
+| | before | after |
+|---|---:|---:|
+| SEC-HIT | 3,268 | 2,956 |
+| SEC-MISS | 59,715 | 81,735 |
+
+C0 retracted 1e and predicted no movement. `SEC-HIT` indeed did not rise — it fell slightly. But
+these two runs have **different pairing maps**, so the numbers are not measuring the same thing and
+I would not read either direction as an effect of the fix. The 1e retraction is consistent with the
+data; the specific values are not evidence for anything.
+
+### Still owed
+
+`bringup_matmult` (checksum 29824) and the SBC-off bit-exactness check were still running when this
+section was written. Both reported below.
 
 ---
 

@@ -129,6 +129,19 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       (setCopyUnit.io.idle || !m.io.schedule.bits.copy.valid)
   }.reverse)
 
+  // SBC Phase 3 debug: nothing schedulable for a long stretch means a resource is wedged. Print which.
+  if (params.micro.sbcDebug) {
+    val stallCtr = RegInit(0.U(32.W))
+    when (mshr_request.orR || !mshrs.map(_.io.status.valid).reduce(_ || _)) { stallCtr := 0.U }
+      .otherwise { stallCtr := stallCtr + 1.U }
+    when (stallCtr === 400.U) {
+      printf(p"[SBC][SCHED] STALL srcA=${sourceA.io.req.ready} srcB=${sourceB.io.req.ready}" +
+             p" srcC=${sourceC.io.req.ready} srcD=${sourceD.io.req.ready} srcE=${sourceE.io.req.ready}" +
+             p" srcX=${sourceX.io.req.ready} dirW=${directory.io.write.ready} scuIdle=${setCopyUnit.io.idle}" +
+             p" schedV=${Cat(mshrs.map(_.io.schedule.valid).reverse)} req=${mshr_request}\n")
+    }
+  }
+
   // Round-robin arbitration of MSHRs
   val robin_filter = RegInit(0.U(params.mshrs.W))
   val robin_request = Cat(mshr_request, mshr_request & robin_filter)
@@ -163,6 +176,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   directory.io.write.valid := schedule.dir.valid
   directory.io.write.bits.viewAsSupertype(chiselTypeOf(schedule.dir.bits)) := schedule.dir.bits
+  if (params.micro.sbcDebug) {
+    when (directory.io.write.valid) {
+      printf(p"[SBC][SCHED] DIR-WRITE set=${schedule.dir.bits.set} way=${schedule.dir.bits.way}" +
+             p" state=${schedule.dir.bits.data.state} displaced=${schedule.dir.bits.data.displaced}" +
+             p" tag=${schedule.dir.bits.data.tag} mshr=${mshr_select}\n")
+    }
+  }
 
   // Forward meta-data changes from nested transaction completion
   val select_c  = mshr_selectOH(params.mshrs-1)
@@ -208,9 +228,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 2.5b: the second term is the same-cycle claim. A migrant picks its destination and
   // claims it in one cycle, so the fence sees the claim immediately and the [pick -> fence] window is
   // zero. This is what replaces the migTokenPending/migPendCtr timer that used to paper over it.
+  // SBC Phase 3: the partner set of a live search/repatriate is fenced the same way. Without it the
+  // way holding the parked copy can be refilled between the search and the erase, and the erase then
+  // destroys whatever took its place.
   val dstSetConflict = mshrs.map { m =>
     (m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set) ||
-    (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set)
+    (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set) ||
+    (m.io.status.valid && m.io.status.bits.secValid && m.io.status.bits.secSet === request.bits.set)
   }.reduce(_ || _)
   val allocReady = alloc && !dstSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
@@ -304,6 +328,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.migOffer.bits   := dstOfferSet
     m.io.pairInfo.valid  := pairInfoValid
     m.io.pairInfo.bits   := pairInfoSet
+    // Does any OTHER live MSHR own this MSHR's partner set?
+    m.io.partnerBusy     := mshrs.zipWithIndex.map { case (o, j) =>
+      (j != i).B && o.io.status.valid && o.io.status.bits.set === m.io.status.bits.secSet
+    }.reduce(_ || _)
   }
   // At most one MSHR may claim a destination per cycle. Holds by construction (one-hot directoryFanout
   // for the fast path; migPending masking for the deferred path), so this is a check, not a mechanism.
@@ -548,11 +576,24 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       }
     }
 
-    // SBC Phase 3: partner lookup for the allocating request. Gated to a FRESH allocate: the reload
-    // path drives allocate.bits.set from the MSHR's own prior set, not request.bits.set, so an ungated
-    // query would latch the wrong set's pairing on a secondary pop.
-    sbu.io.assocQuery.valid   := request.valid && alloc
-    sbu.io.assocQuery.bits    := request.bits.set
+    // SBC Phase 3 (002 C1): ask about the MSHR receiving a directory result, not about whatever is
+    // waiting at the port. Keying it to the port let an MSHR latch another set's partner, because
+    // `repeat` is a TAG test standing in for "did my SET change". directoryFanout is one-hot (the
+    // directory is single-ported) - the same property destQuery relies on.
+    sbu.io.secHit  := mshrs.map(_.io.secHit).reduce(_ || _)
+    sbu.io.secMiss := mshrs.map(_.io.secMiss).reduce(_ || _)
+    sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
+    sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.set))
+
+    // SBC Phase 3 (002 C3/1f): the invariant, not the shape - a paired source may not fetch from
+    // memory without asking its partner first. The paired-source term is read LIVE from the AT so
+    // this cannot be satisfied by the same mis-latch it exists to police. BtoT is the BRANCH->TRUNK
+    // upgrade, which correctly issues an Acquire with no search (it is already resident).
+    sbu.io.checkQuery := scheduleSet
+    when (schedule.a.valid && mshr_selectOH.orR && schedule.a.bits.param =/= TLPermissions.BtoT) {
+      assert (!sbu.io.checkIsSource || Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.secSearched)),
+              "SBC: paired source issued an outer Acquire without searching its partner")
+    }
     pairInfoValid := sbu.io.assocQuery.valid && sbu.io.assocResp.activeSource
     pairInfoSet   := sbu.io.assocResp.assocSet
     // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).

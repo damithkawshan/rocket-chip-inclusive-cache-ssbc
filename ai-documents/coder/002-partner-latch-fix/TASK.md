@@ -392,3 +392,235 @@ candidate I can see in the RTL, which is your own `copy_wsafe` argument with two
 I have **not** proven either causes the corruption. They are the two places where a documented
 upstream assumption is being used outside the conditions it was written for. Start there rather than
 rebuilding `s_verify`.
+
+---
+
+# Amendment 2 — 2026-08-28 — Step 0b accepted. Build Step 1 anyway, as hygiene.
+
+## C0. Where we stand, and why I am authorising Step 1 after two clean gates
+
+**Step 0b is accepted in full.** The count gate found 151 unsearched misses and I would have read that
+as confirmation. You found the confound I missed — 150 of them are *before* the set had a partner, so
+correctly unsearched — and then did not stop at the proxy. Shadow-modelling the whole directory from
+1.67M `DIR-WRITE` lines, with a positive control that fired 22,156 times and an opportunity count of
+49,452, is a better test than the one I specified. **Zero native-side twins is a trustworthy zero.**
+
+Both of my hypotheses are dead. Recorded, no argument.
+
+**What survives is your own sentence:** *"It does not clear the latch defect as a defect."* It is
+genuinely mis-gated. We are now fixing it **for its own sake**, not as the corruption fix.
+
+⚠️ **Read this before you start, or you will chase a ghost:**
+
+> **This change will NOT fix `case_full_dirty_dst` or `case_reaccess_migrated`. They must still fail
+> after it.** If they pass, something unexpected happened and I want to know immediately — but do not
+> aim for it, and do not treat continued failure as the fix not working.
+
+**Retraction — 1e is withdrawn.** I said to expect `SEC-HIT` to rise, possibly a lot. Your data says
+otherwise: **one** skipped post-pairing search in 60,169 misses. Expect `SEC-HIT` to move by roughly
+that, i.e. not at all. If it moves a lot, that is a surprise worth reporting, not a success.
+
+### Why fix a defect that fires once in 60,169
+
+Because **it is rare for a geometry-dependent reason, not a structural one.** The harmful outcome
+needs a paired source to be *unowned* at the moment of the mis-latch. At 8 sets under a hammer, paired
+sources are almost always owned, so the mis-latch writes "no partner" instead of "wrong partner". More
+sets means less contention means the harmful branch becomes reachable. Task 003 will move to a larger
+geometry; I do not want this sitting in the RTL when it does.
+
+Keep it as **one small, isolated commit** so it can be bisected out later.
+
+---
+
+## C1. The pairing latch — the main fix
+
+### What is wrong
+
+`pairInfo` answers about `request.bits.set` (the request at the input port,
+[Scheduler.scala:584-585](../../../design/craft/inclusivecache/src/Scheduler.scala#L584)), is
+broadcast to every MSHR ([Scheduler.scala:329-330](../../../design/craft/inclusivecache/src/Scheduler.scala#L329)),
+and is latched at allocate by any MSHR whose allocate is not a tag-`repeat`
+([MSHR.scala:999-1000](../../../design/craft/inclusivecache/src/MSHR.scala#L999)). `repeat` is a
+**tag** comparison being used to decide whether the MSHR's **set** changed. On a reload the set never
+changes.
+
+### What to do — key it to the asker
+
+Copy the pattern `destQuery` already uses
+([Scheduler.scala:539-541](../../../design/craft/inclusivecache/src/Scheduler.scala#L539)):
+
+```scala
+// Scheduler — the pairing question is about the MSHR receiving a directory result,
+// not about whatever is waiting at the port.
+sbu.io.assocQuery.valid := directoryFanout.asUInt.orR
+sbu.io.assocQuery.bits  := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.set))
+```
+
+`directoryFanout` ([Scheduler.scala:440](../../../design/craft/inclusivecache/src/Scheduler.scala#L440))
+is already one-hot — the directory is single-ported, so at most one MSHR gets a result per cycle.
+Same property `decidingOH` relies on.
+
+**Timing to satisfy yourself about, and state in the report:** at the result cycle,
+`status.bits.set` must already be the MSHR's new set. `request` is latched on `io.allocate.valid`,
+the directory read is issued in that same cycle, and the result lands one cycle later
+(two with `dirReg`). So it is aligned. Confirm this rather than take my word for it.
+
+### MSHR side — latch on the directory result, hold otherwise
+
+Keep both registers. Only move **when** they are written:
+
+```scala
+// delete the pairing lines from the `when (io.allocate.valid)` block, and add:
+when (io.directory.valid) {
+  pairValidReg := io.pairInfo.valid
+  pairSetReg   := io.pairInfo.bits
+}
+```
+
+Why this is correct on every path:
+
+| path | directory read? | behaviour |
+|---|---|---|
+| fresh allocate | yes | latches its own set's pairing ✓ |
+| reload, tag mismatch | yes | latches **its own** set, not the port's ✓ — this is the bug |
+| reload, tag match (`repeat`) | no | **holds** — set unchanged, so pairing unchanged ✓ |
+| bypass, tag match | no | holds ✓ |
+| search result / dread result | yes | re-latches the same value (same set) — harmless ✓ |
+
+A plain `when (io.directory.valid)` is deliberate. Do **not** try to narrow it with extra terms —
+every case above is either correct or a harmless rewrite, and each extra term is a place for the
+next sibling-gate bug (trap 1).
+
+### Loop freedom
+
+This **removes** a dependency on `io.allocate.bits.*` rather than adding one, so it moves in the safe
+direction relative to the note at
+[MSHR.scala:249](../../../design/craft/inclusivecache/src/MSHR.scala#L249). `assocQuery.bits` is now
+driven from `status.bits.set`, a register. Nothing on the offer → claim → fence path is touched.
+If elaboration still complains, stop and report rather than working around it.
+
+---
+
+## C2. The migrate-advice latch — same class, but the keying is genuinely split
+
+[MSHR.scala:994](../../../design/craft/inclusivecache/src/MSHR.scala#L994) has the identical defect.
+But `adviceMigrate` has **two consumers that want two different keys**, and this is the part to get
+right:
+
+| consumer | correct key | status |
+|---|---|---|
+| `preferEvictable` hint on the alloc-side dir read ([Scheduler.scala:394](../../../design/craft/inclusivecache/src/Scheduler.scala#L394)) | `request.bits.set` — it is about the allocating request | **correct today. Do not change it.** |
+| `migAdviceValidReg` latch ([MSHR.scala:994](../../../design/craft/inclusivecache/src/MSHR.scala#L994)) | the MSHR's own set | **wrong today** |
+
+So this needs a second answer, not a re-key of the existing one.
+
+**Do it with one extra field, not a new port.** Extend `assocResp`
+([SetBalanceUnit.scala:124-125](../../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L124))
+with a `hot` bit carrying the same expression as `migrateResp.migrate`, evaluated at
+`assocQuery.bits`. Then in the MSHR, latch alongside the pairing:
+
+```scala
+when (io.directory.valid) {
+  migAdviceValidReg := io.pairInfo.hot && <this request is a demand A>
+  ...
+}
+```
+
+- `sbu.io.migrateQuery` and `adviceMigrate` stay exactly as they are, serving only the
+  `preferEvictable` hint.
+- The demand-A filter (`prio(0) && !control`) moves into the MSHR, where it can be taken from the
+  MSHR's **own** request rather than the port's.
+- The `!anyMigrating` term is a hint only and the per-MSHR offer mask
+  ([Scheduler.scala:325-327](../../../design/craft/inclusivecache/src/Scheduler.scala#L325)) already
+  enforces the real one-migration rule. Keep or drop it — say which and why.
+
+**If this turns out to be more disruptive than it looks, split it into a second commit and land C1
+first.** C1 is the one that matters. Do not bundle a struggle.
+
+---
+
+## C3. Assert the rule, not the shape (this is 1f, and it is the piece I most want kept)
+
+Every existing check tests shape — one-hot, clean, not-self. None tests the invariant that actually
+matters. Add:
+
+> **At the point the outer Acquire is issued: if this set is a paired source, the search must have
+> completed.**
+
+Roughly `assert(!io.schedule.bits.a.valid || !pairedSrc || w_ssearch, ...)`, behind
+`enableSetBalancing`.
+
+⚠️ **Two ways to get this wrong:**
+
+1. **Do not read the "am I a paired source" term from `pairValidReg`** — the assert would inherit the
+   very register it is meant to police. Read it live, or from a register latched from the live query
+   in the same cycle it is used.
+2. **Exclude the upgrade path.** You established that `s_acquire` is armed on
+   `!new_meta.hit || (BRANCH && new_needT)` while `searching` is armed only on `!new_meta.hit`
+   ([MSHR.scala:1235-1239](../../../design/craft/inclusivecache/src/MSHR.scala#L1235)). A
+   BRANCH→TRUNK upgrade correctly issues an Acquire with no search. It never fired in your run
+   (all 145,174 `OUTER-A`s had `hit=0`), but the assert must not depend on that.
+
+This is the guard that would have made the whole thing a crash on run one instead of two data
+corruptions and four days of theories.
+
+---
+
+## C4. Do not "fix" these
+
+- **`preferEvictable`'s keying** — correct as-is (C2 table). It is a hint about the allocating
+  request.
+- **`destQuery` / `migrateResp.destSet`** — already correctly keyed. It is the pattern, not a target.
+- The partner fence, the SCU, destination eligibility, teardown, `s_verify` — all unchanged and out
+  of scope.
+
+---
+
+## C5. Verification — what must be true, and what must NOT change
+
+| check | expected |
+|---|---|
+| SBC **off** | **bit-exact** with the current baseline. Non-negotiable. |
+| `migration_stress_test` | still **5/7** — `case_full_dirty_dst` and `case_reaccess_migrated` still FAIL |
+| `bringup_matmult` | checksum **29824**, 0 asserts |
+| new asserts | 0 firings |
+| `SEC-HIT` / `SEC-MISS` | essentially unchanged (1e retracted) |
+| matmult cycles / `OUTER-A` | report them; large movement is a surprise, not a goal |
+
+**The one measurable acceptance for this fix** — re-run your Step-0b analysis on the new log:
+
+| | before | required after |
+|---|---:|---:|
+| unsearched post-pairing misses | 1 | **0** |
+| unsearched **pre**-pairing misses | 150 | **~150, unchanged** — these are correct |
+| wrong-partner searches | 0 | 0 |
+| native-side twins | 0 | 0 |
+
+That is cheap — your replay tooling already does it — and it is the only direct evidence that the
+change did what it claims.
+
+**Also watch `MSHR.scala:915`.** It has been passing partly by vacuity (`!pairValidReg` skips it).
+With the latch corrected it may start firing. **That would be a real finding, not a regression.**
+Report it, do not silence it.
+
+---
+
+## C6. Scope and stopping
+
+- **One commit for C1 (+C3), optionally a second for C2.** Keep them isolated and bisectable.
+- **Do not start the corruption hunt in this task.** A5's open question — *who actually reads
+  `(request.set, meta.way)` while the SCU writes it* — is the right next question and it is a
+  separate instrumented run. It comes after this lands.
+- **Stop and ask if:** the C1 timing argument does not hold; elaboration complains about loop
+  freedom; C2 balloons; SBC-off is not bit-exact; or the two failing cases start **passing**.
+
+## C7. Acceptance
+
+1. C1 landed, with the timing argument stated in `REPORT.md` in your own words.
+2. C2 landed or explicitly deferred with a reason.
+3. C3 landed, with both traps in it addressed.
+4. SBC-off bit-exact.
+5. Stress still 5/7 with the same two failures; matmult checksum 29824.
+6. The C5 before/after table, from your replay tooling.
+7. Whether `MSHR.scala:915` fired.
+8. `REPORT.md` verdict filled in.

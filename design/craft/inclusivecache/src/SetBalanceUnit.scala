@@ -64,6 +64,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
       val activeSource = Bool()
       val assocSet     = UInt(params.setBits.W)
     })
+    // SBC Phase 3 (002 C3): assert-only second read of the AT. Lets the check ask "is this set a
+    // paired source" from the live table instead of from the MSHR's latch, which is what it polices.
+    val checkQuery    = Input(UInt(params.setBits.W))
+    val checkIsSource = Output(Bool())
     val commit = Flipped(Valid(new Bundle {
       val kind = UInt(2.W)
       val src  = UInt(params.setBits.W)
@@ -75,6 +79,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // aborted at the dst-full fallback).
     val migAttempt = Input(Bool())
     val migAbort   = Input(Bool())
+    // SBC Phase 3: secondary search outcome pulses from the MSHRs. secHits/(secHits+secMiss) is `f`,
+    // the term the whole design turns on.
+    val secHit  = Input(Bool())
+    val secMiss = Input(Bool())
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
@@ -119,6 +127,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // after `armed`/thresholds are declared.
   io.assocResp.activeSource := at(io.assocQuery.bits).valid && !at(io.assocQuery.bits).sd
   io.assocResp.assocSet     := at(io.assocQuery.bits).assocSet
+  io.checkIsSource          := at(io.checkQuery).valid && !at(io.checkQuery).sd
 
   // ---- SBC Phase 1: arm-and-fire migration trigger ------------------------------------------
   // SW arms a source set via SBC_BalanceSet. While that set is armed AND hot (sat >= T_hi) we
@@ -159,6 +168,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   val nCommit  = RegInit(0.U(32.W))
   when (io.migAttempt) { nAttempt := nAttempt + 1.U }
   when (io.migAbort)   { nAbort   := nAbort + 1.U }
+  val nSecHit  = RegInit(0.U(32.W))
+  val nSecMiss = RegInit(0.U(32.W))
+  when (io.secHit)  { nSecHit  := nSecHit + 1.U }
+  when (io.secMiss) { nSecMiss := nSecMiss + 1.U }
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
   val migrateCommit = io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE
@@ -197,6 +210,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     nAttempt := 0.U
     nAbort   := 0.U
     nCommit  := 0.U
+    nSecHit  := 0.U
+    nSecMiss := 0.U
   }
 
   // Read-only stats for MMIO.
@@ -208,8 +223,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.stats.migrations   := nCommit
   io.stats.attempted    := nAttempt
   io.stats.aborted      := nAbort
-  io.stats.secHits      := 0.U
-  io.stats.secMiss      := 0.U
+  io.stats.secHits      := nSecHit
+  io.stats.secMiss      := nSecMiss
 
   // ---- sim-only debug printfs (Scala-gated; nothing elaborated when sbcDebug=false) ----
   if (params.micro.sbcDebug) {
