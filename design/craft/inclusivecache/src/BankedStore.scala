@@ -37,8 +37,10 @@ abstract class BankedStoreAddress(val inner: Boolean, params: InclusiveCachePara
   // `way`/`set` say WHERE in the SRAM; this says WHAT the port thinks lives there. A wrong-row access
   // is exactly a disagreement between the two. Option => the field does not exist when sbcShadow=false.
   val shadowAddr = if (params.micro.sbcShadow) Some(UInt((params.tagBits + params.setBits).W)) else None
-  // SBC (003) diagnostic: 0 = ordinary port, 1 = SCU migration copy, 2 = SCU repatriation copy. The
-  // two SCU jobs use the same port, and telling them apart is what attributes a shadow firing.
+  // SBC (003) diagnostic: 0 = ordinary port, 1 = SCU migration copy. It had a third value for the
+  // repatriation copy, and telling the two SCU jobs apart is what attributed bug P5; Stage 2a deleted
+  // that job, so the field now just labels the SCU port. Kept - it costs nothing and it is what made
+  // the P5 firing readable.
   val shadowKind = if (params.micro.sbcShadow) Some(UInt(2.W)) else None
 }
 

@@ -229,8 +229,12 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Fix:** add `&& !migDeferred` to `doSecCopy`. Not applied pending the thinker's call — TASK 003 §9
   makes Stage 4 (which deletes this whole path) the experiment for `case_reaccess_migrated`, and
   fixing it now changes what that experiment proves.
-- **Status:** 🔴 open, **diagnosed**, fix known. Strong candidate for the open `case_reaccess_migrated`
-  corruption. Found in 003 Stage 1; introduced by the 001 commit-4 repatriation path.
+- **Resolution: CLOSED BY DELETION in 003 Stage 2a**, and **confirmed as the cause**. The whole
+  repatriation path was removed rather than patched (the fix would have been throwaway work on code
+  being deleted). `case_reaccess_migrated` — open since task 001 — **passes** for the first time, as do
+  all six data-correctness cases in `migration_stress_test`, with zero shadow-model firings.
+- **Status:** ✅ closed by deletion. Found in 003 Stage 1 by the BankedStore shadow model; introduced by
+  the 001 commit-4 repatriation path.
 
 ### 🟡 P6 — `migFastWantW` evaluates against the partner set's directory result
 - **What:** `migFastDecline` ([MSHR.scala:~845](../design/craft/inclusivecache/src/MSHR.scala)) carries
@@ -238,13 +242,18 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   sibling `migFastWantW` ([MSHR.scala:~819](../design/craft/inclusivecache/src/MSHR.scala)) does not.
   So on the cycle the secondary-search result returns, `migFastWantW` assesses the **partner set's**
   directory entry as if it were its own victim and can raise `io.dstClaim.valid` spuriously.
-- **Impact:** believed benign today — the plan block's search-result branch runs first in the
-  if/elsif chain, so `migrating` is never set from it; the visible effect is one wasted cycle of
-  destination fencing. But it can also make the `!(migFastWantW && migDeferWantW)` assert fire for a
-  reason unrelated to what it polices.
+- **Impact: NOT benign — observed live in 003 Stage 2a.** It was originally filed as latent (the plan
+  block's search-result branch runs first, so `migrating` is never set from it). Deleting the
+  repatriation path was enough to expose it: `migration_stress_test` case 7 halts deterministically at
+  sim-time `9757041000` on
+  `assert(!(migFastWantW && migDeferWantW))` ([MSHR.scala:964](../design/craft/inclusivecache/src/MSHR.scala#L964))
+  with `searching=1 w_ssearch=0 migDeferred=1 set=1 dirHit=0` — the missing term, read off the failing
+  cycle. Before 2a a secondary hit cancelled the fetch and entered the repatriation, which changed when
+  the search result landed relative to `migDeferred` and masked the collision.
 - **Pattern:** the same sibling-asymmetry as P5, in the same file, between two conditions written
   together.
-- **Status:** 🟡 open, found by reading during 003 Stage 1. Not fixed (out of Stage 1 scope).
+- **Fix:** add `!(searching && !w_ssearch)` to `migFastWantW`. Assigned to 003 Stage 2b.
+- **Status:** 🔴 open, found by reading in 003 Stage 1, **confirmed live in 003 Stage 2a**.
 
 ### 🟡 A5.1 — the SetCopyUnit can stall mid-block (corruption lead, code deleted in 003 Stage 4)
 - **What:** [SetCopyUnit.scala:137](../design/craft/inclusivecache/src/SetCopyUnit.scala#L137) is
@@ -267,6 +276,33 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   (`:383`, `:390`), and the comment at `:378` reads like an acknowledged approximation. The SBC question
   is what closed it upstream and whether a repatriation still satisfies that.
 - **Status:** 🟡 lead, confirmed as an RTL fact (002 §A5.2), never tested as the cause.
+
+---
+
+## Reusable debugging facts for this repo
+
+These are not bugs. They are things that cost a build-and-run cycle to learn and would cost one again.
+
+### `printf` needs `+verbose`; an `assert` message does not
+A Chisel `printf` is emitted under `PRINTF_COND` (= `+verbose`), which in this flow is the same stream
+as the full instruction trace — ~100x slowdown, and a `.out` in the hundreds of MB. An **`assert`
+message prints regardless**. So diagnostics for a firing assert belong **inside the assert message**,
+via `cf"…"` interpolation, not in a neighbouring `printf`. Learned in 003 Stage 1: a `[SBC][SCU] START`
+printf next to a firing assert produced nothing; moving the same values into the message worked first
+try and turned a symptom into a root cause in two rebuilds.
+
+### "Name the condition once" is the wrong rule when scheduling and waiting are different questions
+`707445c` taught this repo to name a condition once and use the name at both sites. 003 Stage 1 found
+the one place that advice is actively wrong. The ProbeAck routing key needs **two** selectors:
+
+```scala
+val probeVictimNow = !s_rprobe          // which probe am I ISSUING this cycle
+val probingVictim  = !w_rprobeacklast   // which probe am I WAITING for
+```
+
+`s_rprobe` retires the moment the probe issues, while the answer is still in flight. Keying the
+advertised `probeSet`/`probeTag` off it would flip the routing key mid-transaction and hang the MSHR.
+Keep both selectors distinct, and keep the comment saying why.
 
 ---
 

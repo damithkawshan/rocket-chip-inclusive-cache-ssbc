@@ -428,6 +428,93 @@ root cause. This bug had survived two full tasks of hunting.
 
 ---
 
+## Stage 2a — delete the repatriation path (the P5 experiment)
+
+### Acceptance greps — both clean
+
+```
+grep -rn "doSecCopy\|repatriating\|s_scopy\|w_scopy" design/     →  ZERO HITS ✅
+```
+
+`SetCopyUnit` now has **exactly one caller**: `schedule.copy.valid`, driven solely by `doMigCopy`.
+The copy lane's muxes are gone (one source, one destination), the `io.copy_done` disambiguation arm is
+gone, and `d_ready`, `sec_dir1`, `no_wait` and `secValid` all lost their repatriation terms.
+
+**P5 is closed by deletion, not hidden.** The collision was between `doSecCopy` and `doMigCopy`; one of
+the two participants no longer exists, and a single-caller lane cannot collide with itself.
+
+### ⭐ The experiment result: **P5 was the long-open corruption.**
+
+| case | 002 (`0f5a7ac`) | 003 Stage 2a |
+|---|---|---|
+| 1 `case_free_dst` | PASS | PASS |
+| 2 `case_full_clean_dst` | PASS | PASS |
+| 3 `case_dirty_victims` | PASS | PASS |
+| 4 `case_full_dirty_dst` | **FAIL** → PASS-by-perturbation | **PASS** |
+| 5 `case_reaccess_migrated` | **FAIL** | ✅ **PASS** |
+| 6 `case_hazard_rw` | PASS | PASS |
+| 7 `case_bankstore_saturation` | PASS | 🔴 halts on an assert — **not** a data failure |
+
+**`case_reaccess_migrated` passes.** That was the whole question the experiment existed to answer, and
+it answers yes: the long-open corruption was P5 — the repatriation copy overtaking the migration copy
+into the same way, because `doSecCopy` lacked the `!migDeferred` term its sibling `a.valid` has.
+
+It also retires the 002 loose end honestly. I argued there that case 4's FAIL→PASS was a perturbation
+artifact rather than a repair, on the grounds that a one-in-60,169 latch fix could not plausibly be
+the difference. That reading holds: case 4 passes here for a *different and real* reason — the code
+that was corrupting it is gone.
+
+**Every data-correctness check in the suite passes.** Zero data mismatches, zero shadow-model firings,
+zero `homeShadow` firings, in a run that reached ~9.76e9 sim-time units versus the 1.29e9 where Stage 1
+halted — roughly 7.5x further, through all six data cases.
+
+### 🔴 But it is not 7/7, so per Amendment 3 I stopped
+
+Case 7 (`case_bankstore_saturation`, 20000 iters) halts on an **SBC invariant assert**, not a data
+mismatch:
+
+```
+[9757041000] Assertion failed in mshrs_1:
+  SBC: both migrate decide points fired in one cycle     (MSHR.scala:964)
+```
+
+Amendment 3 says anything other than 7/7 means stop, so I stopped. But the two outcomes it was
+distinguishing were "P5 was the corruption" and "P5 was real but not the whole story", and this is
+neither: **no data was wrong anywhere.** What tripped is a named invariant guarding two migration
+decide points.
+
+**This is P6, and it is not latent any more.** `migFastWantW` needs `io.directory.valid`. A
+mid-transaction MSHR with `migDeferred` set is not migrating, so `doDread` is false — the *only*
+directory result it can receive is its own **partner search**. Without the
+`!(searching && !w_ssearch)` term that `migFastDecline` already carries, the fast path assesses the
+partner's victim as if it were its own, and collides with the deferred decide point.
+
+So your revision was right, and stronger than you put it: **P6 is not "benign until 2b moves the
+decision" — deleting repatriation alone was enough to make it fire.** Before 2a a secondary hit
+cancelled the fetch and went into the repatriation, which changed when the search result landed
+relative to `migDeferred`; that timing was masking it.
+
+**Confirmed by observation, not inference.** I put the decide-point state into the assert message and
+re-ran:
+
+```
+SBC: both migrate decide points fired in one cycle:
+  searching=1  w_ssearch=0  migDeferred=1  set=1  dirHit=0  dirWay=0
+```
+
+`searching=1, w_ssearch=0` **is** the missing term, read straight off the failing cycle. The MSHR on
+set 1 was holding a deferred migrate decision, its partner search result arrived, and `migFastWantW`
+assessed it as its own victim. Same cycle both times (`9757041000`), so it is deterministic.
+
+`dirHit=0` is the tell: the fast path only fires on a **miss with a victim**, and this result is the
+partner set's search answer — a miss there means the line is not parked, which says nothing at all
+about our own victim.
+
+**The fix is the first item of 2b and is one term.** I have not applied it: the gate said stop, and
+"P6 must be fixed in 2b" is an instruction for a step I was told not to start.
+
+---
+
 ## Stage 2 — dirty-capable displaced lines
 
 _(The `p` unlock. Report `p` before and after as a number.)_

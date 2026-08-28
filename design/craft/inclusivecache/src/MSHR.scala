@@ -257,16 +257,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val pairLive          = io.directory.valid && io.pairInfo.valid && io.pairInfo.bits.isSrc
   val searchedReg       = RegInit(false.B)   // C3: did this request ask its partner?
 
-  // SBC Phase 3 (search + repatriate): a demand miss to a paired source asks its partner whether the
-  // line is parked there before going to memory. On a hit the line is copied home and installed
-  // natively, and the parked copy is invalidated - nothing stays displaced, so the
-  // `displaced => clean + client-free` invariant is untouched. Mirrors the Phase 2 scoreboard above.
+  // SBC Phase 3 (search): a demand miss to a paired source asks its partner whether the line is
+  // parked there before going to memory. 003 Stage 2a deleted the repatriate-home half (it copied the
+  // line into the freed victim way, which is the way the migration copy still had to read - bug P5).
+  // A hit now erases the parked copy and falls through to the fetch; 2e turns it into a serve.
   val searching     = RegInit(false.B) // partner search issued, answer not yet in
   val s_ssearch     = RegInit(true.B)  // schedule the partner dir-read
   val w_ssearch     = RegInit(true.B)  // waiting for its result
-  val repatriating  = RegInit(false.B) // search hit: bring the line home instead of fetching it
-  val s_scopy       = RegInit(true.B)  // copy (pairSet,secWay) -> (set,way)
-  val w_scopy       = RegInit(true.B)
   val s_sinval      = RegInit(true.B)  // dir-write: invalidate the parked copy
   val secWay        = Reg(UInt(params.wayBits.W))
 
@@ -373,7 +370,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   } else {
     io.status.bits.dstValid := migrating
   }
-  io.status.bits.secValid := searching || repatriating || !s_sinval
+  io.status.bits.secValid := searching || !s_sinval
   io.status.bits.secSearched := searchedReg
   io.status.bits.secSet   := pairSetReg
   io.status.bits.dstSet   := migDstSet
@@ -399,16 +396,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   }
 
   // Scheduler requests
-  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy && w_scopy
+  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy
   // SBC Phase 1: migration dir-write sequencing. #1 installs the displaced entry at
   // (dstSet,dstWay) once the copy is done; #2 reuses the writeback step to invalidate the
   // home way. mig_ready holds the home-invalidate (and retire) until #1 has gone out.
   val mig_dir1  = migrating && !s_dmeta && w_copy
   val mig_ready = !migrating || (s_dmeta && w_dread)
-  // SBC Phase 3: dir-write invalidating the parked copy. On a repatriate it must follow the copy (the
-  // data is still being read out of that way); on a permission reject there is no copy to wait for.
-  // Yields to the two dir-writes that already exist so only one is ever valid at a time.
-  val sec_dir1  = !s_sinval && (!repatriating || w_scopy) && !mig_dir1 && (s_release || !w_rprobeackfirst)
+  // SBC Phase 3: dir-write invalidating the parked copy. Yields to the two dir-writes that already
+  // exist so only one is ever valid at a time.
+  val sec_dir1  = !s_sinval && !mig_dir1 && (s_release || !w_rprobeackfirst)
   // Hold retire until the search has answered and the parked copy is gone. Same shape as mig_ready,
   // and like it this must gate BOTH the writeback and reload - see 707445c.
   val sec_ready = !searching && s_sinval
@@ -426,13 +422,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: never fetch from memory while the partner search is outstanding, or at all once it
   // has hit - the line is coming from the partner set instead.
   io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy) && !migDeferred &&
-                              !searching && !repatriating
+                              !searching
   io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
   io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
-  // SBC Phase 3: the repatriated data has to be in the bank before we grant it. Named once because
-  // the completion below MUST use the identical condition - a gate added to the valid and missed in
-  // its sibling is exactly what 707445c was, and it silently retires a Grant that never went out.
-  val d_ready = w_pprobeack && w_grant && (!repatriating || w_scopy)
+  // Named once because the completion below MUST use the identical condition - a gate added to the
+  // valid and missed in its sibling is exactly what 707445c was, and it silently retires a Grant that
+  // never went out. (003 Stage 2a removed this gate's repatriation term along with the copy.)
+  val d_ready = w_pprobeack && w_grant
   io.schedule.bits.d.valid := !s_execute && d_ready
   io.schedule.bits.e.valid := !s_grantack && w_grantfirst
   io.schedule.bits.x.valid := !s_flush && w_releaseack
@@ -442,27 +438,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // MSHR advertised itself free mid-migration and got reset without retiring.
   io.schedule.bits.reload := no_wait && mig_ready && sec_ready
   // SBC Phase 1: copy lane — driven only while this MSHR owns a migration whose copy is pending.
-  // SBC Phase 3: the copy lane serves two moves. The migration copy (victim out to the partner) must
-  // go first - it reads the very way the repatriated line is about to overwrite. The two are mutually
-  // exclusive by these conditions, so the muxes below never see both.
+  // SBC (003 Stage 2a): the lane has exactly ONE job again. The repatriation copy is deleted, so the
+  // lane cannot collide with itself (bug P5) and the done pulse below needs no disambiguation.
   val doMigCopy = migrating && !s_copy
-  // The repatriated line lands in the home victim way, which is exactly the way the eviction is
-  // reading out. Wait for the eviction to be fully acknowledged before writing over it - Phase 2's
-  // SCU interlocks guard SourceD, not SourceC, because until now a copy only ever wrote the fenced
-  // destination set.
-  val doSecCopy = repatriating && !s_scopy && (!migrating || w_copy) &&
-                  w_releaseack && w_rprobeacklast && s_pprobe
-  io.schedule.bits.copy.valid       := doMigCopy || doSecCopy
+  io.schedule.bits.copy.valid       := doMigCopy
   // SBC (003): the copy lane addresses BankedStore ROWS, never addresses.
-  io.schedule.bits.copy.bits.srcSet := Mux(doMigCopy, physSet,   pairSetReg)
-  io.schedule.bits.copy.bits.srcWay := Mux(doMigCopy, migSrcWay, secWay)
-  io.schedule.bits.copy.bits.dstSet := Mux(doMigCopy, migDstSet, physSet)
-  io.schedule.bits.copy.bits.dstWay := Mux(doMigCopy, migDstWay,   meta.way)
-  // The migration moves OUR victim (meta.tag @ lineHome); the repatriation moves the line we asked
-  // for (request.tag @ our set). Either way the address is unchanged by the move.
-  io.schedule.bits.copy.bits.shadowAddr.foreach { _ :=
-    Mux(doMigCopy, Cat(meta.tag, lineHome), Cat(request.tag, request.set)) }
-  io.schedule.bits.copy.bits.shadowKind.foreach { _ := Mux(doMigCopy, 1.U, 2.U) }
+  io.schedule.bits.copy.bits.srcSet := physSet
+  io.schedule.bits.copy.bits.srcWay := migSrcWay
+  io.schedule.bits.copy.bits.dstSet := migDstSet
+  io.schedule.bits.copy.bits.dstWay := migDstWay
+  // The migration moves OUR victim; the move changes its row, never its address.
+  io.schedule.bits.copy.bits.shadowAddr.foreach { _ := Cat(meta.tag, lineHome) }
+  io.schedule.bits.copy.bits.shadowKind.foreach { _ := 1.U }
   // SBC Phase 2b: 2nd dir-read of dstSet — prefer a free (INVALID) way, else a clean/client-free
   // evictable way we can silently overwrite (no writeback, no probe). Falls back if neither exists.
   // SBC Phase 3: the dread lane carries two reads of the partner set. The search asks "is my line
@@ -479,16 +466,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   if (params.micro.enableSetBalancing) {
     // A set pairing with itself would make the search read the set it is already missing in.
     assert (!doSearch || pairSetReg =/= physSet, "SBC: a set is its own partner")
-    // Migrate-out and repatriate-in run concurrently and both touch the partner set. Aliasing is only
-    // dangerous while our parked copy is still there (!s_sinval) - the migration would overwrite the
-    // line we are about to read. That cannot happen: the probe takes only INVALID or clean
-    // non-displaced ways, and ours is displaced until sec_dir1 erases it. AFTER the erase the way is
-    // genuinely free and the probe is welcome to it, which is why this is not asserted unconditionally.
-    // w_dread matters too: migDstWay holds a stale value from an earlier attempt until the probe
-    // resolves, and no copy can target it before then.
-    assert (!(repatriating && migrating && w_dread && !s_sinval) ||
-            !(migDstSet === pairSetReg && migDstWay === secWay),
-            "SBC: migration parked into the way still holding the line being repatriated")
   }
   // NOTE: tag is 0 here. internalRead suppresses the comparison, so it no longer matters.
   io.schedule.valid := io.schedule.bits.a.valid || io.schedule.bits.b.valid || io.schedule.bits.c.valid ||
@@ -530,14 +507,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (mig_dir1)               { s_dmeta      := true.B }
     // SBC Phase 3 scoreboard advances
     when (doSearch)               { s_ssearch    := true.B }
-    when (doSecCopy)              { s_scopy      := true.B }
     when (sec_dir1)               { s_sinval     := true.B }
     when (no_wait && mig_ready && sec_ready) { s_writeback  := true.B }
     // Await the next operation
     when (no_wait && mig_ready && sec_ready) {
       request_valid := false.B
       meta_valid := false.B
-      repatriating := false.B
       // SBC Phase 2: a still-migrating MSHR at retire committed its migration (commit{MIGRATE}).
       // A dst-full abort already cleared `migrating` (and pulsed migAbort) on the fallback path.
       migCommit := migrating
@@ -959,11 +934,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3 debug: one-shot dump when a search/repatriate makes no progress.
   if (params.micro.sbcDebug) {
     val secCtr = RegInit(0.U(32.W))
-    when (!searching && !repatriating) { secCtr := 0.U } .otherwise { secCtr := secCtr + 1.U }
+    when (!searching && s_sinval) { secCtr := 0.U } .otherwise { secCtr := secCtr + 1.U }
     when (secCtr === 300.U) {
       printf(p"[SBC] SEC-STUCK set=${request.set} partner=${pairSetReg} secWay=${secWay}" +
-             p" searching=${searching} repat=${repatriating} migrating=${migrating}" +
-             p" s_ssearch=${s_ssearch} w_ssearch=${w_ssearch} s_scopy=${s_scopy} w_scopy=${w_scopy}" +
+             p" searching=${searching} migrating=${migrating}" +
+             p" s_ssearch=${s_ssearch} w_ssearch=${w_ssearch}" +
              p" s_sinval=${s_sinval} sec_dir1=${sec_dir1} sec_ready=${sec_ready}" +
              p" s_exec=${s_execute} w_grant=${w_grant} w_pprobeack=${w_pprobeack} s_pprobe=${s_pprobe}" +
              p" s_release=${s_release} w_releaseack=${w_releaseack}" +
@@ -986,7 +961,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!(migDeferred && !s_release),               "SBC: release committed while the migrate decision was still open")
     // SBC Phase 2.5b: the two decide points must never both ask in one cycle - they would both act on
     // the single grant and both set `migrating`.
-    assert (!(migFastWantW && migDeferWantW),           "SBC: both migrate decide points fired in one cycle")
+    // Values in the message, not in a printf: printf needs +verbose, an assert message does not.
+    assert (!(migFastWantW && migDeferWantW),
+            cf"SBC: both migrate decide points fired in one cycle: searching=${searching}%d " +
+            cf"w_ssearch=${w_ssearch}%d migDeferred=${migDeferred}%d set=${request.set}%d " +
+            cf"dirHit=${io.directory.bits.hit}%d dirWay=${io.directory.bits.way}%d")
     assert (!migStartNow || io.migOffer.valid,          "SBC: migration started off an invalid destination offer")
     assert (!migStartNow || migStartDst =/= physSet, "SBC: migration destination equals its own source set")
     // SBC Phase 3 (1f): a paired source may only ever spill into its own partner.
@@ -1019,20 +998,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   when (io.sinke.valid) {
     w_grantack := true.B
   }
-  // SBC Phase 1: the SetCopyUnit finished the block copy for this MSHR's migration
-  // SBC: the copy lane is strictly ordered (migration out, then repatriation home), so the done pulse
-  // belongs to whichever is still outstanding.
+  // SBC Phase 1: the SetCopyUnit finished the block copy for this MSHR's migration. One job, so no
+  // disambiguation (003 Stage 2a).
   when (io.copy_done) {
-    when (migrating && !w_copy) {
-      w_copy := true.B
-      if (params.micro.sbcDebug) {
-        printf(p"[SBC] COPY-DONE srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migDstSet} dstWay=${migDstWay}\n")
-      }
-    } .otherwise {
-      w_scopy := true.B
-      if (params.micro.sbcDebug) {
-        printf(p"[SBC] SEC-COPY-DONE srcSet=${pairSetReg} srcWay=${secWay} dstSet=${request.set} dstWay=${meta.way}\n")
-      }
+    w_copy := true.B
+    if (params.micro.sbcDebug) {
+      printf(p"[SBC] COPY-DONE srcSet=${request.set} srcWay=${migSrcWay} dstSet=${migDstSet} dstWay=${migDstWay}\n")
     }
   }
 
@@ -1097,19 +1068,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                 "SBC shadow: secondary search matched a line parked from a different home set")
       }
       secWay   := io.directory.bits.secondaryWay
-      s_sinval := false.B   // the parked copy always goes, hit or permission-reject
+      // SBC (003 Stage 2a): the parked copy always goes, and the fetch armed by the plan block is
+      // left alone. Every hit is temporarily "found it, drop it, fetch it" - the search is still
+      // measured (secHit), it just does not return anything yet. 2e turns this into a serve.
+      s_sinval := false.B
       when (secTip || !req_needT) {
-        repatriating := true.B
-        s_scopy      := false.B
-        w_scopy      := false.B
-        gotT         := secTip
-        // Cancel the memory fetch the plan block armed: the line is coming from the partner.
-        s_acquire    := true.B
-        w_grantfirst := true.B
-        w_grantlast  := true.B
-        w_grant      := true.B
-        s_grantack   := true.B
-        secHit       := true.B
+        secHit := true.B
         if (params.micro.sbcDebug) {
           printf(p"[SBC] SEC-HIT set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${io.directory.bits.secondaryEntry.state} needT=${req_needT}\n")
         }
@@ -1199,9 +1163,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     searching        := false.B
     s_ssearch        := true.B
     w_ssearch        := true.B
-    repatriating     := false.B
-    s_scopy          := true.B
-    w_scopy          := true.B
     s_sinval         := true.B
 
     // For C channel requests (ie: Release[Data])
