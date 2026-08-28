@@ -236,7 +236,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Status:** ✅ closed by deletion. Found in 003 Stage 1 by the BankedStore shadow model; introduced by
   the 001 commit-4 repatriation path.
 
-### 🟡 P6 — `migFastWantW` evaluates against the partner set's directory result
+### ✅ P6 — `migFastWantW` evaluates against the partner set's directory result — NEVER BENIGN
 - **What:** `migFastDecline` ([MSHR.scala:~845](../design/craft/inclusivecache/src/MSHR.scala)) carries
   `!(searching && !w_ssearch)` with the comment "that result is the partner set, not ours". Its
   sibling `migFastWantW` ([MSHR.scala:~819](../design/craft/inclusivecache/src/MSHR.scala)) does not.
@@ -252,20 +252,27 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   the search result landed relative to `migDeferred` and masked the collision.
 - **Pattern:** the same sibling-asymmetry as P5, in the same file, between two conditions written
   together.
-- **Fix:** add `!(searching && !w_ssearch)` to `migFastWantW`. Assigned to 003 Stage 2b.
-- **Status:** 🔴 open, found by reading in 003 Stage 1, **confirmed live in 003 Stage 2a**.
+- **Fix:** `!(searching && !w_ssearch)` added to `migFastWantW` in 003 Stage 2b — the term
+  `migFastDecline` already carried. `dirHit=0` at the failing cycle is why it matters: a **miss** on
+  the partner's search result means the line is not parked there, which says nothing whatever about
+  our own victim, so the fast path must not look at that result at all.
+- **Status:** ✅ **never benign — masked by the repatriation path; exposed by 2a, fixed in 2b.** It was
+  carried for two tasks under the wrong label. See the rule below.
 
-### 🟡 A5.1 — the SetCopyUnit can stall mid-block (corruption lead, code deleted in 003 Stage 4)
+### 🟡 A5.1 — the SetCopyUnit can stall mid-block (LIVE RTL, not the corruption)
 - **What:** [SetCopyUnit.scala:137](../design/craft/inclusivecache/src/SetCopyUnit.scala#L137) is
   `io.bs_wadr.valid := io.copy_wsafe` inside `s_write`, and `wrBeat` advances only on `io.bs_wadr.fire`.
   So `copy_wsafe` is re-evaluated on **every write beat**; a drop mid-block stalls the write there and
   can hand SourceD a half-new block. Nothing latches the safety decision for the duration of the block.
-- **Why recorded here:** this is one of the two surviving leads on the open `case_reaccess_migrated`
-  corruption. The repatriation copy it points at is **deleted in 003 Stage 4**, so the evidence would
-  otherwise vanish with the code.
-- **Status:** 🟡 lead, confirmed as an RTL fact (002 §A5.1), never tested as the cause.
+- **Status (corrected 2026-08-29):** **not the cause** — the `case_reaccess_migrated` corruption was
+  **P5**, confirmed in 003 Stage 2a. A5.1 is therefore no longer a corruption lead.
+- **⚠️ And it is NOT deleted.** The earlier header said "deleted in 003 Stage 4"; that was wrong.
+  Stage 2a deleted the *repatriation* copy, but [SetCopyUnit.scala:137](../design/craft/inclusivecache/src/SetCopyUnit.scala#L137)
+  still exists and still serves the **migration** copy, which is the SCU's one remaining caller. So
+  this stays a live RTL fact: the copy can still stall mid-block on `copy_wsafe`.
+- **Status:** 🟡 live, unexercised. Keep — it describes real hardware, just not the bug we were hunting.
 
-### 🟡 A5.2 — `copy_wsafe`'s one-cycle blind spot (corruption lead, upstream)
+### 🟡 A5.2 — `copy_wsafe`'s one-cycle blind spot (LIVE RTL, upstream, not the corruption)
 - **What:** [SourceD.scala:406](../design/craft/inclusivecache/src/SourceD.scala#L406) guards the `s1`
   comparison with `busy`, a `RegInit` (`:91`), but `:95` is `s1_req = Mux(!busy, io.req.bits, s1_req_reg)`
   and `:103` drives `io.bs_radr.valid := (busy || io.req.valid) && …`. In the cycle `io.req` fires,
@@ -275,7 +282,9 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Scope:** the blind spot is **upstream's**, not SBC's — `evict_safe` and `grant_safe` share it
   (`:383`, `:390`), and the comment at `:378` reads like an acknowledged approximation. The SBC question
   is what closed it upstream and whether a repatriation still satisfies that.
-- **Status:** 🟡 lead, confirmed as an RTL fact (002 §A5.2), never tested as the cause.
+- **Status (corrected 2026-08-29):** **not the cause** — `case_reaccess_migrated` was **P5**, confirmed
+  in 003 Stage 2a. Still a live upstream RTL fact (the `busy`-register blind spot is unchanged, and
+  `evict_safe`/`grant_safe` share it), so it stays recorded — but it is no longer a corruption lead.
 
 ---
 
@@ -290,6 +299,21 @@ message prints regardless**. So diagnostics for a firing assert belong **inside 
 via `cf"…"` interpolation, not in a neighbouring `printf`. Learned in 003 Stage 1: a `[SBC][SCU] START`
 printf next to a firing assert produced nothing; moving the same values into the message worked first
 try and turned a symptom into a root cause in two rebuilds.
+
+### "Benign by reading" is only benign relative to the code that masks it
+
+> **A finding marked "benign by reading" is only benign relative to the code that happens to mask it.
+> Delete that code and it becomes live. Re-open every such finding when nearby code is removed.**
+
+P6 is the case that produced this rule. It was filed as latent on a sound-looking argument — the plan
+block's search-result branch runs first in the if/elsif chain, so `migrating` is never set from it —
+and it was true as far as it went. What it missed is that the label was resting on the *repatriation*
+path: a secondary hit used to cancel the fetch and enter the repatriation, which shifted when the
+search result landed relative to `migDeferred`. Deleting that path in 2a made P6 fire deterministically
+on the very next run. It had never been benign; it had been masked, by code we were removing.
+
+Practical form: when a step deletes or restructures code, walk the register and re-open every finding
+whose "benign"/"unreachable" argument mentions the code being touched. P6 spent two tasks mislabelled.
 
 ### "Name the condition once" is the wrong rule when scheduling and waiting are different questions
 `707445c` taught this repo to name a condition once and use the name at both sites. 003 Stage 1 found

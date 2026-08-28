@@ -873,6 +873,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   migFastWantW := params.micro.enableSetBalancing.B && migAdviceValidReg &&
                   io.directory.valid &&
                   !(migrating && !w_dread) &&                                   // not the 2nd dir-read branch
+                  !(searching && !w_ssearch) &&   // P6: that result is the PARTNER's set, not ours
                   request.prio(0) && !request.control &&                        // A-channel demand
                   !io.directory.bits.hit && io.directory.bits.state =/= INVALID && // eviction needed
                   !io.directory.bits.dirty && !io.directory.bits.displaced &&   // migClean
