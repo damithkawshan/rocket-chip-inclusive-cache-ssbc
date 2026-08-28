@@ -1,6 +1,6 @@
 # REPORT 003 — serve in place, and let displaced lines be first-class
 
-**Coder:** Claude (Opus 5) · **Status:** 🟡 Stage 1 landed, gating
+**Coder:** Claude (Opus 5) · **Status:** 🔴 Stage 1 landed; **stopped at GATE 1 per TASK §10** (shadow model fired)
 **Last updated:** 2026-08-29 · **Base:** `0f5a7ac` · **Fallback tag:** `sbc-003-fallback-b6156d4`
 
 > Write it as you go, not at the end. Newest facts appended per section.
@@ -232,7 +232,7 @@ holds the AT's answer in `pairSetReg`/`pairIsSrcReg`. Same check, no new wires.
 | check | expected | actual |
 |---|---|---|
 | SBC off, elaboration | bit-exact with baseline | ⚠️ **not achievable by construction** — measured and accounted below |
-| SBC off, regression | unchanged | ⬜ pending |
+| SBC off, regression | unchanged | ✅ **7/7 PASS, exit 0, 0 asserts** |
 | SBC on, `migration_stress_test` | pass/fail set unchanged (6/7, same two cases) | 🔴 **halted at case 4 by a shadow-model assert** — see below |
 
 #### The SBC-off netlist delta, measured
@@ -258,6 +258,12 @@ it can.** The split puts two fields on `SourceCRequest`/`SourceDRequest`, bundle
 builds; SBC-off therefore carries a duplicate. The only way to avoid it is to `Option`-gate the second
 field on `enableSetBalancing`, which would put "one name, two meanings" straight back into the
 baseline build and defeat the point of the split. I chose the split and measured the cost instead.
+
+**The SBC-off regression is the decisive half of this gate and it is green.** `NoSbcConfig` ran
+`migration_stress_test` to completion: all seven cases PASS, `PASS: all migration corner cases
+data-correct`, `$finish`, exit 0, no asserts. That covers both of the intended behavioural changes
+below — the narrowed ProbeAck match and the fence exemption — in the build where they are supposed to
+be inert.
 
 **Two intended changes do reach the SBC-off build, and I want them on the record rather than buried:**
 
@@ -410,6 +416,11 @@ My recommendation is **fix it now** and record it as found-in-003. It is one ter
 deleted two stages later, and it converts the open corruption bug from "unknown cause" into a
 testable claim. But it changes what Stage 4 proves, so it is yours to call.
 
+**A note on what this does to the pass/fail comparison.** GATE 1 asks for "6/7, same two failing
+cases". I cannot report that number: the run *halts* at case 4 rather than failing it, so cases 4-7
+are simply not exercised. The three cases that do run all PASS. Nothing here says the split changed
+behaviour — but nothing here proves it did not either, and I am not going to round that up.
+
 **Either way the headline stands: the shadow model paid for itself on its first run.** TASK §5 called
 it "the single highest-value item in the task" and that is now measured, not asserted — it caught a
 live wrong-row access on the cycle it happened, and three cheap instrumented runs turned it into a
@@ -466,29 +477,84 @@ All four were found by reading, not by running. Each needs a confirming observat
 
 | # | finding | closed by | outcome |
 |---|---|---|---|
-| P1 | C-channel head-of-line deadlock (pre-existing) | `prio(2)` exemption + C-head watchdog silent over a full run | |
-| P2 | C/X requests for displaced lines (pre-existing) | secondary search on C/X plan branches; flush assert | |
-| P3 | `!w.displaced` never weakened, single-hop rule | `PopCount(hits) <= 1` assert quiet | |
-| P4 | `inPlace` survives a `repeat` reload | Stage 4 assert + GATE 4 | |
+| P1 | C-channel head-of-line deadlock (pre-existing) | `prio(2)` exemption + C-head watchdog silent over a full run | 🟡 **partly built, not yet observed.** Exemption + watchdog landed. The watchdog was silent for the 646k cycles the run reached, but the run halts at case 4, so this is **not** a full-run clearance. ⚠️ **And the specified fix closes only half of P1 — see below.** |
+| P2 | C/X requests for displaced lines (pre-existing) | secondary search on C/X plan branches; flush assert | ⬜ Stage 4 work, not started |
+| P3 | `!w.displaced` never weakened, single-hop rule | `PopCount(hits) <= 1` assert quiet | ✅ assert landed and **stayed quiet** over 646k cycles including 3 passing migration cases. No `displaced` test was touched in Stage 1 — see the site-by-site table below |
+| P4 | `inPlace` survives a `repeat` reload | Stage 4 assert + GATE 4 | ⬜ Stage 4 work, not started |
+| **P5** | **NEW — SCU repatriation copy overtakes the migration copy into the same way** | one-term fix (`&& !migDeferred` on `doSecCopy`) | 🔴 **diagnosed, fix known, not applied.** Caught live by the Stage-1 shadow model. Recorded in `bug-fix-log.md`. Awaiting your call (see GATE 1) |
+| **P6** | **NEW — `migFastWantW` assesses the partner set's directory result as if it were its own victim** | add `!(searching && !w_ssearch)`, the term its sibling `migFastDecline` already has | 🟡 found by reading; believed benign today (the plan block's search branch runs first, so `migrating` is never set from it) but it can raise `dstClaim` spuriously. Recorded, not fixed |
 
-- [ ] P1 and P2 recorded in `ai-documents/bug-fix-log.md`
+- [x] P1 and P2 recorded in `ai-documents/bug-fix-log.md` (plus P5 and P6)
+
+### ⚠️ P1's specified fix closes only half of the bug — flagging before you count it done
+
+TASK §7 exempts `prio(2)` at `request.ready` and keeps the full condition on `allocReady`. I
+implemented exactly that, but tracing it says it only helps when an MSHR **already owns** the fenced
+set, so the request can `queue`/`nest` into it. In the case that actually matters — a `Release` to a
+fenced **partner** set, where the fencing MSHR's own set is its *home* set, not the partner — there is
+no MSHR on that set, so `alloc` is true, `queue` is false, `allocReady` is false, and
+`request_alloc_cases` is therefore false. `request.ready` stays low and the C head stays blocked.
+
+Closing the rest means letting `prio(2)` **allocate** onto a fenced set too. §7's own safety argument
+covers it (a `prio(2)` request never evicts, so it cannot take the parked way), but that touches the
+load-bearing fence and §7 explicitly says not to, so I did not. The watchdog now carries `alloc` and
+`queue` in its `C-HEAD-STALL` printf precisely so a firing says which half is reachable.
 
 _"Could not construct a case that triggers P1" is a legitimate answer. Silently dropping a row is not._
 
 ### Did any `displaced` test get weakened?
 
-TASK §4 lists eight sites where the test must stay, and exactly what Stage 2 is allowed to relax.
-Confirm site by site, or name the one you changed and why.
+**No. All eight sites are untouched in Stage 1**, verified individually:
+
+| site | test | state |
+|---|---|---|
+| `Directory.scala:188` | `hits` excludes displaced | unchanged |
+| `Directory.scala:217` | write-bypass hit | unchanged |
+| `Directory.scala:196` | `secHits` requires displaced | unchanged |
+| `Directory.scala:201` | `secBypassHit` | unchanged |
+| `Directory.scala:167` | `evictableOH` excludes displaced | unchanged |
+| `MSHR.scala:1062` | `dstEvictable` excludes displaced | unchanged |
+| `MSHR.scala:1178` | `migClean` excludes displaced | unchanged |
+| `MSHR.scala:831`, `:844` | fast-path migrate want / decline | unchanged |
+
+Stage 1 adds a **ninth** consumer of the bit rather than weakening any: `lineHome` reads
+`meta.displaced` to decide whether the line in our row is native or parked. That is the single-hop
+rule (§4c) turned into a datapath — and it is exactly why the `homeShadow` check exists.
 
 ---
 
 ## Anything I think the work order got wrong
 
-_(TASK §1 asks you to say so before building if the premise is wrong. Your Q1 push-back was right
-once already — this section is not a formality.)_
+**§1's premise is right** — I checked both load-bearing claims against the RTL before building (see
+Stage 0). No push-back there. Four smaller things:
+
+1. **G0 as written is unachievable, not merely hard.** "Bit-exact with baseline, zero new hardware"
+   cannot survive putting two fields on bundles that exist in both builds. Measured and accounted in
+   GATE 1. The gate should read "SBC-off delta is renames + the duplicated field + sim-only asserts,
+   with no control-logic change" — which is a claim I can actually evidence.
+2. **The scaffolding assert cannot do what §5 says it does.** It catches producer divergence, not
+   reader mis-classification, because with SBC off the two fields carry the same value. Detailed in
+   §1a. This raises the importance of the shadow model rather than lowering it.
+3. **P1's fix closes only half the bug.** Detailed in the findings register above.
+4. **§6 did not say how `probeSet` is timed**, and the obvious choice (`s_rprobe`) is a hang.
+   Detailed in §1b. Worth carrying into 004: this is the one place where the repo's own "name the
+   condition once" rule is the **wrong** advice, because the scheduling question and the waiting
+   question are genuinely different.
+
+§9's instruction not to spend a build+run on the repatriation code was good advice that events
+overtook: the shadow model diagnosed that code from **gate** runs I had to do anyway, at a cost of
+two extra rebuilds. I would not have got there by instrumenting on purpose.
 
 ---
 
 ## Measurement caveats
 
-_(TASK §8 requires this. The eval config is 8 sets / 256B L1 and cannot support a performance claim.)_
+Nothing in this report is a performance claim, so §8's caveat is not yet load-bearing — but for the
+record, and so it is not skipped later: the eval config `VerilatorRocket8KL116KL2Config` is really
+**4KB L2 / 8 sets / 8 ways / 256B L1s**. It is adequate for correctness (G1/G3/G4) and useless for
+G2/G5 as a general result. G2 and G5 are not attempted here.
+
+One caveat that *is* live now: **the `migration_stress_test` numbers below cover only the first three
+cases**, because the run halts at case 4. Any statement about migration counts, `SEC-HIT`/`SEC-MISS`
+or the C-head watchdog covers 646k cycles, not a full run, and I have not quoted any of them as a
+result.
