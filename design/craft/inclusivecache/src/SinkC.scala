@@ -44,9 +44,13 @@ class SinkC(params: InclusiveCacheParameters) extends Module
     val req = Decoupled(new FullRequest(params)) // Release
     val resp = Valid(new SinkCResponse(params)) // ProbeAck
     val c = Flipped(Decoupled(new TLBundleC(params.inner.bundle)))
-    // Find 'way' via MSHR CAM lookup
-    val set = UInt(params.setBits.W)
-    val way = Flipped(UInt(params.wayBits.W))
+    // Find 'way' via MSHR CAM lookup. SBC (003): the key is (homeSet,probeTag) - the address the ProbeAck
+    // is about - and the CAM returns BOTH the way and the row that way lives in. The row must come
+    // back from the owning MSHR, never be re-derived from the address: for a displaced line they differ.
+    val homeSet  = UInt(params.setBits.W)
+    val probeTag = UInt(params.tagBits.W)
+    val way      = Flipped(UInt(params.wayBits.W))
+    val physSet  = Flipped(UInt(params.setBits.W))
     // ProbeAck write-back
     val bs_adr = Decoupled(new BankedStoreInnerAddress(params))
     val bs_dat = new BankedStoreInnerPoison(params)
@@ -62,7 +66,8 @@ class SinkC(params: InclusiveCacheParameters) extends Module
     io.resp.valid := false.B
     io.resp.bits := DontCare
     io.c.ready := true.B
-    io.set := 0.U
+    io.homeSet := 0.U
+    io.probeTag := 0.U
     io.bs_adr.valid := false.B
     io.bs_adr.bits := DontCare
     io.bs_dat := DontCare
@@ -89,7 +94,8 @@ class SinkC(params: InclusiveCacheParameters) extends Module
 
     assert (!(c.valid && c.bits.corrupt), "Data poisoning unavailable")
 
-    io.set := Mux(c.valid, set, RegEnable(set, c.valid)) // finds us the way
+    io.homeSet  := Mux(c.valid, set, RegEnable(set, c.valid)) // finds us the way
+    io.probeTag := Mux(c.valid, tag, RegEnable(tag, c.valid))  // ... and disambiguates it
 
     // Cut path from inner C to the BankedStore SRAM setup
     //   ... this makes it easier to layout the L2 data banks far away
@@ -99,9 +105,12 @@ class SinkC(params: InclusiveCacheParameters) extends Module
     bs_adr.valid     := resp && (!first || (c.valid && hasData))
     bs_adr.bits.noop := !c.valid
     bs_adr.bits.way  := io.way
-    bs_adr.bits.set  := io.set
+    bs_adr.bits.set  := io.physSet
     bs_adr.bits.beat := Mux(c.valid, beat, RegEnable(beat + bs_adr.ready.asUInt, c.valid))
     bs_adr.bits.mask := ~0.U(params.innerMaskBits.W)
+    // SBC (003) shadow: what this ProbeAckData is about, independent of which row it lands in.
+    bs_adr.bits.shadowAddr.foreach { _ := Cat(io.probeTag, io.homeSet) }
+    bs_adr.bits.shadowKind.foreach { _ := 0.U }
     params.ccover(bs_adr.valid && !bs_adr.ready, "SINKC_SRAM_STALL", "Data SRAM busy")
 
     io.resp.valid := resp && c.valid && (first || last) && (!hasData || bs_adr.ready)

@@ -38,8 +38,11 @@ class SinkD(params: InclusiveCacheParameters) extends Module
     val d = Flipped(Decoupled(new TLBundleD(params.outer.bundle)))
     // Lookup the set+way from MSHRs
     val source = UInt(params.outer.bundle.sourceBits.W)
-    val way    = Flipped(UInt(params.wayBits.W))
-    val set    = Flipped(UInt(params.setBits.W))
+    val way     = Flipped(UInt(params.wayBits.W))
+    val physSet = Flipped(UInt(params.setBits.W))   // SBC (003): BankedStore row, by MSHR id
+    // SBC (003) shadow: the address this Grant is for, so the store can check the row it lands in.
+    val homeSet = Flipped(UInt(params.setBits.W))
+    val homeTag = Flipped(UInt(params.tagBits.W))
     // Banked Store port
     val bs_adr = Decoupled(new BankedStoreOuterAddress(params))
     val bs_dat = new BankedStoreOuterPoison(params)
@@ -56,7 +59,7 @@ class SinkD(params: InclusiveCacheParameters) extends Module
 
   io.source := Mux(d.valid, d.bits.source, RegEnable(d.bits.source, d.valid))
   io.grant_req.way := io.way
-  io.grant_req.set := io.set
+  io.grant_req.physSet := io.physSet
 
   // Also send Grant(NoData) to BS to ensure correct data ordering
   io.resp.valid := (first || last) && d.fire
@@ -74,9 +77,11 @@ class SinkD(params: InclusiveCacheParameters) extends Module
 
   io.bs_adr.bits.noop := !d.valid || !hasData
   io.bs_adr.bits.way  := io.way
-  io.bs_adr.bits.set  := io.set
+  io.bs_adr.bits.set  := io.physSet
   io.bs_adr.bits.beat := Mux(d.valid, beat, RegEnable(beat + io.bs_adr.ready.asUInt, d.valid))
   io.bs_adr.bits.mask := ~0.U(params.outerMaskBits.W)
+  io.bs_adr.bits.shadowAddr.foreach { _ := Cat(io.homeTag, io.homeSet) }
+  io.bs_adr.bits.shadowKind.foreach { _ := 0.U }
   io.bs_dat.data      := d.bits.data
 
   assert (!(d.valid && d.bits.corrupt && !d.bits.denied), "Data poisoning unsupported")

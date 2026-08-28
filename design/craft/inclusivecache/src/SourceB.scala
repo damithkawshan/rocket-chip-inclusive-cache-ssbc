@@ -26,7 +26,7 @@ class SourceBRequest(params: InclusiveCacheParameters) extends InclusiveCacheBun
 {
   val param   = UInt(3.W)
   val tag     = UInt(params.tagBits.W)
-  val set     = UInt(params.setBits.W)
+  val homeSet = UInt(params.setBits.W)   // SBC (003): ADDRESS set - expandAddress consumer
   val clients = UInt(params.clientBits.W)
 }
 
@@ -70,7 +70,7 @@ class SourceB(params: InclusiveCacheParameters) extends Module
     params.ccover(b.valid && !b.ready, "SOURCEB_STALL", "Backpressured when issuing a probe")
 
     val tag = Mux(!busy, io.req.bits.tag, RegEnable(io.req.bits.tag, io.req.fire))
-    val set = Mux(!busy, io.req.bits.set, RegEnable(io.req.bits.set, io.req.fire))
+    val set = Mux(!busy, io.req.bits.homeSet, RegEnable(io.req.bits.homeSet, io.req.fire))
     val param = Mux(!busy, io.req.bits.param, RegEnable(io.req.bits.param, io.req.fire))
 
     b.bits.opcode  := TLMessages.Probe

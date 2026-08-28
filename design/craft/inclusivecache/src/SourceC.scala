@@ -26,8 +26,11 @@ class SourceCRequest(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val opcode = UInt(3.W)
   val param  = UInt(3.W)
   val source = UInt(params.outer.bundle.sourceBits.W)
-  val tag    = UInt(params.tagBits.W)
-  val set    = UInt(params.setBits.W)
+  val tag     = UInt(params.tagBits.W)
+  // SBC (003): a Release reads the bytes from the row they sit in and sends them to the address they
+  // belong to. For a displaced victim those are two different sets.
+  val physSet = UInt(params.setBits.W)   // PHYSICAL: BankedStore row to read
+  val homeSet = UInt(params.setBits.W)   // ADDRESS: where the block belongs in memory
   val way    = UInt(params.wayBits.W)
   val dirty  = Bool()
 }
@@ -69,17 +72,23 @@ class SourceC(params: InclusiveCacheParameters) extends Module
   val req  = Mux(!busy, io.req.bits, RegEnable(io.req.bits, !busy && io.req.valid))
   val want_data = busy || (io.req.valid && room && io.req.bits.dirty)
 
+  // SBC (003 Stage 1): scaffold. Stage 2 (Release a displaced victim at its home set) is what
+  // legitimately breaks this, and removes it.
+  assert (!io.req.valid || io.req.bits.physSet === io.req.bits.homeSet,
+          "SBC(003): SourceC request row diverged from its address set")
   io.req.ready := !busy && room
 
-  io.evict_req.set := req.set
+  io.evict_req.physSet := req.physSet
   io.evict_req.way := req.way
 
   io.bs_adr.valid := (beat.orR || io.evict_safe) && want_data
   io.bs_adr.bits.noop := false.B
   io.bs_adr.bits.way  := req.way
-  io.bs_adr.bits.set  := req.set
+  io.bs_adr.bits.set  := req.physSet
   io.bs_adr.bits.beat := beat
   io.bs_adr.bits.mask := ~0.U(params.outerMaskBits.W)
+  io.bs_adr.bits.shadowAddr.foreach { _ := Cat(req.tag, req.homeSet) }
+  io.bs_adr.bits.shadowKind.foreach { _ := 0.U }
 
   params.ccover(io.req.valid && io.req.bits.dirty && room && !io.evict_safe, "SOURCEC_HAZARD", "Prevented Eviction data hazard with backpressure")
   params.ccover(io.bs_adr.valid && !io.bs_adr.ready, "SOURCEC_SRAM_STALL", "Data SRAM busy")
@@ -111,7 +120,7 @@ class SourceC(params: InclusiveCacheParameters) extends Module
   c.bits.param   := s3_req.param
   c.bits.size    := params.offsetBits.U
   c.bits.source  := s3_req.source
-  c.bits.address := params.expandAddress(s3_req.tag, s3_req.set, 0.U)
+  c.bits.address := params.expandAddress(s3_req.tag, s3_req.homeSet, 0.U)
   c.bits.data    := io.bs_dat.data
   c.bits.corrupt := false.B
 

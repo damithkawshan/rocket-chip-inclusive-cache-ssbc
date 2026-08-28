@@ -624,3 +624,25 @@ Report it, do not silence it.
 6. The C5 before/after table, from your replay tooling.
 7. Whether `MSHR.scala:915` fired.
 8. `REPORT.md` verdict filled in.
+
+---
+
+## Amendment 3 — CLOSING THIS TASK (2026-08-28)
+
+**Status: closed.** C1 + C3 landed as `0f5a7ac` and stand. C2 stays deferred — your hazard analysis
+was right and my instruction was wrong.
+
+**The instrumentation pass is WITHDRAWN.** Do not run it. Both surviving leads (the `copy_wsafe`
+one-cycle blind spot, and the unfenced repatriation destination) are about the SetCopyUnit block copy
+into a live home set — and **task 003 deletes that copy entirely**. Instrumenting it would spend a
+build+run cycle on code we are removing.
+
+**Before that code goes, its evidence must not.** Task 003 Stage 0 requires both leads to be appended
+to `ai-documents/bug-fix-log.md` with their file:line evidence first.
+
+**The corruption question is not dropped, it is re-aimed.** Task 003 Stage 4 is the experiment: if
+`case_reaccess_migrated` passes once the repatriation copy is gone, the bug was there. If it still
+fails, 003 stops and we search a much smaller serve path with the new shadow models pointing at the
+exact cycle.
+
+→ continues in `../003-serve-in-place/`

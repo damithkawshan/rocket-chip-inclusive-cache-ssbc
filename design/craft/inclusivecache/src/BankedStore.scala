@@ -33,6 +33,13 @@ abstract class BankedStoreAddress(val inner: Boolean, params: InclusiveCachePara
   val set  = UInt(params.setBits.W)
   val beat = UInt((if (inner) params.innerBeatBits else params.outerBeatBits).W)
   val mask = UInt((if (inner) params.innerMaskBits else params.outerMaskBits).W)
+  // SBC (003 Stage 1), sim-only: the block this port BELIEVES it is touching, as Cat(tag, homeSet).
+  // `way`/`set` say WHERE in the SRAM; this says WHAT the port thinks lives there. A wrong-row access
+  // is exactly a disagreement between the two. Option => the field does not exist when sbcShadow=false.
+  val shadowAddr = if (params.micro.sbcShadow) Some(UInt((params.tagBits + params.setBits).W)) else None
+  // SBC (003) diagnostic: 0 = ordinary port, 1 = SCU migration copy, 2 = SCU repatriation copy. The
+  // two SCU jobs use the same port, and telling them apart is what attributes a shadow firing.
+  val shadowKind = if (params.micro.sbcShadow) Some(UInt(2.W)) else None
 }
 
 trait BankedStoreRW
@@ -75,6 +82,50 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
     val sourceCopy_wadr = Flipped(Decoupled(new BankedStoreInnerAddress(params)))
     val sourceCopy_wdat = Flipped(new BankedStoreInnerPoison(params))
   })
+
+  // SBC (003 Stage 1): the shadow address model. One entry per (set,way): what the last writer said
+  // it was putting there. Every reader checks its own belief against it. A `valid` bit keeps the
+  // check quiet until a line's data has actually been written once.
+  if (params.micro.sbcShadow) {
+    val shEntries = params.cache.sets * params.cache.ways
+    val shValid = RegInit(VecInit(Seq.fill(shEntries)(false.B)))
+    val shAddr  = Reg(Vec(shEntries, UInt((params.tagBits + params.setBits).W)))
+    // Who wrote it and when. A mismatch without these is a symptom; with them it names the port and
+    // the gap, which is the difference between a lead and a diagnosis.
+    val shWho   = Reg(Vec(shEntries, UInt(2.W)))   // 0=sinkC 1=sinkD 2=sourceD_w 3=copy_w
+    val shKind  = Reg(Vec(shEntries, UInt(2.W)))   // the writer's SCU job kind (0 if not the SCU)
+    val shTime  = Reg(Vec(shEntries, UInt(32.W)))
+    val shClock = RegInit(0.U(32.W)); shClock := shClock + 1.U
+    def shIdx(b: BankedStoreAddress) = Cat(b.way, b.set)
+    def shWrite(b: DecoupledIO[_ <: BankedStoreAddress], who: String, id: Int): Unit = {
+      when (b.fire && !b.bits.noop) {
+        shValid(shIdx(b.bits)) := true.B
+        shAddr (shIdx(b.bits)) := b.bits.shadowAddr.get
+        shWho  (shIdx(b.bits)) := id.U
+        shKind (shIdx(b.bits)) := b.bits.shadowKind.get
+        shTime (shIdx(b.bits)) := shClock
+      }
+    }
+    def shRead(b: DecoupledIO[_ <: BankedStoreAddress], who: String): Unit = {
+      when (b.fire && !b.bits.noop) {
+        // The values are in the message on purpose: a bare assert here costs a full re-run to learn
+        // WHICH row and which two addresses disagreed, and the trace is ~300MB.
+        assert (!shValid(shIdx(b.bits)) || shAddr(shIdx(b.bits)) === b.bits.shadowAddr.get,
+                cf"SBC shadow: ${who} touched the wrong row: set=${b.bits.set}%d way=${b.bits.way}%d " +
+                cf"stored=0x${shAddr(shIdx(b.bits))}%x believed=0x${b.bits.shadowAddr.get}%x " +
+                cf"lastWriter=${shWho(shIdx(b.bits))}%d(0=sinkC,1=sinkD,2=sourceDw,3=copyw) " +
+                cf"wKind=${shKind(shIdx(b.bits))}%d rKind=${b.bits.shadowKind.get}%d(0=other,1=mig,2=sec) " +
+                cf"writtenAt=${shTime(shIdx(b.bits))}%d now=${shClock}%d")
+      }
+    }
+    shWrite(io.sinkC_adr,       "sinkC",     0)
+    shWrite(io.sinkD_adr,       "sinkD",     1)
+    shWrite(io.sourceD_wadr,    "sourceD_w", 2)
+    shWrite(io.sourceCopy_wadr, "copy_w",    3)
+    shRead (io.sourceC_adr,     "sourceC")
+    shRead (io.sourceD_radr,    "sourceD_r")
+    shRead (io.sourceCopy_radr, "copy_r")
+  }
 
   val innerBytes = params.inner.manager.beatBytes
   val outerBytes = params.outer.manager.beatBytes

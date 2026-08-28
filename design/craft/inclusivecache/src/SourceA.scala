@@ -23,8 +23,8 @@ import freechips.rocketchip.tilelink._
 
 class SourceARequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
-  val tag    = UInt(params.tagBits.W)
-  val set    = UInt(params.setBits.W)
+  val tag     = UInt(params.tagBits.W)
+  val homeSet = UInt(params.setBits.W)   // SBC (003): ADDRESS set - expandAddress consumer
   val param  = UInt(3.W)
   val source = UInt(params.outer.bundle.sourceBits.W)
   val block  = Bool()
@@ -51,7 +51,7 @@ class SourceA(params: InclusiveCacheParameters) extends Module
   a.bits.param   := io.req.bits.param
   a.bits.size    := params.offsetBits.U
   a.bits.source  := io.req.bits.source
-  a.bits.address := params.expandAddress(io.req.bits.tag, io.req.bits.set, 0.U)
+  a.bits.address := params.expandAddress(io.req.bits.tag, io.req.bits.homeSet, 0.U)
   a.bits.mask    := ~0.U(params.outer.manager.beatBytes.W)
   a.bits.data    := 0.U
   a.bits.corrupt := false.B

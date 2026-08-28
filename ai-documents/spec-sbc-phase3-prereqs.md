@@ -1,7 +1,7 @@
 # Spec — Phase 3 prerequisite: pinned 1:1 association (+ shared building blocks for the swap)
 
 **Author:** thinker/eval. **Implementer:** coder. **Status:** ready to implement.
-**Working order, traps and how to run:** [handover-phase3-part1.md](handover-phase3-part1.md) — read that first.
+**Working order, traps and how to run:** [coder/000-internalread/TASK.md](coder/000-internalread/TASK.md) — read that first.
 **Supersedes:** the detect-only "secondary-search detector" spec (deleted) — Phase 3 pivoted to the
 always-use design, see [phase-3.md](phase-3.md).
 

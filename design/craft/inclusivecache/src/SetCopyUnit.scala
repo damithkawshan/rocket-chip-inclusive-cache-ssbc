@@ -23,6 +23,9 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
       val srcSet = UInt(params.setBits.W)
       val srcWay = UInt(params.wayBits.W)
       val dstSet = UInt(params.setBits.W)
+      // SBC (003 Stage 1), sim-only: the block being moved (see SetCopyRequest).
+      val shadowAddr = if (params.micro.sbcShadow) Some(UInt((params.tagBits + params.setBits).W)) else None
+      val shadowKind = if (params.micro.sbcShadow) Some(UInt(2.W)) else None
       val dstWay = UInt(params.wayBits.W)
       val mshrId = UInt(log2Ceil(params.mshrs).W)
     }))
@@ -53,6 +56,17 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
   val s_idle :: s_wsafe :: s_read :: s_write :: s_done :: Nil = Enum(5)
   val state = RegInit(s_idle)
 
+  val shadowAddrReg = if (params.micro.sbcShadow) Some(Reg(UInt((params.tagBits + params.setBits).W))) else None
+  val shadowKindReg  = if (params.micro.sbcShadow) Some(Reg(UInt(2.W))) else None
+  // SBC (003) diagnostic: print every copy the SCU starts, unconditionally (not under sbcDebug), so a
+  // shadow firing can be attributed to a migration copy or a repatriation copy without a +verbose run.
+  if (params.micro.sbcShadow) {
+    when (state === s_idle && io.start.valid) {
+      printf(cf"[SBC][SCU] START src=(${io.start.bits.srcSet}%d,${io.start.bits.srcWay}%d) " +
+             cf"dst=(${io.start.bits.dstSet}%d,${io.start.bits.dstWay}%d) " +
+             cf"blk=0x${io.start.bits.shadowAddr.get}%x mshr=${io.start.bits.mshrId}%d\n")
+    }
+  }
   val srcSet = Reg(UInt(params.setBits.W))
   val srcWay = Reg(UInt(params.wayBits.W))
   val dstSet = Reg(UInt(params.setBits.W))
@@ -78,14 +92,16 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
   io.bs_wadr.valid  := false.B
   io.bs_wadr.bits   := 0.U.asTypeOf(new BankedStoreInnerAddress(params))
   io.bs_wdat.data   := 0.U
-  io.copy_req.set   := srcSet
+  io.copy_req.physSet   := srcSet
   io.copy_req.way   := srcWay
-  io.copy_wreq.set  := dstSet
+  io.copy_wreq.physSet  := dstSet
   io.copy_wreq.way  := dstWay
 
   switch (state) {
     is (s_idle) {
       when (io.start.valid) {
+        shadowAddrReg.foreach { _ := io.start.bits.shadowAddr.get }
+        shadowKindReg.foreach { _ := io.start.bits.shadowKind.get }
         srcSet    := io.start.bits.srcSet
         srcWay    := io.start.bits.srcWay
         dstSet    := io.start.bits.dstSet
@@ -117,6 +133,8 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         io.bs_radr.bits.noop   := false.B
         io.bs_radr.bits.way    := srcWay
         io.bs_radr.bits.set    := srcSet
+        io.bs_radr.bits.shadowAddr.foreach { _ := shadowAddrReg.get }
+        io.bs_radr.bits.shadowKind.foreach { _ := shadowKindReg.get }
         io.bs_radr.bits.beat   := rdAdrBeat(params.innerBeatBits - 1, 0)
         io.bs_radr.bits.mask   := Fill(params.innerMaskBits, 1.U(1.W))
         when (io.bs_radr.fire) { rdAdrBeat := rdAdrBeat + 1.U }
@@ -138,6 +156,8 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         io.bs_wadr.bits.noop  := false.B
         io.bs_wadr.bits.way   := dstWay
         io.bs_wadr.bits.set   := dstSet
+        io.bs_wadr.bits.shadowAddr.foreach { _ := shadowAddrReg.get }
+        io.bs_wadr.bits.shadowKind.foreach { _ := shadowKindReg.get }
         io.bs_wadr.bits.beat  := wrBeat(params.innerBeatBits - 1, 0)
         io.bs_wadr.bits.mask  := Fill(params.innerMaskBits, 1.U(1.W))
         io.bs_wdat.data       := blockBuf(wrBeat)

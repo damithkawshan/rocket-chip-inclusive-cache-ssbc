@@ -13,7 +13,8 @@ coder/
 ## Rules
 
 1. **Two files per task. No more.** Analysis, measurements, and rationale go *inside* `REPORT.md`,
-   not into new files. If something genuinely deserves its own document, `REPORT.md` says so and the
+   not into new files. (`003` carries a third file, `diagram.md`, by explicit request — a visual
+   companion to the work order. The rule still binds for *analysis*.) If something genuinely deserves its own document, `REPORT.md` says so and the
    thinker creates it under `ai-documents/` — not here.
 2. **`TASK.md` is append-only after the coder starts.** If the work order changes mid-task, the
    thinker appends a dated `## Amendment` section rather than rewriting. The coder must be able to
@@ -33,5 +34,7 @@ coder/
 
 | # | Task | Status |
 |---|---|---|
+| 000 | internalRead + DSS rotation (pre-convention; filed retroactively) | closed |
 | 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | **closed** (2026-08-28) — commits 1-3 landed; commit 4 handed to 002 |
-| 002 | Fix the partner-set latch, then land commit 4 | **open** (2026-08-28) |
+| 002 | Fix the partner-set latch, then land commit 4 | **closed** (2026-08-28) — C1+C3 landed (`0f5a7ac`); both hypotheses killed by gates; instrumentation pass withdrawn |
+| 003 | Serve in place, and let displaced lines be first-class (dirty + client-held) | **open** (2026-08-28) |

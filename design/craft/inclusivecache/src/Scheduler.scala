@@ -88,7 +88,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   // Deliver messages from Sinks to MSHRs
   mshrs.zipWithIndex.foreach { case (m, i) =>
-    m.io.sinkc.valid := sinkC.io.resp.valid && sinkC.io.resp.bits.set === m.io.status.bits.set
+    // SBC (003): route the ProbeAck by the probe key, not by the address set. An MSHR evicting a
+    // displaced victim probes at a set that is another MSHR's home set, so set alone aliases - the
+    // tag term is what keeps the match unique.
+    m.io.sinkc.valid := sinkC.io.resp.valid &&
+                        sinkC.io.resp.bits.set === m.io.status.bits.probeSet &&
+                        sinkC.io.resp.bits.tag === m.io.status.bits.probeTag
     m.io.sinkd.valid := sinkD.io.resp.valid && sinkD.io.resp.bits.source === i.U
     m.io.sinke.valid := sinkE.io.resp.valid && sinkE.io.resp.bits.sink   === i.U
     m.io.sinkc.bits := sinkC.io.resp.bits
@@ -101,11 +106,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   // If the pre-emption BC or C MSHR have a matching set, the normal MSHR must be blocked
   val mshr_stall_abc = abc_mshrs.map { m =>
-    (bc_mshr.io.status.valid && m.io.status.bits.set === bc_mshr.io.status.bits.set) ||
-    ( c_mshr.io.status.valid && m.io.status.bits.set ===  c_mshr.io.status.bits.set)
+    (bc_mshr.io.status.valid && m.io.status.bits.homeSet === bc_mshr.io.status.bits.homeSet) ||
+    ( c_mshr.io.status.valid && m.io.status.bits.homeSet ===  c_mshr.io.status.bits.homeSet)
   }
   val mshr_stall_bc =
-    c_mshr.io.status.valid && bc_mshr.io.status.bits.set === c_mshr.io.status.bits.set
+    c_mshr.io.status.valid && bc_mshr.io.status.bits.homeSet === c_mshr.io.status.bits.homeSet
   val mshr_stall_c = false.B
   val mshr_stall = mshr_stall_abc :+ mshr_stall_bc :+ mshr_stall_c
 
@@ -150,7 +155,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val mshr_select = OHToUInt(mshr_selectOH)
   val schedule = Mux1H(mshr_selectOH, mshrs.map(_.io.schedule.bits))
   val scheduleTag = Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.tag))
-  val scheduleSet = Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.set))
+  // SBC (003): both consumers of this want the ADDRESS set - the reload re-reads the home row, and
+  // the AT is indexed by home set.
+  val scheduleHomeSet = Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.homeSet))
 
   // When an MSHR wins the schedule, it has lowest priority next time
   when (mshr_request.orR) { robin_filter := ~rightOR(mshr_selectOH) }
@@ -187,7 +194,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // Forward meta-data changes from nested transaction completion
   val select_c  = mshr_selectOH(params.mshrs-1)
   val select_bc = mshr_selectOH(params.mshrs-2)
-  nestedwb.set   := Mux(select_c, c_mshr.io.status.bits.set, bc_mshr.io.status.bits.set)
+  nestedwb.homeSet := Mux(select_c, c_mshr.io.status.bits.homeSet, bc_mshr.io.status.bits.homeSet)
   nestedwb.tag   := Mux(select_c, c_mshr.io.status.bits.tag, bc_mshr.io.status.bits.tag)
   nestedwb.b_toN       := select_bc && bc_mshr.io.schedule.bits.dir.valid && bc_mshr.io.schedule.bits.dir.bits.data.state === MetaData.INVALID
   nestedwb.b_toB       := select_bc && bc_mshr.io.schedule.bits.dir.valid && bc_mshr.io.schedule.bits.dir.bits.data.state === MetaData.BRANCH
@@ -204,7 +211,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkA.io.req.ready := directory.io.ready && request.ready && !sinkC.io.req.valid && !sinkX.io.req.valid
 
   // If no MSHR has been assigned to this set, we need to allocate one
-  val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.set === request.bits.set }.reverse)
+  val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.homeSet === request.bits.set }.reverse)
   val alloc = !setMatches.orR // NOTE: no matches also means no BC or C pre-emption on this set
   // SBC Phase 2: migrate advice for the current allocating request. Driven by the SBC block below
   // (defaults keep the baseline path untouched when set-balancing is disabled).
@@ -220,6 +227,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // Lookup side only - staleness is harmless here (a search in the wrong set finds nothing).
   val pairInfoValid = WireInit(false.B)
   val pairInfoSet   = WireInit(0.U(params.setBits.W))
+  // SBC Phase 3 (003): which side of the pairing the asking set is on. The search only runs on the
+  // source side; the destination side needs the partner to recover a parked line's home set.
+  val pairInfoIsSrc = WireInit(false.B)
   // SBC Phase 2 (dst-collision fix): fence a live migration's destination set. A request whose set is
   // a migrant's dstSet must neither be consumed (request.ready) NOR allocate an MSHR / read the
   // directory for one — it is held at the sink until the migration retires and dstValid clears.
@@ -310,7 +320,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val bypass = request.valid && queue && bypassMatches
     val will_reload = m.io.schedule.bits.reload && (may_pop || bypass)
     m.io.allocate.bits.viewAsSupertype(chiselTypeOf(requests.io.data)) := Mux(bypass, WireInit(new QueuedRequest(params), init = request.bits), requests.io.data)
-    m.io.allocate.bits.set := m.io.status.bits.set
+    m.io.allocate.bits.set := m.io.status.bits.homeSet   // SBC (003): FullRequest.set stays the ADDRESS
     m.io.allocate.bits.repeat := m.io.allocate.bits.tag === m.io.status.bits.tag
     m.io.allocate.valid := sel && will_reload
   }
@@ -326,11 +336,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.migAdvice       := adviceMigrate
     m.io.migOffer.valid  := dstOfferValid && !(migrantOH & ~(1.U(params.mshrs.W) << i).asUInt).orR
     m.io.migOffer.bits   := dstOfferSet
-    m.io.pairInfo.valid  := pairInfoValid
-    m.io.pairInfo.bits   := pairInfoSet
+    m.io.pairInfo.valid      := pairInfoValid
+    m.io.pairInfo.bits.set   := pairInfoSet
+    m.io.pairInfo.bits.isSrc := pairInfoIsSrc
     // Does any OTHER live MSHR own this MSHR's partner set?
     m.io.partnerBusy     := mshrs.zipWithIndex.map { case (o, j) =>
-      (j != i).B && o.io.status.valid && o.io.status.bits.set === m.io.status.bits.secSet
+      (j != i).B && o.io.status.valid && o.io.status.bits.physSet === m.io.status.bits.secSet
     }.reduce(_ || _)
   }
   // At most one MSHR may claim a destination per cycle. Holds by construction (one-hot directoryFanout
@@ -363,13 +374,37 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
      (allocReady && !mshr_uses_directory_assuming_no_bypass && mshr_free) ||
      (nestB && !mshr_uses_directory_assuming_no_bypass && !bc_mshr.io.status.valid && !c_mshr.io.status.valid) ||
      (nestC && !mshr_uses_directory_assuming_no_bypass && !c_mshr.io.status.valid)
-  request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) && !dstSetConflict
+  // SBC (003, bug P1): a client Release addressed to a fenced set blocks the HEAD of the C channel
+  // (SinkC.scala:134 gates c.ready on io.req.ready), and Rocket arbitrates its probe unit and its
+  // writeback unit onto that one channel - so a ProbeAck can sit behind it while the migration that
+  // raised the fence waits for exactly that ProbeAck. Exempt prio(2) here: it never evicts
+  // (MSHR.scala's C branch has no eviction arm and asserts new_meta.hit), so it creates no
+  // victim-selection hazard against the parked way the fence protects. allocReady keeps the full
+  // condition, so a prio(2) request still cannot allocate a fresh MSHR onto a fenced set.
+  request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) &&
+                   !(dstSetConflict && !request.bits.prio(2))
   val alloc_uses_directory = request.valid && request_alloc_cases
+
+  if (params.micro.enableSetBalancing) {
+    // SBC (003, bug P1): the closing evidence for the C-channel head-of-line deadlock. If the fence
+    // ever holds the C head for long, P1 is live. `alloc` separates the two halves: the queue/nest
+    // half is closed by the prio(2) exemption above, the fresh-allocate half is still fenced on
+    // purpose (allocReady keeps the full condition), so a firing here names which one is reachable.
+    val cHeadBlocked = sinkC.io.req.valid && !request.ready && dstSetConflict
+    val cHeadCtr = RegInit(0.U(16.W))
+    when (!cHeadBlocked) { cHeadCtr := 0.U } .otherwise { cHeadCtr := cHeadCtr + 1.U }
+    assert (cHeadCtr < 1000.U, "SBC: C-channel head held by the destination/partner fence (bug P1)")
+    if (params.micro.sbcDebug) {
+      when (cHeadCtr === 200.U) {
+        printf(p"[SBC][SCHED] C-HEAD-STALL set=${request.bits.set} alloc=${alloc} queue=${queue}\n")
+      }
+    }
+  }
 
   // When a request goes through, it will need to hit the Directory
   directory.io.read.valid := mshr_uses_directory || alloc_uses_directory || mshr_uses_directory_for_dread
   directory.io.read.bits.set := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.set,
-                                Mux(mshr_uses_directory_for_lb,    scheduleSet, request.bits.set))
+                                Mux(mshr_uses_directory_for_lb,    scheduleHomeSet, request.bits.set))
   directory.io.read.bits.tag := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.tag,
                                 Mux(mshr_uses_directory_for_lb,    requests.io.data.tag, request.bits.tag))
   // SBC Phase 3: the dread lane now carries two different reads (migrate probe, partner search), so
@@ -446,13 +481,33 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   }
 
   // MSHR response meta-data fetch
+  // SBC (003): the CAM key is (probeSet, probeTag). It returns the way AND the row that way sits in -
+  // a ProbeAckData for a displaced line must be written to the partner row, not to the row its own
+  // address maps to. Deriving the row from the address here is the bug this split exists to remove.
+  val sinkC_bcMatch  = bc_mshr.io.status.valid &&
+                       bc_mshr.io.status.bits.probeSet === sinkC.io.homeSet &&
+                       bc_mshr.io.status.bits.probeTag === sinkC.io.probeTag
+  val sinkC_abcMatch = abc_mshrs.map(m => m.io.status.valid &&
+                                          m.io.status.bits.probeSet === sinkC.io.homeSet &&
+                                          m.io.status.bits.probeTag === sinkC.io.probeTag)
   sinkC.io.way :=
-    Mux(bc_mshr.io.status.valid && bc_mshr.io.status.bits.set === sinkC.io.set,
+    Mux(sinkC_bcMatch,
       bc_mshr.io.status.bits.way,
-      Mux1H(abc_mshrs.map(m => m.io.status.valid && m.io.status.bits.set === sinkC.io.set),
-            abc_mshrs.map(_.io.status.bits.way)))
-  sinkD.io.way := VecInit(mshrs.map(_.io.status.bits.way))(sinkD.io.source)
-  sinkD.io.set := VecInit(mshrs.map(_.io.status.bits.set))(sinkD.io.source)
+      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.way)))
+  sinkC.io.physSet :=
+    Mux(sinkC_bcMatch,
+      bc_mshr.io.status.bits.physSet,
+      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.physSet)))
+  if (params.micro.enableSetBalancing) {
+    // Mux1H over a non-one-hot vector silently ORs the candidates together, producing a way that
+    // belongs to nobody. The two-key match is what makes this hold; this is the net that proves it.
+    assert (PopCount(VecInit(sinkC_abcMatch).asUInt) <= 1.U,
+            "SBC: two MSHRs matched one ProbeAck in the way CAM")
+  }
+  sinkD.io.way     := VecInit(mshrs.map(_.io.status.bits.way))(sinkD.io.source)
+  sinkD.io.physSet := VecInit(mshrs.map(_.io.status.bits.physSet))(sinkD.io.source)
+  sinkD.io.homeSet := VecInit(mshrs.map(_.io.status.bits.homeSet))(sinkD.io.source)
+  sinkD.io.homeTag := VecInit(mshrs.map(_.io.status.bits.tag))(sinkD.io.source)
 
   // Beat buffer connections between components
   sinkA.io.pb_pop <> sourceD.io.pb_pop
@@ -485,6 +540,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   setCopyUnit.io.start.bits.dstSet := schedule.copy.bits.dstSet
   setCopyUnit.io.start.bits.dstWay := schedule.copy.bits.dstWay
   setCopyUnit.io.start.bits.mshrId := mshr_select
+  setCopyUnit.io.start.bits.shadowAddr.foreach { _ := schedule.copy.bits.shadowAddr.get }
+  setCopyUnit.io.start.bits.shadowKind.foreach { _ := schedule.copy.bits.shadowKind.get }
   if (params.micro.sbcDebug) {
     when (schedule.copy.valid && mshr_selectOH.orR) {
       printf(p"[SBC][SCHED] COPY-START srcSet=${schedule.copy.bits.srcSet} srcWay=${schedule.copy.bits.srcWay} dstSet=${schedule.copy.bits.dstSet} dstWay=${schedule.copy.bits.dstWay} mshr=${mshr_select}\n")
@@ -538,7 +595,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // cycle a fast-path MSHR decides, which is why this needs both terms and not one query port.
     val decidingOH = Mux(anyMigrating, migrantOH, directoryFanout.asUInt)
     sbu.io.destQuery.valid := decidingOH.orR
-    sbu.io.destQuery.bits  := Mux1H(decidingOH, mshrs.map(_.io.status.bits.set))
+    sbu.io.destQuery.bits  := Mux1H(decidingOH, mshrs.map(_.io.status.bits.homeSet))
     // A claim can only happen in a cycle where that MSHR is the one the query was made for.
     val claimOH = VecInit(mshrs.map(_.io.dstClaim.valid)).asUInt
     assert ((claimOH & ~decidingOH) === 0.U,
@@ -563,7 +620,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // migPending/set plus the SBU and DSS registers). Nothing on the
     // offer → dstClaim → dstSetConflict → allocReady path feeds back into the offer, and the MSHRs
     // must likewise keep io.allocate.bits.* out of their claim logic (see the note in MSHR.scala).
-    val dstOfferOwned = mshrs.map { m => m.io.status.valid && m.io.status.bits.set === coldDst }.reduce(_ || _)
+    // SBC (003): BOTH meanings. homeSet keeps the old guard (nobody owns that set); physSet is the
+    // new half - a migration must not park a victim into a row somebody is currently serving from.
+    val dstOfferOwned = mshrs.map { m => m.io.status.valid &&
+                                    (m.io.status.bits.physSet === coldDst ||
+                                     m.io.status.bits.homeSet === coldDst) }.reduce(_ || _)
     dstOfferValid := sbu.io.migrateResp.destOk && !dstOfferOwned
     dstOfferSet   := coldDst
 
@@ -583,24 +644,31 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.secHit  := mshrs.map(_.io.secHit).reduce(_ || _)
     sbu.io.secMiss := mshrs.map(_.io.secMiss).reduce(_ || _)
     sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
-    sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.set))
+    sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.homeSet))
 
     // SBC Phase 3 (002 C3/1f): the invariant, not the shape - a paired source may not fetch from
     // memory without asking its partner first. The paired-source term is read LIVE from the AT so
     // this cannot be satisfied by the same mis-latch it exists to police. BtoT is the BRANCH->TRUNK
     // upgrade, which correctly issues an Acquire with no search (it is already resident).
-    sbu.io.checkQuery := scheduleSet
+    sbu.io.checkQuery := scheduleHomeSet
     when (schedule.a.valid && mshr_selectOH.orR && schedule.a.bits.param =/= TLPermissions.BtoT) {
       assert (!sbu.io.checkIsSource || Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.secSearched)),
               "SBC: paired source issued an outer Acquire without searching its partner")
     }
-    pairInfoValid := sbu.io.assocQuery.valid && sbu.io.assocResp.activeSource
+    // SBC (003): report BOTH sides now, with the direction bit. `assocSet` was always
+    // direction-agnostic - the old activeSource gate just hid the destination half of it.
+    pairInfoValid := sbu.io.assocQuery.valid && sbu.io.assocResp.paired
     pairInfoSet   := sbu.io.assocResp.assocSet
+    pairInfoIsSrc := !sbu.io.assocResp.isDest
     // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).
     val migCommit = mshrs.map(_.io.migCommit)
     sbu.io.commit.valid     := migCommit.reduce(_ || _)
     sbu.io.commit.bits.kind := SBCCommitKind.MIGRATE
-    sbu.io.commit.bits.src  := Mux1H(migCommit, mshrs.map(_.io.status.bits.set))
+    sbu.io.commit.bits.src  := Mux1H(migCommit, mshrs.map(_.io.status.bits.physSet))
+    // A migration only ever starts from a NATIVE victim, so the two must agree at a commit.
+    assert (!sbu.io.commit.valid ||
+            sbu.io.commit.bits.src === Mux1H(migCommit, mshrs.map(_.io.status.bits.homeSet)),
+            "SBC: migration committed from a row that is not its own home set")
     sbu.io.commit.bits.dst  := Mux1H(migCommit, mshrs.map(_.io.status.bits.dstSet))
     if (params.micro.sbcDebug) {
       when (sbu.io.commit.valid) {

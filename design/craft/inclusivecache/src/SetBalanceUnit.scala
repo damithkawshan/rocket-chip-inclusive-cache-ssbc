@@ -61,7 +61,12 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     })
     val assocQuery = Flipped(Valid(UInt(params.setBits.W)))
     val assocResp  = Output(new Bundle {
-      val activeSource = Bool()
+      // SBC Phase 3 (003): the same lookup, reported for BOTH sides. `assocSet` was always
+      // direction-agnostic; the old `activeSource` output just hid the destination half of it, and is
+      // gone - `paired && !isDest` is the same thing. The destination side needs the other half to
+      // recover the home set of a line parked in its own row.
+      val paired       = Bool()
+      val isDest       = Bool()
       val assocSet     = UInt(params.setBits.W)
     })
     // SBC Phase 3 (002 C3): assert-only second read of the AT. Lets the check ask "is this set a
@@ -125,7 +130,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.clear             := io.clear
   // Advisory query responses. migrateResp is the Phase-2 migrate advice; it is assigned below,
   // after `armed`/thresholds are declared.
-  io.assocResp.activeSource := at(io.assocQuery.bits).valid && !at(io.assocQuery.bits).sd
+  io.assocResp.paired       := at(io.assocQuery.bits).valid
+  io.assocResp.isDest       := at(io.assocQuery.bits).sd
   io.assocResp.assocSet     := at(io.assocQuery.bits).assocSet
   io.checkIsSource          := at(io.checkQuery).valid && !at(io.checkQuery).sd
 

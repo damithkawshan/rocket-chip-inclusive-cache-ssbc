@@ -1,5 +1,9 @@
 # Coder handover — Phase 3 Part 1 (pinned 1:1 association)
 
+> **Filed retroactively 2026-08-28.** Written 2026-08-24 as `handover-phase3-part1.md`, before
+> the `coder/` exchange convention existed. Moved here for consistency; content unchanged.
+
+
 **Spec:** [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md) — that document is the contract.
 This one is the working order: what to do first, what to verify at each stop, and the traps that have
 already cost time in this code.

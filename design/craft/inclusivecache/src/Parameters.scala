@@ -128,6 +128,14 @@ case class InclusiveCacheMicroParameters(
   migrationClearThreshold: Int = 2,       // T_lo: stop forming associations below this (hysteresis)
   dssEntries:              Int = 8,         // Destination Set Selector candidate slots
   sbcDebug:                Boolean = false, // sim-only SBC debug printfs (nothing elaborated when off)
+  // Sim-only shadow models (003 Stage 1). Two independent checks, both Option-gated so the bundle
+  // fields do not exist at all when off:
+  //   * BankedStore: every port carries the block address it BELIEVES it is touching; a reader whose
+  //     belief disagrees with the last writer's is a wrong-row access, caught on the cycle it happens
+  //     instead of as a wrong DRAM value ten million cycles later.
+  //   * Directory: every entry carries the home set its writer believed, so the AT-based home-set
+  //     recovery the whole design rests on can be checked instead of asserted in a comment.
+  sbcShadow:               Boolean = false,
   sbcAutoMigrate:          Boolean = false, // debug: fire one migration without SW ARM (ignores armed[])
   // --- SBC debug repro knobs (compile-time; zero hardware when off) ---
   sbcForceDstSet:          Int = -1,        // >=0: force every migration to target this set (-1 = off, DSS pick)

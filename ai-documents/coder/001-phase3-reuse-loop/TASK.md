@@ -607,3 +607,32 @@ already absorbed two amendments and four commits. It stops here.
 it rather than repeating the derivation.
 
 Teardown (commit 5) becomes task **003**, opened after 002 closes.
+
+---
+
+## Amendment 4 — Q1 IS REVERSED (2026-08-28)
+
+Recorded here because this is where the decision was made, and the task-directory rule is
+append-only.
+
+**Q1 resolved to option B (serve by repatriation). That is now reversed. Task 003 builds option A —
+the paper's serve-in-place.**
+
+Not because the Q1 reasoning was sloppy. Both of its premises were true when written; one of them
+stopped being true, and the other turned out to be a config artifact:
+
+1. *"Serve-in-place needs AT-based address reconstruction and lifts an invariant three sites lean
+   on."* Still true — but the cost was assessed as a **directory format change** (`CLAUDE.md:222`,
+   `destination-side-blocker.md:180-207`: +log2(sets) bits **per way**). Under the strict 1:1 pinning
+   that commit 1 of *this task* shipped, the home set is one value **per set** — which is exactly
+   what `ATEntry.assocSet` already stores. The expensive part evaporated, and it was this task that
+   made it evaporate.
+2. *"Our L1 is 4 lines, so a served copy falls out immediately and every re-reference pays another
+   partner search."* An artifact of `VerilatorRocket8KL116KL2Config` (4KB L2 / 8 sets / **256B L1**),
+   not of the design. The paper's L1 is 32KB.
+
+The decisive argument was neither of those, though. It is that `displaced ⇒ clean` is what forbids
+migrating dirty victims, and in any real workload most victims are dirty. Repatriation cannot lift
+that; serve-in-place is the prerequisite for it.
+
+→ continues in `../003-serve-in-place/`

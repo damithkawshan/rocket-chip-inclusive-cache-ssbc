@@ -59,6 +59,7 @@ class WithInclusiveCache(
   // (Phase 0 is observation-only: no datapath/behavior change.) Set false for a quiet build.
   enableSetBalancing: Boolean = true,
   sbcDebug: Boolean = true,
+  sbcShadow: Boolean = true,   // SBC (003): sim-only shadow models. Follows enableSetBalancing below.
   sbcAutoMigrate: Boolean = false,
   satCounterBits: Int = -1,        // -1 = auto-derive: ceil(log2(2*nWays))
   migrationThreshold: Int = -1,    // -1 = auto-derive: 2*nWays-1 (T_hi, counter's own max = fully saturated)
@@ -117,6 +118,8 @@ class WithInclusiveCache(
         outerBuf = bufOuterInterior,
         enableSetBalancing = enableSetBalancing,
         sbcDebug = sbcDebug,
+        // The shadow models only mean anything when a line can sit somewhere other than its own row.
+        sbcShadow = sbcShadow && enableSetBalancing,
         sbcAutoMigrate = sbcAutoMigrate,
         satCounterBits = if (satCounterBits < 0) BigInt(2 * nWays - 1).bitLength else satCounterBits,
         migrationThreshold = if (migrationThreshold < 0) (2 * nWays - 1) else migrationThreshold,

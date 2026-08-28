@@ -27,12 +27,25 @@ import MetaData._
 import chisel3.PrintableHelper
 import chisel3.experimental.dataview._
 
+// SBC Phase 3 (003): what the AT knows about one set - its partner, and which side we are on.
+// `isSrc` is what tells a parked line found in OUR row apart from our own line parked elsewhere.
+class PairInfo(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
+{
+  val set   = UInt(params.setBits.W)
+  val isSrc = Bool()
+}
+
 class SetCopyRequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
   val srcSet = UInt(params.setBits.W)
   val srcWay = UInt(params.wayBits.W)
   val dstSet = UInt(params.setBits.W)
   val dstWay = UInt(params.wayBits.W)
+  // SBC (003 Stage 1), sim-only: which block is being moved, as Cat(tag, homeSet). A copy changes the
+  // ROW a line lives in and nothing else, so this value is the same on both the read and the write.
+  val shadowAddr = if (params.micro.sbcShadow) Some(UInt((params.tagBits + params.setBits).W)) else None
+  // 1 = migration copy (victim out to the partner), 2 = repatriation copy (line home from the partner)
+  val shadowKind = if (params.micro.sbcShadow) Some(UInt(2.W)) else None
 }
 
 class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -53,7 +66,13 @@ class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBu
 
 class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
-  val set = UInt(params.setBits.W)
+  // SBC Phase 3 (003): `set` meant three different things on one wire (address set, SRAM row, probe
+  // routing key). They are identical for a native line and diverge for a displaced one, so the field
+  // is deleted rather than repurposed - every reader now has to say which one it wants.
+  val homeSet  = UInt(params.setBits.W)   // ADDRESS: the set this request's address maps to
+  val physSet  = UInt(params.setBits.W)   // PHYSICAL: the SRAM row actually being used
+  val probeSet = UInt(params.setBits.W)   // where our outstanding probe will be answered
+  val probeTag = UInt(params.tagBits.W)   // ... and with which tag. Set alone aliases.
   val tag = UInt(params.tagBits.W)
   val way = UInt(params.wayBits.W)
   val blockB = Bool()
@@ -79,7 +98,7 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
-  val set = UInt(params.setBits.W)
+  val homeSet = UInt(params.setBits.W)   // SBC (003): (homeSet,tag) names an address; (physSet,tag) aliases
   val tag = UInt(params.tagBits.W)
   val b_toN       = Bool() // nested Probes may unhit us
   val b_toB       = Bool() // nested Probes may demote us
@@ -134,7 +153,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val migOffer = Flipped(Valid(UInt(params.setBits.W)))
     // SBC Phase 3: "my set is a paired source, and this is my partner". Latched at allocate; the
     // lookup side tolerates staleness (a search in the wrong set just finds nothing).
-    val pairInfo = Flipped(Valid(UInt(params.setBits.W)))
+    val pairInfo = Flipped(Valid(new PairInfo(params)))
     // SBC Phase 2.5b: same-cycle destination claim, consumed ONLY by the Scheduler's dstSetConflict
     // fence, so the [claim -> fence] window is zero cycles. Deliberately kept separate from
     // status.dstValid: dstValid feeds the one-migration masking, and folding a combinational claim
@@ -230,9 +249,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: this set's pairing, latched on the directory result (002 C1).
   val pairValidReg      = RegInit(false.B)
   val pairSetReg        = Reg(UInt(params.setBits.W))
+  // SBC Phase 3 (003): which side of the pairing our set is on. The search only ever runs on the
+  // source side; the destination side needs the same register to recover a parked line's home set.
+  val pairIsSrcReg      = RegInit(false.B)
   // SBC Phase 3 (002 C1): io.pairInfo is broadcast to every MSHR but keyed to whichever one gets the
   // directory result, so it describes OUR set exactly when io.directory.valid.
-  val pairLive          = io.directory.valid && io.pairInfo.valid
+  val pairLive          = io.directory.valid && io.pairInfo.valid && io.pairInfo.bits.isSrc
   val searchedReg       = RegInit(false.B)   // C3: did this request ask its partner?
 
   // SBC Phase 3 (search + repatriate): a demand miss to a paired source asks its partner whether the
@@ -295,16 +317,36 @@ class MSHR(params: InclusiveCacheParameters) extends Module
 
   // When a nested transaction completes, update our meta data
   when (meta_valid && meta.state =/= INVALID &&
-        io.nestedwb.set === request.set && io.nestedwb.tag === meta.tag) {
+        io.nestedwb.homeSet === request.set && io.nestedwb.tag === meta.tag) {
     when (io.nestedwb.b_clr_dirty) { meta.dirty := false.B }
     when (io.nestedwb.c_set_dirty) { meta.dirty := true.B }
     when (io.nestedwb.b_toB) { meta.state := BRANCH }
     when (io.nestedwb.b_toN) { meta.hit := false.B }
   }
 
+  // SBC Phase 3 (003): the SRAM row this MSHR is working in. Stage 1 keeps it equal to the home set -
+  // serving in place (Stage 4) is what makes them diverge. Scala `if`, not a Mux, so with SBC off this
+  // is literally `request.set` and no new hardware elaborates.
+  val physSet = request.set
+  // SBC Phase 3 (003): the home set of the line currently in `meta`. Three cases, one register:
+  //   displaced && !isSrc -> a foreign line parked in OUR row, so its home is the partner
+  //   displaced &&  isSrc -> impossible here (our own parked line lives in the partner's row)
+  //   !displaced          -> native, home is our own set
+  val lineHome =
+    if (params.micro.enableSetBalancing)
+      Mux(meta.displaced && pairValidReg && !pairIsSrcReg, pairSetReg, request.set)
+    else request.set
+  // SBC Phase 3 (003): an eviction probe of a displaced victim is answered at the victim's HOME set,
+  // which is not our row - so ProbeAck routing needs its own key. Keyed off the WAIT register, not
+  // s_rprobe: s_rprobe retires when the probe issues, while the answer is still in flight.
+  val probingVictim = !w_rprobeacklast
+
   // Scheduler status
   io.status.valid := request_valid
-  io.status.bits.set    := request.set
+  io.status.bits.homeSet  := request.set
+  io.status.bits.physSet  := physSet
+  io.status.bits.probeSet := Mux(probingVictim, lineHome, request.set)
+  io.status.bits.probeTag := Mux(probingVictim, meta.tag, request.tag)
   io.status.bits.tag    := request.tag
   io.status.bits.way    := meta.way
   io.status.bits.blockB := !meta_valid || ((!w_releaseack || !w_rprobeacklast || !w_pprobeacklast) && !w_grantfirst)
@@ -343,6 +385,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // We can only demand: block, nest, or queue
   assert (!io.status.bits.nestB || !io.status.bits.blockB)
   assert (!io.status.bits.nestC || !io.status.bits.blockC)
+
+  // SBC (003 Stage 1): scaffolding + shadow checks. `physSet === request.set` is the Stage-1..3
+  // invariant that serve-in-place (Stage 4) is allowed to break - until then a divergence means a
+  // producer was mis-split. `homeShadow` is the direct test of AT-based home-set recovery: if the
+  // line in our row says it came from somewhere other than where lineHome computes, the recovery
+  // the whole design rests on is wrong and every Release of it would go to the wrong DRAM address.
+  assert (!request_valid || physSet === request.set,
+          "SBC(003): physSet diverged from the home set before serve-in-place exists")
+  if (params.micro.sbcShadow) {
+    assert (!meta_valid || !meta.displaced || meta.homeShadow.get === lineHome,
+            "SBC shadow: a parked line's recorded home disagrees with AT-based recovery")
+  }
 
   // Scheduler requests
   val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy && w_scopy
@@ -399,10 +453,16 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val doSecCopy = repatriating && !s_scopy && (!migrating || w_copy) &&
                   w_releaseack && w_rprobeacklast && s_pprobe
   io.schedule.bits.copy.valid       := doMigCopy || doSecCopy
-  io.schedule.bits.copy.bits.srcSet := Mux(doMigCopy, request.set, pairSetReg)
-  io.schedule.bits.copy.bits.srcWay := Mux(doMigCopy, migSrcWay,   secWay)
-  io.schedule.bits.copy.bits.dstSet := Mux(doMigCopy, migDstSet,   request.set)
+  // SBC (003): the copy lane addresses BankedStore ROWS, never addresses.
+  io.schedule.bits.copy.bits.srcSet := Mux(doMigCopy, physSet,   pairSetReg)
+  io.schedule.bits.copy.bits.srcWay := Mux(doMigCopy, migSrcWay, secWay)
+  io.schedule.bits.copy.bits.dstSet := Mux(doMigCopy, migDstSet, physSet)
   io.schedule.bits.copy.bits.dstWay := Mux(doMigCopy, migDstWay,   meta.way)
+  // The migration moves OUR victim (meta.tag @ lineHome); the repatriation moves the line we asked
+  // for (request.tag @ our set). Either way the address is unchanged by the move.
+  io.schedule.bits.copy.bits.shadowAddr.foreach { _ :=
+    Mux(doMigCopy, Cat(meta.tag, lineHome), Cat(request.tag, request.set)) }
+  io.schedule.bits.copy.bits.shadowKind.foreach { _ := Mux(doMigCopy, 1.U, 2.U) }
   // SBC Phase 2b: 2nd dir-read of dstSet — prefer a free (INVALID) way, else a clean/client-free
   // evictable way we can silently overwrite (no writeback, no probe). Falls back if neither exists.
   // SBC Phase 3: the dread lane carries two reads of the partner set. The search asks "is my line
@@ -418,7 +478,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.secondarySearch := doSearch
   if (params.micro.enableSetBalancing) {
     // A set pairing with itself would make the search read the set it is already missing in.
-    assert (!doSearch || pairSetReg =/= request.set, "SBC: a set is its own partner")
+    assert (!doSearch || pairSetReg =/= physSet, "SBC: a set is its own partner")
     // Migrate-out and repatriate-in run concurrently and both touch the partner set. Aliasing is only
     // dangerous while our parked copy is still there (!s_sinval) - the migration would overwrite the
     // line we are about to read. That cannot happen: the probe takes only INVALID or clean
@@ -522,6 +582,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     final_meta_writeback.hit := true.B
     // SBC: a (re)filled native line is not displaced; migration phases set this explicitly.
     final_meta_writeback.displaced := false.B
+    final_meta_writeback.homeShadow.foreach { _ := request.set }
   }
 
   when (bad_grant) {
@@ -547,6 +608,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   invalid.clients := 0.U
   invalid.tag     := 0.U
   invalid.displaced := false.B // SBC: invalidated entries are never displaced
+  invalid.homeShadow.foreach { _ := 0.U }
 
   // SBC Phase 1: the displaced entry installed at (dstSet,dstWay) by dir-write #1. It carries
   // the migrated victim's tag/state, is clean + client-free, and is flagged displaced.
@@ -568,6 +630,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   displacedEntry.clients   := meta.clients & ~probes_toN
   displacedEntry.tag       := meta.tag
   displacedEntry.displaced := true.B
+  // The migrated victim is one of OUR native lines, so its home is our own set.
+  displacedEntry.homeShadow.foreach { _ := lineHome }
   assert(!mig_dir1 || (!meta.dirty && (meta.clients & ~probes_toN) === 0.U), "migrate source must be clean+client-free")
   assert(!mig_dir1 || displacedEntry.state =/= TRUNK, "SBC: displaced entry must not be TRUNK (TRUNK implies a client, displaced has none)")
   // SBC: a displaced victim must never be RELEASED — its address maps to a different set than the one
@@ -583,27 +647,33 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // The client asking us to act is proof they don't have permissions.
   val excluded_client = Mux(meta.hit && request.prio(0) && skipProbeN(request.opcode, params.cache.hintsSkipProbe), req_clientBit, 0.U)
   io.schedule.bits.a.bits.tag     := request.tag
-  io.schedule.bits.a.bits.set     := request.set
+  io.schedule.bits.a.bits.homeSet := request.set   // SBC (003): expandAddress consumer
   io.schedule.bits.a.bits.param   := Mux(req_needT, Mux(meta.hit, BtoT, NtoT), NtoB)
   io.schedule.bits.a.bits.block   := request.size =/= log2Ceil(params.cache.blockBytes).U ||
                                      !(request.opcode === PutFullData || request.opcode === AcquirePerm)
   io.schedule.bits.a.bits.source  := 0.U
   if (params.micro.sbcDebug) {
     when (io.schedule.bits.a.valid && io.schedule.ready) {
-      printf(p"[SBC] OUTER-A addr=0x${Hexadecimal(params.expandAddress(io.schedule.bits.a.bits.tag, io.schedule.bits.a.bits.set, 0.U))} " +
-             p"set=${io.schedule.bits.a.bits.set} perm=${!io.schedule.bits.a.bits.block} param=${io.schedule.bits.a.bits.param} hit=${meta.hit} " +
+      printf(p"[SBC] OUTER-A addr=0x${Hexadecimal(params.expandAddress(io.schedule.bits.a.bits.tag, io.schedule.bits.a.bits.homeSet, 0.U))} " +
+             p"set=${io.schedule.bits.a.bits.homeSet} perm=${!io.schedule.bits.a.bits.block} param=${io.schedule.bits.a.bits.param} hit=${meta.hit} " +
              p"ctrl=${request.control} mig=${migrating} op=${request.opcode} prio=${request.prio.asUInt}\n")
     }
   }
-  io.schedule.bits.b.bits.param   := Mux(!s_rprobe, toN, Mux(request.prio(1), request.param, Mux(req_needT, toN, toB)))
-  io.schedule.bits.b.bits.tag     := Mux(!s_rprobe, meta.tag, request.tag)
-  io.schedule.bits.b.bits.set     := request.set
+  // SBC (003): one selector, used for BOTH the tag and the set, so they cannot drift. A victim probe
+  // names the VICTIM's address (meta.tag @ lineHome); a permission probe names the request's.
+  val probeVictimNow = !s_rprobe
+  io.schedule.bits.b.bits.param   := Mux(probeVictimNow, toN, Mux(request.prio(1), request.param, Mux(req_needT, toN, toB)))
+  io.schedule.bits.b.bits.tag     := Mux(probeVictimNow, meta.tag, request.tag)
+  io.schedule.bits.b.bits.homeSet := Mux(probeVictimNow, lineHome, request.set)
   io.schedule.bits.b.bits.clients := meta.clients & ~excluded_client
   io.schedule.bits.c.bits.opcode  := Mux(meta.dirty, ReleaseData, Release)
   io.schedule.bits.c.bits.param   := Mux(meta.state === BRANCH, BtoN, TtoN)
   io.schedule.bits.c.bits.source  := 0.U
   io.schedule.bits.c.bits.tag     := meta.tag
-  io.schedule.bits.c.bits.set     := request.set
+  // SBC (003): the two meanings in one request - read the bytes from our row, send them to the
+  // address the line actually belongs to.
+  io.schedule.bits.c.bits.physSet := physSet
+  io.schedule.bits.c.bits.homeSet := lineHome
   io.schedule.bits.c.bits.way     := meta.way
   io.schedule.bits.c.bits.dirty   := meta.dirty
   io.schedule.bits.d.bits.viewAsSupertype(chiselTypeOf(request)) := request
@@ -613,11 +683,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                                          BtoT -> Mux(honour_BtoT,  BtoT, NtoT),
                                          NtoT -> NtoT)))
   io.schedule.bits.d.bits.sink    := 0.U
+  // SBC (003): SourceD has no address consumer - every use of `set` inside it is a BankedStore row.
+  io.schedule.bits.d.bits.physSet := physSet
   io.schedule.bits.d.bits.way     := meta.way
   io.schedule.bits.d.bits.bad     := bad_grant
   io.schedule.bits.e.bits.sink    := sink
   io.schedule.bits.x.bits.fail    := false.B
-  io.schedule.bits.dir.bits.set   := Mux(mig_dir1, migDstSet, Mux(sec_dir1, pairSetReg, request.set))
+  io.schedule.bits.dir.bits.set   := Mux(mig_dir1, migDstSet, Mux(sec_dir1, pairSetReg, physSet))
   io.schedule.bits.dir.bits.way   := Mux(mig_dir1, migDstWay, Mux(sec_dir1, secWay,     meta.way))
   // SBC Phase 2: dir-write #1 (mig_dir1) installs the displaced copy at (dstSet,dstWay); dir-write
   // #2 is the ordinary demand refill that rewrites the freed home way (s,vWay) with the new line.
@@ -804,7 +876,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 2.5b: ask for a destination in THIS cycle rather than acting on one picked back at
   // allocate. The probe round-trip is unbounded, so an allocate-time pick is arbitrarily stale here.
   val migDeferWant = migDeferred && w_rprobeacklast && !meta.dirty &&
-                     io.migOffer.valid && io.migOffer.bits =/= request.set
+                     io.migOffer.valid && io.migOffer.bits =/= physSet
   when (migDeferWant) { migDeferWantW := true.B }
 
   // SBC Phase 2.5b: the fast path (victim was already client-free) takes its destination late too.
@@ -816,7 +888,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // combinationally tied to allocReady — which is what dstClaim feeds. Touching either closes a
   // combinational loop (elaboration catches it; both forms were tried).
   //   * request.set is exact, not an approximation: the Scheduler forces
-  //     allocate.bits.set := status.bits.set (= request.set), so new_request.set === request.set.
+  //     allocate.bits.set := status.bits.homeSet (= request.set), so new_request.set === request.set.
   //   * In the rare cycle where this MSHR is reloaded (io.allocate.valid) at the same time a
   //     directory result lands, new_meta/new_request may disagree with the io.directory.bits/request
   //     form used here. That can only produce a SPURIOUS want: the migrate action below is guarded by
@@ -830,7 +902,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                   !io.directory.bits.hit && io.directory.bits.state =/= INVALID && // eviction needed
                   !io.directory.bits.dirty && !io.directory.bits.displaced &&   // migClean
                   !io.directory.bits.clients.orR &&                             // migEligible (fast path)
-                  io.migOffer.valid && io.migOffer.bits =/= request.set
+                  io.migOffer.valid && io.migOffer.bits =/= physSet
 
   // Declined: the victim was migratable but no destination was on offer. The assess block's
   // when-chain falls through to its normal-eviction `.otherwise` on its own, so nothing else is
@@ -916,10 +988,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // the single grant and both set `migrating`.
     assert (!(migFastWantW && migDeferWantW),           "SBC: both migrate decide points fired in one cycle")
     assert (!migStartNow || io.migOffer.valid,          "SBC: migration started off an invalid destination offer")
-    assert (!migStartNow || migStartDst =/= request.set, "SBC: migration destination equals its own source set")
+    assert (!migStartNow || migStartDst =/= physSet, "SBC: migration destination equals its own source set")
     // SBC Phase 3 (1f): a paired source may only ever spill into its own partner.
     if (params.micro.sbcForceDstSet < 0) {
-      assert (!io.dstClaim.valid || !pairValidReg || io.dstClaim.bits === pairSetReg,
+      assert (!io.dstClaim.valid || !pairValidReg || !pairIsSrcReg || io.dstClaim.bits === pairSetReg,
               "SBC: paired source migrated outside its partner set")
     }
     val migDeferCtr = RegInit(0.U(16.W))
@@ -1006,7 +1078,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // with no dir-read cannot have changed our set, so it cannot have changed our partner.
   when (io.directory.valid) {
     pairValidReg := io.pairInfo.valid
-    pairSetReg   := io.pairInfo.bits
+    pairSetReg   := io.pairInfo.bits.set
+    pairIsSrcReg := io.pairInfo.bits.isSrc
   }
 
   // Create execution plan
@@ -1017,6 +1090,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     searching := false.B
     val secTip = io.directory.bits.secondaryEntry.state === TIP
     when (io.directory.bits.secondaryHit) {
+      if (params.micro.sbcShadow) {
+        // The partner set answered with a parked line. If it did not come from US, the pairing or the
+        // search key is wrong and we are about to serve another set's data.
+        assert (io.directory.bits.secondaryEntry.homeShadow.get === request.set,
+                "SBC shadow: secondary search matched a line parked from a different home set")
+      }
       secWay   := io.directory.bits.secondaryWay
       s_sinval := false.B   // the parked copy always goes, hit or permission-reject
       when (secTip || !req_needT) {

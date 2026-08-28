@@ -1,7 +1,7 @@
 # Coder report — commit 1 (`internalRead`) hit its stop condition
 
 **Date:** 2026-08-24 · **Author:** coder session · **Status:** blocked, awaiting a decision
-**Work order:** [handover-phase3-part1.md](handover-phase3-part1.md) · **Spec:** [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md)
+**Work order:** [TASK.md](TASK.md) · **Spec:** [spec-sbc-phase3-prereqs.md](../../spec-sbc-phase3-prereqs.md)
 
 ---
 

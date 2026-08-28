@@ -35,6 +35,10 @@ class DirectoryEntry(params: InclusiveCacheParameters) extends InclusiveCacheBun
   // SBC: this line was spilled here from a foreign (home) set; its real home set is
   // AT[physicalSet].assocSet. Always false unless Set-Balancing migration is active.
   val displaced = Bool()
+  // SBC (003 Stage 1), sim-only: the home set the WRITER believed this line had. The AT-based
+  // recovery above is the assumption the whole design rests on and today it is only asserted in a
+  // comment; this is what turns it into a check. Option => absent entirely when sbcShadow=false.
+  val homeShadow = if (params.micro.sbcShadow) Some(UInt(params.setBits.W)) else None
 }
 
 // SBC: result-aligned observation tap for the SetBalanceUnit (read-only, never affects datapath)
@@ -188,6 +192,15 @@ class Directory(params: InclusiveCacheParameters) extends Module
     !internalRead && w.tag === tag && w.state =/= INVALID && !w.displaced && (!setQuash || i.U =/= bypass.way)
   }.reverse)
   val hit = hits.orR
+  // SBC Phase 3 (003 Stage 1): in one row, tag T can name TWO different addresses - a native line
+  // (expandAddress(T,thisSet)) and a line parked here from the partner (expandAddress(T,partner)).
+  // `displaced` is the only thing separating them. Weaken that term anywhere and PopCount(hits)
+  // becomes 2, Mux1H below returns garbage, and the CPU gets another address's data. The stress
+  // test's set_addr() puts the tag entirely above the set-index bits, so the same tag really does
+  // exist in every set - this is a guaranteed collision, not a rare one. Permanent net.
+  if (params.micro.enableSetBalancing) {
+    assert (!ren2 || PopCount(hits) <= 1.U, "SBC: two ways match one tag in a normal lookup")
+  }
 
   // SBC Phase 3: secondary search - the exact mirror of `hits`. Displaced ways are INCLUDED and
   // native ones excluded. Under strict 1:1 pinning every displaced way in the partner set belongs to
