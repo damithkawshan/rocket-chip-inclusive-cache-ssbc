@@ -1201,6 +1201,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         assert (io.directory.bits.secondaryEntry.homeShadow.get === request.set,
                 "SBC shadow: secondary search matched a line parked from a different home set")
       }
+      // SBC (003 Stage 2d): MMIO flush over a displaced line stays an UNSUPPORTED constraint
+      // (phase-3.md:156-158) - upgraded here from a comment to an assert, because the failure mode is
+      // silent today and becomes data loss in Stage 3.
+      assert (!request.control, "SBC: MMIO flush of a displaced line is unsupported (it would be lost)")
       secWay   := io.directory.bits.secondaryWay
       // SBC (003 Stage 2a): the parked copy always goes, and the fetch armed by the plan block is
       // left alone. Every hit is temporarily "found it, drop it, fetch it" - the search is still
@@ -1219,6 +1223,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       }
     } .otherwise {
       secMiss := true.B
+      // A C-channel request that missed its home row AND its partner is a line the cache does not
+      // hold at all, which a voluntary Release should never be for. Keeps the strength that relaxing
+      // `assert(new_meta.hit)` above gave up. Latent until 2e makes the C-path search reachable.
+      assert (!request.prio(2), "SBC: C-channel request for a line that is neither resident nor parked")
       if (params.micro.sbcDebug) {
         printf(p"[SBC] SEC-MISS set=${request.set} partner=${pairSetReg}\n")
       }
@@ -1300,9 +1308,29 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     w_ssearch        := true.B
     s_sinval         := true.B
 
+    // SBC (003 Stage 2d): the search is armed the same way on every channel. Any request whose line
+    // is not resident may be looking at a line that is PARKED in the partner set rather than absent -
+    // that is true of a voluntary Release and of an MMIO flush exactly as it is of a demand miss.
+    // Named once so the three branches cannot drift.
+    def armSearch(): Unit = {
+      searching   := true.B
+      searchedReg := true.B
+      s_ssearch   := false.B
+      w_ssearch   := false.B
+    }
+    val canSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive
+
     // For C channel requests (ie: Release[Data])
     when (new_request.prio(2) && (!params.firstLevel).B) {
       s_execute := false.B
+      // SBC (003 Stage 2d, bug P2): a client releasing a line that is PARKED in the partner set
+      // allocates on its home set, reads that row and misses - because the directory excludes
+      // displaced ways from hits - and trips the assert below. Look in the partner before concluding
+      // the line is not ours.
+      // INERT ON ARRIVAL, deliberately: a parked line is still client-free at this stage, so no client
+      // can be releasing one and this search can never hit. 2e is what makes it live, and landing it
+      // first means the arming is proven separately from the behaviour.
+      when (canSearch) { armSearch() }
       // Do we need to go dirty?
       when (new_request.opcode(0) && !new_meta.dirty) {
         s_writeback := false.B
@@ -1315,11 +1343,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (isToN(new_request.param) && (new_meta.clients & new_clientBit) =/= 0.U) {
         s_writeback := false.B
       }
-      assert (new_meta.hit)
+      // Relaxed by exactly the new case and no more: a miss is tolerable only while a search is on its
+      // way to explain it. The search-result block asserts that the search actually found it.
+      assert (new_meta.hit || canSearch)
     }
     // For X channel requests (ie: flush)
     .elsewhen (new_request.control && params.control.B) { // new_request.prio(0)
       s_flush := false.B
+      // SBC (003 Stage 2d, bug P2): same hole on the X channel, and worse - a flush of a parked line
+      // is a SILENT NO-OP today, and becomes data loss the moment Stage 3 lets displaced lines be
+      // dirty. Search so the case is at least detectable; the constraint itself stays unsupported and
+      // is asserted in the search-result block rather than built.
+      when (canSearch) { armSearch() }
       // Do we need to actually do something?
       when (new_meta.hit) {
         s_release := false.B
@@ -1368,12 +1403,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // acquire armed just above is held by `!searching` in a.valid, so nothing leaves for DRAM until
       // the answer is in. Same `willSearch` wire the eviction deferral above tests, so the two can
       // never disagree about whether a search is happening.
-      when (willSearch) {
-        searching   := true.B
-        searchedReg := true.B
-        s_ssearch := false.B
-        w_ssearch := false.B
-      }
+      when (willSearch) { armSearch() }
       // Do we need a probe?
       when ((!params.firstLevel).B && (new_meta.hit &&
             (new_needT || new_meta.state === TRUNK) &&
