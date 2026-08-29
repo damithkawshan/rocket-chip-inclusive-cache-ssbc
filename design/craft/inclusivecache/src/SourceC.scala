@@ -89,6 +89,7 @@ class SourceC(params: InclusiveCacheParameters) extends Module
   io.bs_adr.bits.mask := ~0.U(params.outerMaskBits.W)
   io.bs_adr.bits.shadowAddr.foreach { _ := Cat(req.tag, req.homeSet) }
   io.bs_adr.bits.shadowKind.foreach { _ := 0.U }
+  io.bs_adr.bits.shadowSrc.foreach { _ := req.source }
 
   params.ccover(io.req.valid && io.req.bits.dirty && room && !io.evict_safe, "SOURCEC_HAZARD", "Prevented Eviction data hazard with backpressure")
   params.ccover(io.bs_adr.valid && !io.bs_adr.ready, "SOURCEC_SRAM_STALL", "Data SRAM busy")

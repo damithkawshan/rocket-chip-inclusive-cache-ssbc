@@ -125,6 +125,7 @@ class SourceD(params: InclusiveCacheParameters) extends Module
   io.bs_radr.bits.mask := s1_mask
   io.bs_radr.bits.shadowAddr.foreach { _ := Cat(s1_req.tag, s1_req.set) }
   io.bs_radr.bits.shadowKind.foreach { _ := 0.U }
+  io.bs_radr.bits.shadowSrc.foreach { _ := s1_req.sink }
 
   params.ccover(io.bs_radr.valid && !io.bs_radr.ready, "SOURCED_1_READ_STALL", "Data readout stalled")
 
@@ -149,10 +150,11 @@ class SourceD(params: InclusiveCacheParameters) extends Module
 
   params.ccover(s1_valid && !s2_ready, "SOURCED_1_STALL", "Stage 1 pipeline blocked")
 
-  // SBC (003 Stage 1..3): SourceD has no address consumer, so this is a scaffold, not a rule -
-  // Stage 4 (serve in place) is exactly what is allowed to break it.
-  assert (!io.req.valid || io.req.bits.physSet === io.req.bits.set,
-          "SBC(003): SourceD request row diverged from its address set")
+  // SBC (003): the Stage-1 scaffold `physSet === set` is RETIRED at Stage 2e - serving a line from
+  // the partner's row is exactly what it existed to forbid until now, and SourceD has no address
+  // consumer, so the two legitimately differ here. What replaces it is the BankedStore shadow model:
+  // every port declares the block it believes it is touching, so a mis-classified reader shows up as
+  // a wrong-row access on the cycle it happens rather than as silence.
   io.req.ready := !busy
   s1_valid := (busy || io.req.valid) && (!s1_valid_r || io.bs_radr.ready)
 
@@ -291,6 +293,7 @@ class SourceD(params: InclusiveCacheParameters) extends Module
   io.bs_wadr.bits.mask := Cat(s4_pdata.mask.asBools.grouped(writeBytes).map(_.reduce(_||_)).toList.reverse)
   io.bs_wadr.bits.shadowAddr.foreach { _ := Cat(s4_req.tag, s4_req.set) }
   io.bs_wadr.bits.shadowKind.foreach { _ := 0.U }
+  io.bs_wadr.bits.shadowSrc.foreach { _ := s4_req.sink }
   io.bs_wdat.data := atomics.io.data_out
   assert (!(s4_full && s4_need_pb && s4_pdata.corrupt), "Data poisoning unsupported")
 

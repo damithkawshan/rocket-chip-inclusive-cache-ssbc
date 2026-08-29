@@ -227,9 +227,13 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: secondary search - the exact mirror of `hits`. Displaced ways are INCLUDED and
   // native ones excluded. Under strict 1:1 pinning every displaced way in the partner set belongs to
   // the searching set, so a tag match here IS the line we are looking for.
+  // SBC (003 Stage 2e): `& freeWays` is the search side of the way-lock. Without it the search can
+  // match a way that the row's own MSHR has already committed to evicting, and the two then work on
+  // the same way from opposite ends - one serving the line, the other reading it out for a Release.
+  // Not finding it is always safe: the requester simply fetches from memory instead.
   val secHits = Cat(ways.zipWithIndex.map { case (w, i) =>
     secondarySearch && w.tag === tag && w.state =/= INVALID && w.displaced && (!setQuash || i.U =/= bypass.way)
-  }.reverse)
+  }.reverse) & freeWays
   // A displaced entry written this cycle is not in `ways` yet. Missing it would let the refill install
   // a second copy of the same line - the stale-twin hole - so match the write bypass too.
   val secBypassHit = secondarySearch && setQuash && bypass.data.tag === tag &&
@@ -241,11 +245,16 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: two parked copies of one line is the stale-twin hole - the search would serve a copy
   // another path can still write. Mux1H(secHits) needs one-hot anyway.
   assert (!ren2 || PopCount(secHits) <= 1.U, "SBC: two displaced copies of the same line in one set")
-  // SBC: `displaced => clean + client-free` is load-bearing - a parked line sits at the wrong physical
-  // set, so it can be neither written back nor probed. Checked on read, not only at install.
-  val displacedOwedOH = Cat(ways.map(w => w.dirty || w.clients.orR).reverse)
+  // SBC: `displaced => clean` is load-bearing - a parked line sits at the wrong physical set, so it
+  // cannot be written back. Checked on read, not only at install.
+  // SBC (003 Stage 2e): the CLIENT-FREE half is dropped. A line served in place stays displaced while
+  // a client holds it - that is the point of serving it. Its address is still reconstructible
+  // (AT[row].assocSet), so probes are fine; it is the writeback that still needs the clean half, and
+  // Stage 3 is what removes that one. This is a change to what we ASSERT about displaced lines, not
+  // to how we DETECT them - every `!w.displaced` test in TASK section 4b is untouched.
+  val displacedOwedOH = Cat(ways.map(w => w.dirty).reverse)
   assert (!ren2 || (displacedValidOH & displacedOwedOH) === 0.U,
-          "SBC: displaced way is dirty or client-held (its address cannot be reconstructed)")
+          "SBC: displaced way is dirty (its address cannot be reconstructed for a writeback)")
 
   io.result.valid := ren2
   io.result.bits.viewAsSupertype(chiselTypeOf(bypass.data)) := Mux(hit, Mux1H(hits, ways), Mux(setQuash && (tagMatch || wayMatch), bypass.data, Mux1H(victimWayOH, ways)))

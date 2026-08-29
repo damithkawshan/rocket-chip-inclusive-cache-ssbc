@@ -82,6 +82,7 @@ class SinkD(params: InclusiveCacheParameters) extends Module
   io.bs_adr.bits.mask := ~0.U(params.outerMaskBits.W)
   io.bs_adr.bits.shadowAddr.foreach { _ := Cat(io.homeTag, io.homeSet) }
   io.bs_adr.bits.shadowKind.foreach { _ := 0.U }
+  io.bs_adr.bits.shadowSrc.foreach { _ := io.source }
   io.bs_dat.data      := d.bits.data
 
   assert (!(d.valid && d.bits.corrupt && !d.bits.denied), "Data poisoning unsupported")

@@ -285,6 +285,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // of the proven `migDeferred`: while this is set NOTHING has been armed - no release, no probe, no
   // migration - so the victim is still intact and every option is still open.
   val secDefer      = RegInit(false.B)
+  // SBC (003 Stage 2e): this MSHR is serving its line from the PARTNER's row. The line is not moved
+  // and not copied - only the row we address changes. This is the register that makes homeSet and
+  // physSet differ for the first time in this project.
+  val inPlace       = RegInit(false.B)
 
   // SBC Phase 2.5b (late destination binding): two decide points can ask for a destination — the
   // fast path (victim was already client-free) and the deferred path (post-probe). They are mutually
@@ -344,10 +348,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (io.nestedwb.b_toN) { meta.hit := false.B }
   }
 
-  // SBC Phase 3 (003): the SRAM row this MSHR is working in. Stage 1 keeps it equal to the home set -
-  // serving in place (Stage 4) is what makes them diverge. Scala `if`, not a Mux, so with SBC off this
-  // is literally `request.set` and no new hardware elaborates.
-  val physSet = request.set
+  // SBC Phase 3 (003): the SRAM row this MSHR is working in. Stage 2e is what finally makes it differ
+  // from the home set. Scala `if`, not a Chisel Mux, so with SBC off this is literally `request.set`
+  // and no new hardware elaborates.
+  val physSet = if (params.micro.enableSetBalancing) Mux(inPlace, pairSetReg, request.set)
+                else request.set
   // SBC Phase 3 (003): the home set of the line currently in `meta`. Three cases, one register:
   //   displaced && !isSrc -> a foreign line parked in OUR row, so its home is the partner
   //   displaced &&  isSrc -> impossible here (our own parked line lives in the partner's row)
@@ -399,9 +404,25 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // victimise the way and have our erase then invalidate whatever replaced it.
   // The migration destination is deliberately NOT locked here - it is already fenced at allocation by
   // dstSetConflict, which is what closed the dst-collision bug. One lock slot, one job.
-  io.status.bits.lockValid := !s_sinval
-  io.status.bits.lockSet   := pairSetReg
-  io.status.bits.lockWay   := secWay
+  //
+  // SBC (003 Stage 2e): `|| inPlace` is REQUIRED, not belt-and-braces. The 2c window was keyed to
+  // `!s_sinval`, and serving in place is defined by NOT setting that register - so a served line would
+  // otherwise have had zero way-lock protection for exactly the operation that needs it most: the
+  // whole SourceD read-out, and however long the line stays client-held afterwards. The row's own
+  // native MSHR could have taken that way as its victim mid-serve.
+  // SBC (003 Stage 2e): the lock has TWO cases, and 2c only had one. The 2c half protects a BORROWED
+  // way from the row's owner. The missing half is the mirror: it must also protect the OWNER's chosen
+  // victim from the borrower, or the secondary search can land on a way another MSHR has already
+  // committed to evicting - and then one MSHR serves the line while the other reads it out for a
+  // Release. Caught by the BankedStore shadow model on `sourceC`.
+  //
+  // One slot still suffices: an MSHR that is serving in place has no victim (the deferred eviction was
+  // never armed), so the two cases are mutually exclusive by construction.
+  val lockBorrowed = !s_sinval || inPlace
+  io.status.bits.lockValid := lockBorrowed ||
+                             (meta_valid && !meta.hit && meta.state =/= INVALID)   // my chosen victim
+  io.status.bits.lockSet   := Mux(lockBorrowed, pairSetReg, physSet)
+  io.status.bits.lockWay   := Mux(lockBorrowed, secWay,     meta.way)
   io.status.bits.secSearched := searchedReg
   io.status.bits.secSet   := pairSetReg
   io.status.bits.dstSet   := migDstSet
@@ -414,13 +435,20 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   assert (!io.status.bits.nestB || !io.status.bits.blockB)
   assert (!io.status.bits.nestC || !io.status.bits.blockC)
 
-  // SBC (003 Stage 1): scaffolding + shadow checks. `physSet === request.set` is the Stage-1..3
-  // invariant that serve-in-place (Stage 4) is allowed to break - until then a divergence means a
-  // producer was mis-split. `homeShadow` is the direct test of AT-based home-set recovery: if the
-  // line in our row says it came from somewhere other than where lineHome computes, the recovery
-  // the whole design rests on is wrong and every Release of it would go to the wrong DRAM address.
-  assert (!request_valid || physSet === request.set,
-          "SBC(003): physSet diverged from the home set before serve-in-place exists")
+  // SBC (003) invariants. `homeShadow` is the direct test of AT-based home-set recovery: if the line
+  // in our row says it came from somewhere other than where lineHome computes, the recovery the whole
+  // design rests on is wrong and every Release of it would go to the wrong DRAM address.
+  // SBC (003 Stage 2e): the Stage-1..2d scaffold (`physSet === request.set`) is retired here - serving
+  // in place is exactly what it existed to forbid until now. Replaced by the invariant that actually
+  // matters: if we are addressing the partner's row, the entry we are addressing had better be a
+  // parked line. This is the net for P4 - a `repeat` reload that cleared inPlace while meta stayed on
+  // the partner row lands here rather than silently reading the wrong row forever.
+  if (params.micro.enableSetBalancing) {
+    assert (!inPlace || !meta_valid || meta.displaced,
+            "SBC(003 P4): serving in place, but meta is not a parked line")
+    assert (!inPlace || physSet === pairSetReg,
+            "SBC(003 P4): inPlace but physSet is not the partner row")
+  }
   if (params.micro.sbcShadow) {
     assert (!meta_valid || !meta.displaced || meta.homeShadow.get === lineHome,
             "SBC shadow: a parked line's recorded home disagrees with AT-based recovery")
@@ -452,14 +480,37 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // what keeps this gate shut during a probe; here that register is not available yet.
   // SBC Phase 3: never fetch from memory while the partner search is outstanding, or at all once it
   // has hit - the line is coming from the partner set instead.
+  // SBC (003 Stage 2e): `w_rprobeackfirst` is new. Everywhere it already mattered, the Acquire was
+  // held behind the eviction probe TRANSITIVELY - a normal eviction arms `s_release := false`, the
+  // Release waits on `w_rprobeackfirst`, and this gate waits on `s_release`. The displaced-reclaim
+  // path arms a probe with NO Release (the line is dropped, not written back), so that chain is
+  // absent and the refill could overwrite the way while the client still held it. Adding the term
+  // directly is behaviour-preserving on every path that already worked - each of them has
+  // `w_rprobeackfirst` true by the time `s_release` lets this gate open - and closes the new hole.
   io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy) && !migDeferred &&
-                              !searching
+                              !searching && w_rprobeackfirst
   io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
   io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
   // Named once because the completion below MUST use the identical condition - a gate added to the
   // valid and missed in its sibling is exactly what 707445c was, and it silently retires a Grant that
   // never went out. (003 Stage 2a removed this gate's repatriation term along with the copy.)
-  val d_ready = w_pprobeack && w_grant
+  //
+  // SBC (003 Stage 2e): `sec_ready` is new here, and it fixes a WEDGE, not a data bug.
+  //
+  // Retirement rides on an MSHR's LAST schedule item - the baseline relies on the retire condition
+  // being true at the moment that item fires. A C-channel Release clears `s_execute` and already has
+  // `w_pprobeack`/`w_grant` true, so its ack is often its only schedule item. Give that request a
+  // partner search whose result arms an erase, and the ack fires while `sec_ready` is false; the
+  // retire it was carrying is skipped, the erase (`sec_dir1`) then completes and sets `s_sinval`, and
+  // by the next cycle the retire condition is true with NOTHING LEFT TO SCHEDULE. The MSHR sits
+  // `request_valid` forever.
+  //
+  // Ordering the Grant behind the whole secondary sequence fixes it structurally rather than by
+  // adding a second retire path: the ack becomes the last item again, and `sec_ready` is true when it
+  // fires. It also reads correctly on its own terms - do not hand data to the client until the stale
+  // parked copy is gone. The A path is unaffected in practice (an outer Grant takes far longer than
+  // the erase), which is why this only surfaced once 2e made the C-path search reachable.
+  val d_ready = w_pprobeack && w_grant && sec_ready
   io.schedule.bits.d.valid := !s_execute && d_ready
   io.schedule.bits.e.valid := !s_grantack && w_grantfirst
   io.schedule.bits.x.valid := !s_flush && w_releaseack
@@ -590,7 +641,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     final_meta_writeback.tag := request.tag
     final_meta_writeback.hit := true.B
     // SBC: a (re)filled native line is not displaced; migration phases set this explicitly.
-    final_meta_writeback.displaced := false.B
+    // SBC (003 Stage 2e): a line SERVED in place stays where it is, so it stays displaced. This is the
+    // whole difference from repatriation, in one bit.
+    final_meta_writeback.displaced := inPlace
     final_meta_writeback.homeShadow.foreach { _ := request.set }
   }
 
@@ -930,7 +983,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   migFastWantW := migPlanCycle && planWant
   // Same shape as migFastWantW and equally register-derived, so the loop-freedom argument carries:
   // `meta`, `secDefer`, `searching`, `w_ssearch` are all registers and none touches io.allocate.bits.
-  migResumeWantW := migResumeCycle && resumeWant
+  // SBC (003 Stage 2e): will this search result be SERVED from the partner row? Hoisted here because
+  // it has to suppress two things at once - the deferred eviction (serving needs no home way at all,
+  // which is the whole reason the decision was deferred) and the resume-time destination claim.
+  //   * a permission-reject (parked copy too weak for a needT) still falls through to the fetch
+  //   * an MMIO flush never serves - it stays an unsupported constraint, asserted below
+  val willServe = params.micro.enableSetBalancing.B && io.directory.bits.secondaryHit &&
+                  (io.directory.bits.secondaryEntry.state === TIP || !req_needT) &&
+                  !request.control
+  migResumeWantW := migResumeCycle && resumeWant && !willServe
 
   // SBC (003 Stage 2b): THE ASSESS CHAIN, factored so the plan block and the search resume arm
   // bit-identical state. A gate added at one call site and missed at the other is 707445c, which this
@@ -979,12 +1040,24 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         printf(p"[SBC] MIG-DEFER srcSet=${srcSet} srcWay=${m.way} clients=${m.clients}\n")
       }
     } .elsewhen (m.displaced) {
-      // SBC Phase 2: reclaim a displaced victim (the last-resort directory victim). A displaced line
-      // is clean + client-free by construction and its address maps to a DIFFERENT set than the one it
-      // sits in, so it can be neither written back nor released - a Release would carry the wrong
-      // address. Drop it silently: no release, no probe. The demand refill overwrites this way.
+      // SBC Phase 2: reclaim a displaced victim (the last-resort directory victim). Still no Release -
+      // the line is clean, and enabling the writeback is Stage 3's job - so the demand refill simply
+      // overwrites this way.
+      //
+      // SBC (003 Stage 2e) - NEW AND LOAD-BEARING. "Clean AND client-free by construction" is only
+      // half true now: serving in place leaves a parked line CLIENT-HELD, and the way-lock protects it
+      // only while the serving MSHR is alive. Once that MSHR retires, the partner row's own MSHR can
+      // pick this way as its victim. Dropping it silently would leave the L1 holding a line the L2 has
+      // forgotten - an inclusion violation, and a later voluntary Release of it would find nothing.
+      // So probe it first. The probe is addressed to `lineHome` (Stage 1's split) and its ProbeAck
+      // routes back on (probeSet, probeTag), both of which exist for exactly this.
+      when ((!params.firstLevel).B && m.clients.orR) {
+        s_rprobe         := false.B
+        w_rprobeackfirst := false.B
+        w_rprobeacklast  := false.B
+      }
       if (params.micro.sbcDebug) {
-        printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way}\n")
+        printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way} clients=${m.clients}\n")
       }
     } .otherwise {
       if (params.micro.sbcDebug) {
@@ -1102,6 +1175,31 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!(secDefer && !s_release),                "SBC: eviction committed while the search was open")
     assert (!(secDefer && io.schedule.bits.a.valid),  "SBC: outer Acquire during a deferred search")
     assert (!(secDefer && migDeferred),               "SBC: two deferrals outstanding")
+    // SBC (003 Stage 2e): `d_ready` lost its wait term when repatriation went, so nothing structurally
+    // stops a Grant firing in the very cycle the serve re-points `meta`. It cannot happen - the plan
+    // block armed the fetch, so `w_grant` is false until this same cycle sets it, and a register write
+    // lands at the end of the cycle - but that is an argument, and this is the net that keeps it true.
+    assert (!(io.schedule.bits.d.valid && io.directory.valid && searching && !w_ssearch && willServe),
+            "SBC(003 2e): Grant scheduled in the same cycle the serve re-points meta")
+
+    // SBC (003 Stage 2e): a general liveness watchdog. Serve-in-place adds waiting edges the earlier
+    // per-feature watchdogs (migDeferCtr, secDeferCtr) do not cover, and a wedged MSHR in Verilator
+    // looks exactly like a slow run. Turn it into a named assert carrying the whole scoreboard.
+    val liveCtr = RegInit(0.U(32.W))
+    when (!request_valid || io.schedule.valid) { liveCtr := 0.U } .otherwise { liveCtr := liveCtr + 1.U }
+    assert (liveCtr < 20000.U,
+            cf"SBC(003 2e): MSHR wedged - nothing schedulable. set=${request.set}%d physSet=${physSet}%d " +
+            cf"inPlace=${inPlace}%d searching=${searching}%d secDefer=${secDefer}%d migDeferred=${migDeferred}%d " +
+            cf"migrating=${migrating}%d s_acquire=${s_acquire}%d s_release=${s_release}%d s_rprobe=${s_rprobe}%d " +
+            cf"s_pprobe=${s_pprobe}%d s_execute=${s_execute}%d s_writeback=${s_writeback}%d s_sinval=${s_sinval}%d " +
+            cf"w_rpaFirst=${w_rprobeackfirst}%d w_rpaLast=${w_rprobeacklast}%d w_ppa=${w_pprobeack}%d " +
+            cf"w_grant=${w_grant}%d w_grantack=${w_grantack}%d w_releaseack=${w_releaseack}%d " +
+            cf"w_copy=${w_copy}%d w_ssearch=${w_ssearch}%d partnerBusy=${io.partnerBusy}%d " +
+            cf"metaValid=${meta_valid}%d metaWay=${meta.way}%d metaDisp=${meta.displaced}%d " +
+            cf"metaClients=${meta.clients}%d s_flush=${s_flush}%d s_dread=${s_dread}%d s_copy=${s_copy}%d " +
+            cf"s_dmeta=${s_dmeta}%d s_ssearch=${s_ssearch}%d s_probeack=${s_probeack}%d " +
+            cf"s_grantack=${s_grantack}%d prio=${request.prio.asUInt}%d ctrl=${request.control}%d " +
+            cf"tag=${request.tag}%x reload=${io.schedule.bits.reload}%d schedV=${io.schedule.valid}%d")
   }
 
   when (io.sinkd.valid) {
@@ -1191,7 +1289,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // where a serve-in-place hit will skip it.
     when (secDefer) {
       secDefer := false.B
-      armEviction(meta, migResumeWantW, request.set)
+      // SBC (003 Stage 2e): serving in place needs NO home way, so the deferred eviction is simply
+      // not armed. That is the payoff the whole deferral was built for - the victim we held back is
+      // never evicted at all, rather than evicted and then found to have been unnecessary.
+      when (!willServe) { armEviction(meta, migResumeWantW, request.set) }
     }
     val secTip = io.directory.bits.secondaryEntry.state === TIP
     when (io.directory.bits.secondaryHit) {
@@ -1206,17 +1307,57 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // silent today and becomes data loss in Stage 3.
       assert (!request.control, "SBC: MMIO flush of a displaced line is unsupported (it would be lost)")
       secWay   := io.directory.bits.secondaryWay
-      // SBC (003 Stage 2a): the parked copy always goes, and the fetch armed by the plan block is
-      // left alone. Every hit is temporarily "found it, drop it, fetch it" - the search is still
-      // measured (secHit), it just does not return anything yet. 2e turns this into a serve.
-      s_sinval := false.B
-      when (secTip || !req_needT) {
-        secHit := true.B
+      when (willServe) {
+        // ---- SERVE IN PLACE. Nothing moves; only the row we address changes. ----
+        secHit  := true.B
+        inPlace := true.B
+        // Re-point meta at the parked entry. Everything downstream - the probe client mask, the
+        // Grant's way, final_meta_writeback - reads meta, so this one assignment is what makes the
+        // rest of the transaction operate on the partner's row.
+        meta.viewAsSupertype(chiselTypeOf(io.directory.bits.secondaryEntry)) := io.directory.bits.secondaryEntry
+        meta.way := io.directory.bits.secondaryWay
+        meta.hit := true.B
+        gotT     := secTip
+        // s_sinval is deliberately NOT cleared. Keeping the parked copy IS serving in place; there is
+        // no separate "keep" step, only the absence of the erase.
+        // Cancel the memory fetch the plan block armed - the line is already in the cache.
+        s_acquire    := true.B
+        w_grantfirst := true.B
+        w_grantlast  := true.B
+        w_grant      := true.B
+        s_grantack   := true.B
+        // NEW: the parked line may be client-held now. No such logic existed before, because the old
+        // `displaced => client-free` invariant guaranteed it could not be. Mirrors the plan block's
+        // permission-probe arm. The probe is addressed to (request.tag, request.set) - the line's real
+        // address - even though the line physically sits in the partner's row. That split is exactly
+        // what Stage 1 was built for.
+        val secSkip = Mux(request.prio(0) && skipProbeN(request.opcode, params.cache.hintsSkipProbe),
+                          req_clientBit, 0.U)
+        // The directory entry has moved under us, so the writeback the plan block sized against the
+        // HOME row's metadata may be missing. Arm it unconditionally - for the A path it is already
+        // armed (a miss always acquires), and for a C-channel Release of a parked line it is the only
+        // thing that records the client giving the line up.
+        s_writeback := false.B
+        // `!request.prio(2)`: a Release is a client HANDING BACK the line. Probing it back would ask a
+        // client to relinquish something it is in the act of relinquishing.
+        when ((!params.firstLevel).B && !request.prio(2) &&
+              (req_needT || io.directory.bits.secondaryEntry.state === TRUNK) &&
+              (io.directory.bits.secondaryEntry.clients & ~secSkip) =/= 0.U) {
+          s_pprobe         := false.B
+          w_pprobeackfirst := false.B
+          w_pprobeacklast  := false.B
+          w_pprobeack      := false.B
+          s_writeback      := false.B
+        }
         if (params.micro.sbcDebug) {
-          printf(p"[SBC] SEC-HIT set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${io.directory.bits.secondaryEntry.state} needT=${req_needT}\n")
+          printf(p"[SBC] SEC-SERVE set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${io.directory.bits.secondaryEntry.state} clients=${io.directory.bits.secondaryEntry.clients} needT=${req_needT}\n")
         }
       } .otherwise {
-        secMiss := true.B   // found, but too weak to serve - drop it and fetch
+        // Found, but too weak to serve (we need T and the parked copy is not TIP), or a flush. Erase
+        // the parked copy and fall through to the fetch the plan block armed - leaving a second copy
+        // alive would be a stale twin.
+        s_sinval := false.B
+        secMiss  := true.B
         if (params.micro.sbcDebug) {
           printf(p"[SBC] SEC-WEAK set=${request.set} partner=${pairSetReg} state=${io.directory.bits.secondaryEntry.state}\n")
         }
@@ -1301,6 +1442,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_dread          := true.B
     w_dread          := true.B
     migrating        := false.B
+    // SBC (003 Stage 2e, P4 - READ TWICE). This block also runs on a `repeat` reload, which has NO
+    // dir-read: `meta` keeps its value, so it still points at the partner row. Clearing inPlace here
+    // unconditionally would leave meta on the partner while physSet reverted home, and every access
+    // afterwards would be off by a whole row, silently. Clear it only on a real directory result.
+    // A repeat reload is the SAME line by construction (repeat means the tags match), so continuing
+    // to serve it in place is correct, not merely safe.
+    when (io.directory.valid) { inPlace := false.B }
     // SBC Phase 3 scoreboard defaults (inert unless the partner search is armed below)
     secDefer         := false.B
     searching        := false.B

@@ -135,6 +135,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         io.bs_radr.bits.set    := srcSet
         io.bs_radr.bits.shadowAddr.foreach { _ := shadowAddrReg.get }
         io.bs_radr.bits.shadowKind.foreach { _ := shadowKindReg.get }
+        io.bs_radr.bits.shadowSrc.foreach { _ := mshrId }
         io.bs_radr.bits.beat   := rdAdrBeat(params.innerBeatBits - 1, 0)
         io.bs_radr.bits.mask   := Fill(params.innerMaskBits, 1.U(1.W))
         when (io.bs_radr.fire) { rdAdrBeat := rdAdrBeat + 1.U }
@@ -158,6 +159,7 @@ class SetCopyUnit(params: InclusiveCacheParameters) extends Module {
         io.bs_wadr.bits.set   := dstSet
         io.bs_wadr.bits.shadowAddr.foreach { _ := shadowAddrReg.get }
         io.bs_wadr.bits.shadowKind.foreach { _ := shadowKindReg.get }
+        io.bs_wadr.bits.shadowSrc.foreach { _ := mshrId }
         io.bs_wadr.bits.beat  := wrBeat(params.innerBeatBits - 1, 0)
         io.bs_wadr.bits.mask  := Fill(params.innerMaskBits, 1.U(1.W))
         io.bs_wdat.data       := blockBuf(wrBeat)

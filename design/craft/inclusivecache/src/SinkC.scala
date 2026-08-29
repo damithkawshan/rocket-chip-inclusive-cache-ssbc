@@ -111,6 +111,7 @@ class SinkC(params: InclusiveCacheParameters) extends Module
     // SBC (003) shadow: what this ProbeAckData is about, independent of which row it lands in.
     bs_adr.bits.shadowAddr.foreach { _ := Cat(io.probeTag, io.homeSet) }
     bs_adr.bits.shadowKind.foreach { _ := 0.U }
+    bs_adr.bits.shadowSrc.foreach { _ := 15.U }
     params.ccover(bs_adr.valid && !bs_adr.ready, "SINKC_SRAM_STALL", "Data SRAM busy")
 
     io.resp.valid := resp && c.valid && (first || last) && (!hasData || bs_adr.ready)
