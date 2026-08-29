@@ -40,6 +40,25 @@ static inline uintptr_t set_addr(int s, int t) {
 
 static uint64_t sink;
 
+/* SBC MMIO counters (Control.scala). Read-only; used only for the end-of-run summary, so the cases
+ * above stay pure loads/stores. Added in 003 Stage 2b: "did migrations collapse?" is a required
+ * check when the evict-or-migrate decision moves, and it cannot be answered from a non-verbose log. */
+#define L2_CTRL_BASE   0x2010000UL
+#define SBC_MIGRATIONS (L2_CTRL_BASE + 0x328)
+#define SBC_SECHITS    (L2_CTRL_BASE + 0x330)
+#define SBC_SECMISS    (L2_CTRL_BASE + 0x338)
+#define SBC_ATTEMPTED  (L2_CTRL_BASE + 0x348)
+#define SBC_ABORTED    (L2_CTRL_BASE + 0x350)
+static inline uint64_t mmio_rd(uintptr_t a) {
+    volatile uint64_t *p = (volatile uint64_t *)a; return *p;
+}
+static void sbc_summary(void) {
+    printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu\n",
+           (unsigned long)mmio_rd(SBC_MIGRATIONS), (unsigned long)mmio_rd(SBC_ATTEMPTED),
+           (unsigned long)mmio_rd(SBC_ABORTED),    (unsigned long)mmio_rd(SBC_SECHITS),
+           (unsigned long)mmio_rd(SBC_SECMISS));
+}
+
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.
  * `cold_set` < 0 means "don't touch any cold set". */
 static void hammer(int cold_set, int ncold) {
@@ -240,6 +259,7 @@ int main(void) {
     ok &= case_hazard_rw(6);        /* RaW/WaR interlock stress             */
     ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window (run last) */
 
+    sbc_summary();
     printf(ok ? "PASS: all migration corner cases data-correct (see [SBC] log)\n"
               : "FAIL: data corrupted in at least one case\n");
     return ok ? 0 : 1;
