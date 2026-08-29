@@ -656,6 +656,83 @@ does now — `sbc_summary()` prints `migrations / attempted / aborted / secHits 
 `0x2010000 + {0x328, 0x348, 0x350, 0x330, 0x338}` at the end of the run. Software-only, so it costs no
 RTL rebuild, and it makes "did migrations collapse" answerable on every future run.
 
+## Stage 2c — the way-lock, and P1 closed properly (`ac7253d`)
+
+**Result: 7/7 PASS, exit 0, 0 asserts, `freeWays.orR` quiet.**
+`migrations=22691 attempted=42808 aborted=20283 secHits=4048 secMiss=62471` — flat against 2b's
+22,739, which is what a victim *steer* should do.
+
+### What was built
+
+`busyWays` rides the directory read; `freeWays = ~busyWays` masks every tier of the victim chooser,
+with an unmasked last-resort arm so `victimWayOH` can never go zero and turn the existing
+`PopCount === 1` assert into a false pass. It is a mask on a Mux — it never gates a `ready` and never
+blocks a request — so it cannot deadlock.
+
+`assert(freeWays.orR)` is **provable, not hopeful**: under strict 1:1 pinning a row has exactly one
+partner source, and there is one MSHR per set, so at most **one** way in any row is ever locked.
+
+Scoped to exactly one thing, per Amendment 7. The MSHR locks the single way it is working in that
+lives in a row it does not own (`lockValid/lockSet/lockWay`, driven from `!s_sinval` → the parked copy
+between the search naming it and the erase retiring it). **The migration destination is deliberately
+not locked** — it is already fenced at allocation, and that fence is what closed the dst-collision
+bug. One lock slot, one job.
+
+### P1 — closed the clean way §7 anticipated
+
+I removed the **partner-set term** from `dstSetConflict` rather than patching `request.ready` further:
+
+```scala
+// gone:
+(m.io.status.valid && m.io.status.bits.secValid && m.io.status.bits.secSet === request.bits.set)
+```
+
+That term existed so the parked way could not be refilled between the search and the erase. **The
+way-lock now protects that way directly**, and does it strictly better — one victim Mux instead of a
+whole-set fence, and with no ability to block a request at all. With the term gone, a client `Release`
+addressed to a partner set no longer stalls the head of the C channel, so **P1's deadlock has no first
+step**. That is the residual half my Stage-1 trace showed the §7 fix could not reach.
+
+The `dstSet` terms **stay**. They do a job the way-lock does not: keeping a second requester from
+allocating into a row mid-migration at all. That is what closed the dst-collision illegal-inner-D bug,
+and I am not reopening it to tidy a fence. Victim protection is now the way-lock's; occupancy is still
+the fence's.
+
+### ⚠️ `partnerBusy` cannot become an assert — TASK §7's expectation does not survive
+
+§7 says that once way-locking lands, `partnerBusy` "should become an **assert instead of a wait**".
+**It cannot, and I kept the wait.** The way-lock protects `secWay` — and `secWay` does not exist until
+the search *result*. So the window the wait covers (search issued, answer not yet in) is precisely the
+one the way-lock cannot reach: another MSHR could pick our parked way as its victim while we are
+looking, and we would then lock a way it already owns.
+
+The deadlock argument is nonetheless **easier** than before, not harder: under 1:1 pinning a
+destination is never a source, so the MSHR holding the partner row never searches and never waits on
+us; and since 2c removed the partner term from `dstSetConflict`, it can no longer be blocked at
+`request.ready` by us either. The wait has strictly fewer edges than it did. Reasoning recorded at the
+declaration in `MSHR.scala`.
+
+---
+
+## Stage 2d — C and X requests can find a parked line (`7266ea5`)
+
+**Result: 7/7 PASS, exit 0, 0 asserts. Counters byte-identical to 2c**
+(`22691 / 42808 / 20283 / 4048 / 62471`) — which is the strongest available confirmation that the step
+is inert, as designed. Amendment 3 said a regression here would mean the *arming* is wrong; nothing
+moved at all.
+
+All three channels now arm through one `armSearch()` def, so they cannot drift. `assert(new_meta.hit)`
+on the C branch is relaxed by exactly the new case — `new_meta.hit || canSearch`, i.e. a miss is
+tolerable only while a search is on its way to explain it — and the strength given up there is put
+back on the other side: a C-channel request that misses **both** its home row and its partner now
+asserts in the search-result block. MMIO flush over a displaced line stays unsupported and is upgraded
+from the `phase-3.md:156-158` comment to an assert.
+
+Both new asserts are latent until 2e, by construction: a parked line is client-free at this stage, so
+no client can be releasing one.
+
+---
+
 ## Stage 2 — dirty-capable displaced lines
 
 _(The `p` unlock. Report `p` before and after as a number.)_
@@ -705,8 +782,8 @@ All four were found by reading, not by running. Each needs a confirming observat
 
 | # | finding | closed by | outcome |
 |---|---|---|---|
-| P1 | C-channel head-of-line deadlock (pre-existing) | `prio(2)` exemption + C-head watchdog silent over a full run | 🟡 **partly built, not yet observed.** Exemption + watchdog landed. The watchdog was silent for the 646k cycles the run reached, but the run halts at case 4, so this is **not** a full-run clearance. ⚠️ **And the specified fix closes only half of P1 — see below.** |
-| P2 | C/X requests for displaced lines (pre-existing) | secondary search on C/X plan branches; flush assert | ⬜ Stage 4 work, not started |
+| P1 | C-channel head-of-line deadlock (pre-existing) | `prio(2)` exemption + C-head watchdog silent over a full run | ✅ **CLOSED in 2c**, and by removal rather than by patch. The partner-set term is gone from `dstSetConflict` because the way-lock protects the parked way directly, so a `Release` to a partner set can no longer stall the C head — **the deadlock has no first step.** Watchdog kept, silent across four full 7/7 runs |
+| P2 | C/X requests for displaced lines (pre-existing) | secondary search on C/X plan branches; flush assert | ✅ **CLOSED in 2d.** Search armed on both branches through the shared `armSearch()`; flush constraint upgraded from comment to assert. Inert until 2e by construction, and the byte-identical counters prove it |
 | P3 | `!w.displaced` never weakened, single-hop rule | `PopCount(hits) <= 1` assert quiet | ✅ assert landed and **stayed quiet** over 646k cycles including 3 passing migration cases. No `displaced` test was touched in Stage 1 — see the site-by-site table below |
 | P4 | `inPlace` survives a `repeat` reload | Stage 4 assert + GATE 4 | ⬜ Stage 4 work, not started |
 | **P5** | **NEW — SCU repatriation copy overtakes the migration copy into the same way** | one-term fix (`&& !migDeferred` on `doSecCopy`) | 🔴 **diagnosed, fix known, not applied.** Caught live by the Stage-1 shadow model. Recorded in `bug-fix-log.md`. Awaiting your call (see GATE 1) |
