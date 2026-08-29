@@ -334,6 +334,25 @@ on the very next run. It had never been benign; it had been masked, by code we w
 Practical form: when a step deletes or restructures code, walk the register and re-open every finding
 whose "benign"/"unreachable" argument mentions the code being touched. P6 spent two tasks mislabelled.
 
+### Read-in-the-write-cycle: this project's single most productive bug shape
+
+> Every one of this project's three worst bugs (002 C1, P6, P7) has been the same shape: something
+> reads a register in the same cycle something else writes it, and gets the old value. **Any new
+> signal gated on `io.directory.valid` should be checked against this by default, not discovered by
+> accident.**
+
+The three instances, for pattern-matching:
+
+| # | reader | register | who wrote it that cycle |
+|---|---|---|---|
+| 002 C1 | the search arm in the plan block | `pairValidReg` | `when (io.directory.valid)` |
+| P6 | `migFastWantW` | — (read the *partner's* `io.directory.bits` as its own) | the search-result cycle |
+| P7 | the 1f pinning assert | `pairSetReg` | `when (io.directory.valid)`, same signal gating the claim |
+
+The checkable question for any new signal: *does anything I read here get written under the same
+condition that makes me fire?* If yes, either read the live wire instead of the register (the 002 C1
+`pairLive` fix), or move the consumer to a later cycle (what 2b did to the decide point).
+
 ### "Name the condition once" is the wrong rule when scheduling and waiting are different questions
 `707445c` taught this repo to name a condition once and use the name at both sites. 003 Stage 1 found
 the one place that advice is actively wrong. The ProbeAck routing key needs **two** selectors:
