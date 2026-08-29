@@ -288,6 +288,25 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 
 ---
 
+### 🟡 P7 — the 1f pinning assert reads `pairSetReg` in the cycle it is written
+- **What:** [MSHR.scala:974](../design/craft/inclusivecache/src/MSHR.scala#L974) compares
+  `io.dstClaim.bits === pairSetReg`, but `pairSetReg`/`pairValidReg`/`pairIsSrcReg` are written under
+  `when (io.directory.valid)` (`:1150`) — and `migFastWantW`, which drives `dstClaim.valid` on the
+  **plan** path, also requires `io.directory.valid`. So at a plan-time claim the assert compares this
+  transaction's destination against the **previous** transaction's pairing.
+- **Class:** the one-cycle latch hazard from 002 C1, this time in an assert rather than in logic.
+- **Evidence:** with the 2a+P6 tree (`a148a82`) and the counter-instrumented stress binary, it fires
+  at sim-time `24119791000` in case 7. The 2b tree passes the same binary 7/7 — the only difference
+  being which cycle the claim is taken in.
+- **Not a pinning violation.** The claim value is live and correct (`migrateResp.destSet` returns
+  `dEntry.assocSet` from the AT for the deciding MSHR); only the register it is compared against is
+  stale.
+- **Status:** ✅ no longer reachable as of 003 Stage 2b — the decide point moved to the search-resume
+  cycle, where `pairSetReg` was already written at the plan cycle, so the comparison is now correct
+  and the assert is meaningful for the first time. Recorded because the *shape* will recur: any assert
+  reading a register written under `io.directory.valid` is stale on that cycle.
+- **⚠️ Also note:** `a148a82`'s earlier 7/7 was luck of the binary layout, not evidence of correctness.
+
 ## Reusable debugging facts for this repo
 
 These are not bugs. They are things that cost a build-and-run cycle to learn and would cost one again.

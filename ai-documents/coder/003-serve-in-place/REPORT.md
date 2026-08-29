@@ -515,6 +515,147 @@ about our own victim.
 
 ---
 
+## Stage 2b — P6, then move the whole decision behind the search
+
+### 2b(1) — P6 fixed ✅ (`a148a82`)
+
+One term added to `migFastWantW`, the one `migFastDecline` already carried:
+
+```scala
+!(searching && !w_ssearch) &&   // P6: that result is the PARTNER's set, not ours
+```
+
+**`migration_stress_test`: 7/7 PASS, exit 0, 0 asserts — the first fully green SBC-on run of this
+task.** Case 7 stops halting, which is the "done when" Amendment 5 set.
+
+Register row updated to **"never benign — masked by the repatriation path; exposed by 2a, fixed in
+2b"**, carrying the failing-cycle values. The rule it produced is now in `bug-fix-log.md` beside the
+other two reusable facts:
+
+> A finding marked "benign by reading" is only benign relative to the code that happens to mask it.
+> Delete that code and it becomes live. Re-open every such finding when nearby code is removed.
+
+**A5.1 / A5.2 headers corrected** in the same pass. Both said "never tested as the cause" — settled,
+P5 was. And A5.1's header claimed its code was deleted in Stage 4: **wrong.** Stage 2a deleted the
+*repatriation* copy, but `SetCopyUnit.scala:137` still exists and still serves the **migration** copy,
+which is the SCU's one remaining caller. A5.1 is live RTL, just not a corruption lead. Fixed.
+
+### 2b(2) — the assess chain moves
+
+`armEviction(m, wantMigrate, srcSet)` is one Scala `def` holding the entire chain — migrate-fast /
+migrate-defer / displaced-reclaim / normal-evict — called from **both** the plan block and the search
+resume. `m` is `new_meta` at plan time and `meta` at resume time.
+
+The eligibility test is likewise spelled once, as `migFastTerms(m)` returning `(want, decline)` — but
+the **cycle** selectors deliberately stay separate:
+
+```scala
+val migPlanCycle   = io.directory.valid && !(migrating && !w_dread) && !(searching && !w_ssearch)
+val migResumeCycle = io.directory.valid && searching && !w_ssearch && secDefer
+```
+
+That is the `probeSet` lesson applied on purpose: "which metadata" and "which cycle" are different
+questions, so naming the condition once means sharing the *predicate*, not collapsing the selectors.
+
+`secDefer` is the sibling of `migDeferred`: while it holds, **nothing** has been armed — no
+`s_release`, no `s_rprobe`, no `migrating`, no `migDeferred` — so the victim is intact and every
+option is still open. `willSearch` is hoisted above the eviction and drives both the deferral and the
+search arm, so the two cannot disagree about whether a search is happening.
+
+Third decide point wired into `migStartNow` (not folded into `migDeferWantW`), and the pairwise assert
+generalised to `PopCount(Cat(fast, resume, defer)) <= 1`. Four watchdogs added, in the shape of the
+proven `migDeferred` set: `secDeferCtr < 1000`, `!(secDefer && !s_release)`,
+`!(secDefer && a.valid)`, `!(secDefer && migDeferred)`.
+
+### ⚠️ A mistake of mine worth recording, because the failure mode is silent
+
+My first attempt at wiring the third decide point **did not apply at all.** The edit script ran three
+replacements and the third threw, so the file was never written — and I only re-applied the one that
+had thrown. What survived was a leftover hack routing `migResumeWantW` into `migDeferWantW` to borrow
+its `dstClaim` path.
+
+It **elaborated cleanly** and then failed in simulation on my own new assert:
+
+```
+two migrate decide points fired in one cycle:
+  fast=0 resume=1 defer=1 searching=1 w_ssearch=0 migDeferred=0 secDefer=1 dirHit=0
+```
+
+`defer=1` with `migDeferred=0` is impossible for the real deferred path, which is what identified it
+as an editing artifact rather than a design fault. Two things to keep from it: a partially-applied
+edit can leave *valid Scala that elaborates*, so elaboration is not evidence the edit landed; and the
+new assert caught it on the first run. Every multi-edit block now verifies itself before writing.
+
+### 2b result: **7/7 PASS, exit 0, 0 asserts** (`9363efa`)
+
+All four `secDefer` watchdogs quiet. Counters:
+
+```
+[SBC-COUNTERS] migrations=22739 attempted=42756 aborted=20170 secHits=4044 secMiss=62422
+```
+
+### 🔴 A finding that fell out of the collapse check — and it is P6's class again
+
+To get a true before/after I swapped in `a148a82`'s `MSHR.scala` (saved mine to the scratchpad first,
+restored by file copy — never `git checkout`) and ran the **same binary**. It did not complete:
+
+```
+[24119791000] Assertion failed in mshrs_0:
+  SBC: paired source migrated outside its partner set        (MSHR.scala:974, the 1f pinning assert)
+```
+
+**Same binary, same everything except which cycle the migrate decision is taken in.** 2b passes; 2a+P6
+aborts. The mechanism, confirmed by reading:
+
+```scala
+when (io.directory.valid) {            // MSHR.scala:1150
+  pairValidReg := io.pairInfo.valid
+  pairSetReg   := io.pairInfo.bits.set
+  pairIsSrcReg := io.pairInfo.bits.isSrc
+}
+```
+
+`migFastWantW` — which drives `dstClaim.valid` on the **plan** path — also requires
+`io.directory.valid`. So at a plan-time claim the 1f assert compares *this* transaction's destination
+against the **previous** transaction's `pairSetReg`. It is the same one-cycle latch hazard as 002's
+C1, this time living in the assert rather than in the logic.
+
+Two consequences worth separating:
+
+1. **The `a148a82` firing is a false positive of the assert, not a pinning violation.** The claim
+   value itself is live and correct — `migrateResp.destSet` returns `dEntry.assocSet` straight from
+   the AT for the deciding MSHR. It is the register it is compared against that is stale.
+2. **2b makes the 1f assert meaningful for the first time.** At the resume cycle `pairSetReg` was
+   already written at the plan cycle, so the comparison is against this transaction's own pairing. The
+   assert staying quiet across a full 2b run is therefore real evidence for pinning, where before it
+   was comparing stale data.
+
+And a caution about the earlier result: **`a148a82`'s 7/7 was luck of the binary layout.** Adding five
+MMIO reads to the end of the test shifted the address stream enough to make the stale comparison
+mismatch. The tree was not more correct then; the assert simply happened not to be asked the question
+in a way that exposed it.
+
+### Migration-count check — not collapsed, but the A/B is one-sided
+
+**22,739 migrations is not a collapse** — a skipped decision would show near zero. Internal
+consistency holds too: `attempted − aborted = 22,586`, within 153 of `migrations` (the in-flight tail).
+
+I could not complete the direct 2a-vs-2b A/B, because the 2a+P6 tree aborts on the stale 1f assert
+above with this binary. The nearest full-run comparison is 002's tree: **21,897 migrations / 84,691
+searches** versus 2b's **22,739 migrations / 66,466 searches** (`secHits + secMiss`). Migrations are
+slightly **up**; searches are down about 22%, which is expected — 002 counted searches on a tree that
+still repatriated, so the population is not the same. **Neither number is apples-to-apples, and I am
+not presenting them as one.** The claim I will stand behind is the weaker, sufficient one: the
+decision moved and migrations did not collapse.
+
+### Migration-count check — new permanent instrumentation
+
+Amendment 3 requires that migration counts not collapse versus 2a, and that number was not obtainable
+from a non-verbose log: the stress test is pure loads and stores and never read the MMIO counters. It
+does now — `sbc_summary()` prints `migrations / attempted / aborted / secHits / secMiss` from
+`0x2010000 + {0x328, 0x348, 0x350, 0x330, 0x338}` at the end of the run. Software-only, so it costs no
+RTL rebuild, and it makes "did migrations collapse" answerable on every future run.
+
 ## Stage 2 — dirty-capable displaced lines
 
 _(The `p` unlock. Report `p` before and after as a number.)_
