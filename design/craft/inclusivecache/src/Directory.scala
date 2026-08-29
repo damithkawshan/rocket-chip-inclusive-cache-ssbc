@@ -69,6 +69,10 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
   // SBC: this read is cache-internal machinery (migrate probe), not a demand access. It must not
   // tag-match and must not reach the observation tap. Baseline reads leave this false.
   val internalRead = Bool()
+  // SBC (003 Stage 2c): ways in this row that a live MSHR is currently working in, so victim
+  // selection can steer around them. Only ever a MASK on a Mux - it never blocks a read and never
+  // gates a ready, so it cannot deadlock. Zero for every baseline read.
+  val busyWays = UInt(params.cache.ways.W)
   // SBC Phase 3: match a DISPLACED way by tag - the mirror of the normal hit, which excludes them.
   val secondarySearch = Bool()
 }
@@ -148,6 +152,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val preferInvalid = params.dirReg(RegEnable(io.read.bits.preferInvalid, ren), ren1)
   val preferEvictable = params.dirReg(RegEnable(io.read.bits.preferEvictable, ren), ren1)
   val internalRead = params.dirReg(RegEnable(io.read.bits.internalRead, ren), ren1)
+  val busyWays = params.dirReg(RegEnable(io.read.bits.busyWays, ren), ren1)
   val secondarySearch = params.dirReg(RegEnable(io.read.bits.secondarySearch, ren), ren1)
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
@@ -174,15 +179,32 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // trip the PopCount assert below. Safe either way: a displaced entry is clean + client-free by
   // construction (the MSHR install invariant), so the MSHR drops it silently (no writeback, no probe).
   val displacedOH = ~nonDisplacedOH
-  val victimWayOH = Mux(preferInvalid && invalidWayOH.orR, PriorityEncoderOH(invalidWayOH),
-                    Mux(preferEvictable && evictableOH.orR, PriorityEncoderOH(evictableOH),
-                    Mux(lfsrVictimOH.orR, lfsrVictimOH,
-                    Mux(nonDisplacedOH.orR, PriorityEncoderOH(nonDisplacedOH),
-                    PriorityEncoderOH(displacedOH)))))
+  // SBC (003 Stage 2c): the way-lock. Until serve-in-place, one-MSHR-per-set (Scheduler.scala:214-215)
+  // meant victim selection was never contested - a second request to a busy set queued behind the
+  // owner and never got its own MSHR. That rule is keyed on homeSet, so an MSHR serving in place
+  // (homeSet = S, physically working in row D) is INVISIBLE to it and a second MSHR can legitimately
+  // allocate on D. This mask is new protection for that new situation and nothing else: steer the
+  // victim away from a way somebody is inside. It never blocks a request, so it cannot deadlock.
+  val freeWays = ~busyWays
+  val victimWayOH = Mux(preferInvalid && (invalidWayOH & freeWays).orR, PriorityEncoderOH(invalidWayOH & freeWays),
+                    Mux(preferEvictable && (evictableOH & freeWays).orR, PriorityEncoderOH(evictableOH & freeWays),
+                    Mux((lfsrVictimOH & freeWays).orR, lfsrVictimOH & freeWays,
+                    Mux((nonDisplacedOH & freeWays).orR, PriorityEncoderOH(nonDisplacedOH & freeWays),
+                    Mux((displacedOH & freeWays).orR, PriorityEncoderOH(displacedOH & freeWays),
+                    // Last resort: no free way at all. Unreachable - at most two ways in a row are
+                    // locked (the row's own MSHR, and one serving in place from its partner) - and the
+                    // assert below says so. Falling back to the unmasked pick keeps victimWayOH
+                    // one-hot rather than zero, so the PopCount assert stays a real check.
+                    PriorityEncoderOH(nonDisplacedOH | displacedOH))))))
   val victimWay = OHToUInt(victimWayOH)
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone
   assert (!ren2 || PopCount(victimWayOH) === 1.U)
+  // Provable, not hopeful: an MSHR locks at most its own way, and at most two MSHRs can be inside one
+  // row (its owner, plus one serving in place from its partner). With ways >= 4 there is always room.
+  if (params.micro.enableSetBalancing) {
+    assert (!ren2 || freeWays.orR, "SBC: every way in this row is locked by a live MSHR")
+  }
 
   val setQuash = bypass_valid && bypass.set === set
   val tagMatch = !internalRead && bypass.data.tag === tag

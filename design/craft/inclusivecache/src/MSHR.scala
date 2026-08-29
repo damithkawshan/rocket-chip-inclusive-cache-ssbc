@@ -94,6 +94,12 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val secSet   = UInt(params.setBits.W)
   // SBC Phase 3 (002 C3): this request armed a partner search. Read by the Scheduler's 1f assert.
   val secSearched = Bool()
+  // SBC (003 Stage 2c): the way-lock. The ONE way this MSHR is working in that lives in a row it does
+  // not own. One-MSHR-per-set (Scheduler.scala:214-215) already protects the home row, and that rule
+  // is keyed on homeSet - so a borrowed way is the only place a second MSHR can legitimately collide.
+  val lockValid = Bool()
+  val lockSet   = UInt(params.setBits.W)
+  val lockWay   = UInt(params.wayBits.W)
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -176,10 +182,19 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // line was not there, or was there too weak to serve.
     val secHit  = Output(Bool())
     val secMiss = Output(Bool())
-    // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait -
-    // the fence below only keeps NEW allocations out, and a set that was already owned can have its
-    // ways refilled while we look. Cannot deadlock: under 1:1 pinning a destination is never a
-    // source, so the MSHR holding the partner never waits on us.
+    // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait, and
+    // a set that was already owned can have its ways refilled while we look.
+    //
+    // SBC (003 Stage 2c): TASK §7 expected the way-lock to let this become an assert instead of a
+    // wait. It cannot. The way-lock protects `secWay`, and `secWay` does not exist until the search
+    // RESULT - so the window this wait covers (search issued, answer not yet in) is precisely the one
+    // the way-lock cannot reach. Another MSHR could pick our parked way as its victim while we are
+    // looking, and we would lock a way it already owns. Kept as a wait, deliberately.
+    //
+    // Deadlock-freedom is now easier than before, not harder: under 1:1 pinning a destination is never
+    // a source, so the MSHR holding the partner row never searches and never waits on us; and since 2c
+    // removed the partner term from dstSetConflict, it can no longer be blocked at request.ready by us
+    // either. The wait has strictly fewer edges than it did.
     val partnerBusy = Input(Bool())
   })
 
@@ -379,6 +394,14 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     io.status.bits.dstValid := migrating
   }
   io.status.bits.secValid := searching || !s_sinval
+  // SBC (003 Stage 2c): lock the parked copy in the partner row from the moment the search names it
+  // (secWay valid) until the erase retires it. That is exactly the window in which another MSHR could
+  // victimise the way and have our erase then invalidate whatever replaced it.
+  // The migration destination is deliberately NOT locked here - it is already fenced at allocation by
+  // dstSetConflict, which is what closed the dst-collision bug. One lock slot, one job.
+  io.status.bits.lockValid := !s_sinval
+  io.status.bits.lockSet   := pairSetReg
+  io.status.bits.lockWay   := secWay
   io.status.bits.secSearched := searchedReg
   io.status.bits.secSet   := pairSetReg
   io.status.bits.dstSet   := migDstSet
@@ -471,6 +494,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.preferEvictable := !doSearch  // 2b: else a clean evictable one
   io.schedule.bits.dread.bits.internalRead    := true.B     // neither is a demand access
   io.schedule.bits.dread.bits.secondarySearch := doSearch
+  // The way-lock mask is computed by the Scheduler for whichever row the read port actually takes,
+  // so this lane does not carry one.
+  io.schedule.bits.dread.bits.busyWays        := 0.U
   if (params.micro.enableSetBalancing) {
     // A set pairing with itself would make the search read the set it is already missing in.
     assert (!doSearch || pairSetReg =/= physSet, "SBC: a set is its own partner")

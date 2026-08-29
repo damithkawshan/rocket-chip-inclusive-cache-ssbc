@@ -241,10 +241,19 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 3: the partner set of a live search/repatriate is fenced the same way. Without it the
   // way holding the parked copy can be refilled between the search and the erase, and the erase then
   // destroys whatever took its place.
+  // SBC (003 Stage 2c): the partner-set term is GONE. It existed so the way holding the parked copy
+  // could not be refilled between the search and the erase - and the way-lock now protects that way
+  // directly, which is strictly better: it steers one victim Mux instead of fencing a whole set, and
+  // it cannot block a request at all. Removing it is also the clean close for bug P1: a client Release
+  // addressed to a partner set no longer stalls the head of the C channel, so the deadlock has no
+  // first step. The `prio(2)` exemption at request.ready stays as defence in depth for the dstSet term.
+  //
+  // The dstSet terms STAY. They do a different job the way-lock does not: keeping a second requester
+  // from allocating into a row mid-migration at all, which is what closed the dst-collision
+  // illegal-inner-D bug (phase-2.md). Victim protection is now the way-lock's; occupancy is still this.
   val dstSetConflict = mshrs.map { m =>
     (m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set) ||
-    (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set) ||
-    (m.io.status.valid && m.io.status.bits.secValid && m.io.status.bits.secSet === request.bits.set)
+    (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set)
   }.reduce(_ || _)
   val allocReady = alloc && !dstSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
@@ -428,6 +437,16 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // describes some OTHER MSHR's destination, so it says nothing about the allocating set. Hint only.
   directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
                                             (mshr_uses_directory_for_dread && schedule.dread.bits.preferEvictable)
+  // SBC (003 Stage 2c): the way-lock mask for the row this read is about. Purely a steer on the
+  // victim Mux inside the Directory - it never gates a ready and never blocks a request, so it cannot
+  // deadlock. Under strict 1:1 pinning a row has exactly one partner source, and there is one MSHR
+  // per set, so AT MOST ONE way in any row is locked; that is what makes `assert(freeWays.orR)`
+  // provable rather than hopeful.
+  directory.io.read.bits.busyWays := mshrs.map { m =>
+    Mux(m.io.status.valid && m.io.status.bits.lockValid &&
+        m.io.status.bits.lockSet === directory.io.read.bits.set,
+        UIntToOH(m.io.status.bits.lockWay, params.cache.ways), 0.U)
+  }.reduce(_ | _)
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
       printf(p"[SBC][SCHED] DREAD-SCHED dstSet=${schedule.dread.bits.set} mshr=${mshr_select}\n")
@@ -622,6 +641,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // must likewise keep io.allocate.bits.* out of their claim logic (see the note in MSHR.scala).
     // SBC (003): BOTH meanings. homeSet keeps the old guard (nobody owns that set); physSet is the
     // new half - a migration must not park a victim into a row somebody is currently serving from.
+    // Both meanings (Stage 1). The physSet half is what stops a migration parking a victim into a row
+    // somebody is currently serving from - silent if missed, and it becomes reachable at 2e.
     val dstOfferOwned = mshrs.map { m => m.io.status.valid &&
                                     (m.io.status.bits.physSet === coldDst ||
                                      m.io.status.bits.homeSet === coldDst) }.reduce(_ || _)
