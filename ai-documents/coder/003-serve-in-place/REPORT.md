@@ -733,6 +733,90 @@ no client can be releasing one.
 
 ---
 
+## Stage 2e — serve in place ⛔ **DOES NOT PASS** (`53f7c86`, WIP)
+
+**Status: halted in case 3 on the BankedStore shadow model.** Committed to preserve the work and the
+instrumentation, not as a working step. Two real bugs found and fixed on the way; one open.
+
+### Amendment 8's `d_ready` question — answered, and it was a real wedge
+
+You asked me to confirm `inPlace`/`physSet`/`meta` are committed no later than the cycle `d.valid` can
+first fire. They are (the plan block armed the fetch, so `w_grant` is false until the serve cycle sets
+it, and a register write lands at end of cycle) — and I added the net for it. **But the same question
+in a different direction turned out to be a genuine hang**, which the run found before I did:
+
+```
+MSHR wedged - nothing schedulable. set=5 ... prio=4 ... reload=1 schedV=0
+```
+
+**Retirement rides on an MSHR's last schedule item.** A C-channel Release clears `s_execute` and
+already has `w_pprobeack`/`w_grant` true, so its ack is often its *only* schedule item. Give that
+request a partner search whose result arms an erase, and the ack fires while `sec_ready` is false; the
+retire it was carrying is skipped, `sec_dir1` then completes and sets `s_sinval`, and by the next
+cycle the retire condition is true **with nothing left to schedule**. The MSHR sits `request_valid`
+forever.
+
+Fixed structurally rather than with a second retire path: `d_ready` gains `sec_ready`, ordering the
+Grant behind the whole secondary sequence. It also reads correctly on its own terms — do not hand data
+to a client until the stale parked copy is gone.
+
+**This is exactly the seam 2d predicted.** 2d landed the C-path search deliberately inert; 2e made it
+live, and the first thing it exposed was that the C path had no retire route once it was.
+
+### Three things 2e required that Amendment 8 did not list
+
+1. **The displaced-reclaim path must probe before dropping.** `armEviction`'s reclaim branch drops a
+   parked line silently on the stated grounds that it is "clean + client-free by construction". Serving
+   in place makes that half false — a parked line is now client-held, and the way-lock covers it only
+   while the serving MSHR is alive. After that MSHR retires, the row's own MSHR can reclaim the way,
+   and dropping it silently leaves the L1 holding a line the L2 has forgotten. **Inclusion violation.**
+   Now probed, using `lineHome` and the `(probeSet, probeTag)` routing Stage 1 built for exactly this.
+2. **`a.valid` gains `w_rprobeackfirst`.** Every path that already worked held the Acquire behind the
+   eviction probe *transitively* — a normal eviction arms `s_release := false`, the Release waits on
+   `w_rprobeackfirst`, and `a.valid` waits on `s_release`. The reclaim path has no Release, so that
+   chain is absent and the refill could overwrite the way while the client still held it. The term is
+   behaviour-preserving on every existing path.
+3. **The way-lock needed a second half.** 2c protected a *borrowed* way from the row's owner. Nothing
+   protected the **owner's chosen victim** from the borrower — so the secondary search could land on a
+   way another MSHR had already committed to evicting. `lockValid` now covers both cases (one slot
+   still suffices: a serving MSHR has no victim), and `secHits` is masked with `freeWays`.
+
+   ⚠️ **This did not fix the open bug** — the failure is byte-identical with and without it. I am
+   keeping it because it is correct on its own terms, but it is a fix without a demonstrated failure,
+   and it should be treated with the suspicion that deserves.
+
+### 🔴 The open failure
+
+```
+SBC shadow: sourceC touched the wrong row: set=5 way=3
+  stored=0x44000d (tag 0x88001 @ home 5)   believed=0x4008bd (tag 0x80057 @ home 5)
+  lastWriter=sourceD_w  rKind=0 wKind=0  writtenAt=497472 now=497749  rSrc=0 wSrc=0
+```
+
+**The same MSHR (`rSrc = wSrc = 0`)** wrote tag `0x88001` into `(5,3)` via a Put, and 277 cycles later
+read `(5,3)` out for a Release believing it holds `0x80057`. So **the directory entry and the data
+array disagree for one way**: the directory told this MSHR that way 3 holds `0x80057`, while the data
+there is `0x88001` and no writer ever put `0x80057`'s data in it.
+
+Four hypotheses eliminated, each by evidence rather than by argument:
+
+| # | hypothesis | killed by |
+|---|---|---|
+| 1 | the ack overtakes the search (`!searching` on `d_ready`) | byte-identical failure, same cycle |
+| 2 | searcher vs. the row's owner racing on one way | the way-lock's second half changed nothing |
+| 3 | two MSHRs in one row (the situation 2c exists for) | `rSrc = wSrc = 0` — it is **one** MSHR |
+| 4 | a stale `inPlace` after retire | `inPlace` is cleared before any Release can be armed |
+
+The live lead is that **a directory write went missing or went to the wrong way**: something updated
+the directory at `(5,3)` to `0x80057` without any port writing that line's data, or the Put's own
+writeback never landed. `mig_dir1` is the one directory-only write in the design, but it requires
+`w_copy`, and the last data writer was `sourceD_w`, not `copyw`.
+
+**I stopped here rather than try a fifth hypothesis.** The instrumentation is committed and now carries
+the requester identity on every BankedStore port, which is what the next attempt should start from.
+
+---
+
 ## Stage 2 — dirty-capable displaced lines
 
 _(The `p` unlock. Report `p` before and after as a number.)_
