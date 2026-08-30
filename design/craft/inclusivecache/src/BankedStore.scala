@@ -43,7 +43,7 @@ abstract class BankedStoreAddress(val inner: Boolean, params: InclusiveCachePara
   // the P5 firing readable.
   val shadowKind = if (params.micro.sbcShadow) Some(UInt(2.W)) else None
   // SBC (003 Stage 2e) diagnostic: which MSHR this port is acting for, where the port knows it.
-  val shadowSrc  = if (params.micro.sbcShadow) Some(UInt(4.W)) else None
+  val shadowSrc  = if (params.micro.sbcShadow) Some(UInt(8.W)) else None
 }
 
 trait BankedStoreRW
@@ -98,7 +98,7 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
     // the gap, which is the difference between a lead and a diagnosis.
     val shWho   = Reg(Vec(shEntries, UInt(2.W)))   // 0=sinkC 1=sinkD 2=sourceD_w 3=copy_w
     val shKind  = Reg(Vec(shEntries, UInt(2.W)))   // the writer's SCU job kind (0 if not the SCU)
-    val shSrc   = Reg(Vec(shEntries, UInt(4.W)))   // the writer's MSHR id, where the port knows it
+    val shSrc   = Reg(Vec(shEntries, UInt(8.W)))   // the writer's per-transaction id
     val shTime  = Reg(Vec(shEntries, UInt(32.W)))
     val shClock = RegInit(0.U(32.W)); shClock := shClock + 1.U
     def shIdx(b: BankedStoreAddress) = Cat(b.way, b.set)
@@ -118,7 +118,8 @@ class BankedStore(params: InclusiveCacheParameters) extends Module
         // WHICH row and which two addresses disagreed, and the trace is ~300MB.
         assert (!shValid(shIdx(b.bits)) || shAddr(shIdx(b.bits)) === b.bits.shadowAddr.get,
                 cf"SBC shadow: ${who} touched the wrong row: set=${b.bits.set}%d way=${b.bits.way}%d " +
-                cf"stored=0x${shAddr(shIdx(b.bits))}%x believed=0x${b.bits.shadowAddr.get}%x " +
+                cf"stored=(tag=${shAddr(shIdx(b.bits)) >> params.setBits}%x set=${shAddr(shIdx(b.bits))(params.setBits-1,0)}%d) " +
+                cf"believed=(tag=${b.bits.shadowAddr.get >> params.setBits}%x set=${b.bits.shadowAddr.get(params.setBits-1,0)}%d) " +
                 cf"lastWriter=${shWho(shIdx(b.bits))}%d(0=sinkC,1=sinkD,2=sourceDw,3=copyw) " +
                 cf"wKind=${shKind(shIdx(b.bits))}%d rKind=${b.bits.shadowKind.get}%d(0=other,1=mig,2=sec) " +
                 cf"writtenAt=${shTime(shIdx(b.bits))}%d now=${shClock}%d " +

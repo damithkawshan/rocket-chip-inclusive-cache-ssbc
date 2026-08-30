@@ -33,6 +33,7 @@ class SourceDRequest(params: InclusiveCacheParameters) extends FullRequest(param
   // SBC (003): ADDITIVE, unlike the other bundles - `set` is inherited from FullRequest and stays the
   // ADDRESS set, but SourceD has no address consumer, so every internal use is this row instead.
   val physSet = UInt(params.setBits.W)
+  val shadowSrc = if (params.micro.sbcShadow) Some(UInt(8.W)) else None
 }
 
 class SourceDHazard(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -125,7 +126,7 @@ class SourceD(params: InclusiveCacheParameters) extends Module
   io.bs_radr.bits.mask := s1_mask
   io.bs_radr.bits.shadowAddr.foreach { _ := Cat(s1_req.tag, s1_req.set) }
   io.bs_radr.bits.shadowKind.foreach { _ := 0.U }
-  io.bs_radr.bits.shadowSrc.foreach { _ := s1_req.sink }
+  io.bs_radr.bits.shadowSrc.foreach { _ := s1_req.shadowSrc.get }
 
   params.ccover(io.bs_radr.valid && !io.bs_radr.ready, "SOURCED_1_READ_STALL", "Data readout stalled")
 
@@ -293,7 +294,7 @@ class SourceD(params: InclusiveCacheParameters) extends Module
   io.bs_wadr.bits.mask := Cat(s4_pdata.mask.asBools.grouped(writeBytes).map(_.reduce(_||_)).toList.reverse)
   io.bs_wadr.bits.shadowAddr.foreach { _ := Cat(s4_req.tag, s4_req.set) }
   io.bs_wadr.bits.shadowKind.foreach { _ := 0.U }
-  io.bs_wadr.bits.shadowSrc.foreach { _ := s4_req.sink }
+  io.bs_wadr.bits.shadowSrc.foreach { _ := s4_req.shadowSrc.get }
   io.bs_wdat.data := atomics.io.data_out
   assert (!(s4_full && s4_need_pb && s4_pdata.corrupt), "Data poisoning unsupported")
 

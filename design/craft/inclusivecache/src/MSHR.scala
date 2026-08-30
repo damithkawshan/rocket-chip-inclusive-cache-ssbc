@@ -97,6 +97,11 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   // SBC (003 Stage 2c): the way-lock. The ONE way this MSHR is working in that lives in a row it does
   // not own. One-MSHR-per-set (Scheduler.scala:214-215) already protects the home row, and that rule
   // is keyed on homeSet - so a borrowed way is the only place a second MSHR can legitimately collide.
+  // SBC (003 Stage 9): a per-transaction id, sim-only in spirit. `mshr_select` was NOT one - two
+  // events on the same slot are two different transactions, and c.bits.source is forced to 0 for a
+  // ProbeAckData, so it reads back as a false "MSHR 0". This wraps every 256 allocates, which is far
+  // longer than any window the shadow model reports over.
+  val txnId = UInt(8.W)
   val lockValid = Bool()
   val lockSet   = UInt(params.setBits.W)
   val lockWay   = UInt(params.wayBits.W)
@@ -182,6 +187,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // line was not there, or was there too weak to serve.
     val secHit  = Output(Bool())
     val secMiss = Output(Bool())
+    // SBC (003 Stage 9a): of the hits, how many could not be served as-is and had to acquire
+    // permission over the parked line (BRANCH + needT). A subset of secHit, never a decline of it.
+    val secPerm = Output(Bool())
     // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait, and
     // a set that was already owned can have its ways refilled while we look.
     //
@@ -271,6 +279,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // directory result, so it describes OUR set exactly when io.directory.valid.
   val pairLive          = io.directory.valid && io.pairInfo.valid && io.pairInfo.bits.isSrc
   val searchedReg       = RegInit(false.B)   // C3: did this request ask its partner?
+  val txnCtr            = RegInit(0.U(8.W))  // 003 Stage 9: bumped at every allocate (see MSHRStatus)
 
   // SBC Phase 3 (search): a demand miss to a paired source asks its partner whether the line is
   // parked there before going to memory. 003 Stage 2a deleted the repatriate-home half (it copied the
@@ -314,8 +323,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 1: migration counter pulses (driven false here; asserted in the setup/retire logic).
   val secHit  = WireInit(false.B)
   val secMiss = WireInit(false.B)
+  val secPerm = WireInit(false.B)
   io.secHit  := secHit
   io.secMiss := secMiss
+  io.secPerm := secPerm
 
   val migAttempt = WireInit(false.B)
   val migAbort   = WireInit(false.B)
@@ -424,6 +435,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.bits.lockSet   := Mux(lockBorrowed, pairSetReg, physSet)
   io.status.bits.lockWay   := Mux(lockBorrowed, secWay,     meta.way)
   io.status.bits.secSearched := searchedReg
+  io.status.bits.txnId       := txnCtr
   io.status.bits.secSet   := pairSetReg
   io.status.bits.dstSet   := migDstSet
   io.status.bits.dstWay   := migDstWay
@@ -696,11 +708,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   displacedEntry.homeShadow.foreach { _ := lineHome }
   assert(!mig_dir1 || (!meta.dirty && (meta.clients & ~probes_toN) === 0.U), "migrate source must be clean+client-free")
   assert(!mig_dir1 || displacedEntry.state =/= TRUNK, "SBC: displaced entry must not be TRUNK (TRUNK implies a client, displaced has none)")
-  // SBC: a displaced victim must never be RELEASED — its address maps to a different set than the one
-  // it sits in, so a Release would carry the wrong address. It is dropped silently instead (see the
-  // displaced-reclaim branch in the eviction logic). The directory writeback IS allowed: reclaim
-  // overwrites the displaced way with a fresh native line (final_meta_writeback.displaced = false).
-  assert(!(meta_valid && meta.displaced && !s_release), "SBC: release of a displaced victim (wrong address); displaced victims must be dropped silently")
+  // SBC (003 Stage 9b, net 2): a displaced victim IS released now - what must never happen is forming
+  // its address from the row it sits in. `physSet` is where the bytes are; `homeSet` is where they
+  // belong, and for a parked line those differ. This inverts the Phase-2 assert, which forbade the
+  // Release itself because the address could not then be reconstructed. It can now: AT[row].assocSet.
+  assert(!(io.schedule.bits.c.valid && !s_release && meta.displaced) ||
+         io.schedule.bits.c.bits.homeSet =/= io.schedule.bits.c.bits.physSet,
+         "SBC: Release of a displaced line formed its address from physSet, not its home set")
 
   // Just because a client says BtoT, by the time we process the request he may be N.
   // Therefore, we must consult our own meta-data state to confirm he owns the line still.
@@ -734,6 +748,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.c.bits.tag     := meta.tag
   // SBC (003): the two meanings in one request - read the bytes from our row, send them to the
   // address the line actually belongs to.
+  io.schedule.bits.c.bits.shadowSrc.foreach { _ := txnCtr }
   io.schedule.bits.c.bits.physSet := physSet
   io.schedule.bits.c.bits.homeSet := lineHome
   io.schedule.bits.c.bits.way     := meta.way
@@ -746,6 +761,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                                          NtoT -> NtoT)))
   io.schedule.bits.d.bits.sink    := 0.U
   // SBC (003): SourceD has no address consumer - every use of `set` inside it is a BankedStore row.
+  io.schedule.bits.d.bits.shadowSrc.foreach { _ := txnCtr }
   io.schedule.bits.d.bits.physSet := physSet
   io.schedule.bits.d.bits.way     := meta.way
   io.schedule.bits.d.bits.bad     := bad_grant
@@ -986,10 +1002,17 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC (003 Stage 2e): will this search result be SERVED from the partner row? Hoisted here because
   // it has to suppress two things at once - the deferred eviction (serving needs no home way at all,
   // which is the whole reason the decision was deferred) and the resume-time destination claim.
-  //   * a permission-reject (parked copy too weak for a needT) still falls through to the fetch
-  //   * an MMIO flush never serves - it stays an unsupported constraint, asserted below
+  //
+  // SBC (003 Stage 9a): this used to carry `(state === TIP || !req_needT)`, and that term was a bug,
+  // not a filter. Serving a writer makes the entry TRUNK - so the NEXT needT access to the same line
+  // was guaranteed to fail this test and take the erase branch, which wiped a client-held entry with
+  // no probe, no writeback and no client accounting. The serve produced exactly the state its own
+  // re-entry path refused, so the parked pool drained by construction.
+  //
+  // The rule is now the one the design already uses for a home hit: a secondary hit IS a hit, just in
+  // the partner's row. Permission is handled the way a home hit handles it - probe, or acquire perm -
+  // never by throwing the line away. Only an MMIO flush still declines, and that stays unsupported.
   val willServe = params.micro.enableSetBalancing.B && io.directory.bits.secondaryHit &&
-                  (io.directory.bits.secondaryEntry.state === TIP || !req_needT) &&
                   !request.control
   migResumeWantW := migResumeCycle && resumeWant && !willServe
 
@@ -1040,24 +1063,28 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         printf(p"[SBC] MIG-DEFER srcSet=${srcSet} srcWay=${m.way} clients=${m.clients}\n")
       }
     } .elsewhen (m.displaced) {
-      // SBC Phase 2: reclaim a displaced victim (the last-resort directory victim). Still no Release -
-      // the line is clean, and enabling the writeback is Stage 3's job - so the demand refill simply
-      // overwrites this way.
+      // SBC (003 Stage 9b): a displaced victim is now evicted like any other line - PROBED if a client
+      // holds it, and RELEASED at its own home set. Both halves of the old
+      // `displaced => clean + client-free` invariant are gone, and they were retired deliberately:
+      // serving a parked line to a writer is what makes it client-held and then dirty, so 9a and 9b
+      // are the same change seen from two ends.
       //
-      // SBC (003 Stage 2e) - NEW AND LOAD-BEARING. "Clean AND client-free by construction" is only
-      // half true now: serving in place leaves a parked line CLIENT-HELD, and the way-lock protects it
-      // only while the serving MSHR is alive. Once that MSHR retires, the partner row's own MSHR can
-      // pick this way as its victim. Dropping it silently would leave the L1 holding a line the L2 has
-      // forgotten - an inclusion violation, and a later voluntary Release of it would find nothing.
-      // So probe it first. The probe is addressed to `lineHome` (Stage 1's split) and its ProbeAck
-      // routes back on (probeSet, probeTag), both of which exist for exactly this.
+      // The Release carries `lineHome`, not `physSet` - Stage 1 split SourceCRequest into exactly
+      // these two fields for this moment, and the assert below polices it. Dropping the line silently
+      // (what Phase 2 did) would now be an inclusion violation and, once dirty, straightforward data
+      // loss.
+      //
+      // This is no longer distinguishable from a normal eviction, so it exists only to keep the debug
+      // line and to document why the branch was once different.
+      s_release    := false.B
+      w_releaseack := false.B
       when ((!params.firstLevel).B && m.clients.orR) {
         s_rprobe         := false.B
         w_rprobeackfirst := false.B
         w_rprobeacklast  := false.B
       }
       if (params.micro.sbcDebug) {
-        printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way} clients=${m.clients}\n")
+        printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way} clients=${m.clients} dirty=${m.dirty}\n")
       }
     } .otherwise {
       if (params.micro.sbcDebug) {
@@ -1159,7 +1186,16 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!migStartNow || migStartDst =/= physSet, "SBC: migration destination equals its own source set")
     // SBC Phase 3 (1f): a paired source may only ever spill into its own partner.
     if (params.micro.sbcForceDstSet < 0) {
-      assert (!io.dstClaim.valid || !pairValidReg || !pairIsSrcReg || io.dstClaim.bits === pairSetReg,
+      // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
+      // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, and the
+      // fast-path claim is gated on that same signal - so comparing against the register on a
+      // plan-time claim tested this transaction's destination against the PREVIOUS transaction's
+      // partner, and raised a false alarm. No data was ever wrong; the claim itself
+      // (`migOffer.bits`, sourced live from the AT) was always correct.
+      val pairValidNow = Mux(io.directory.valid, io.pairInfo.valid,       pairValidReg)
+      val pairIsSrcNow = Mux(io.directory.valid, io.pairInfo.bits.isSrc,  pairIsSrcReg)
+      val pairSetNow   = Mux(io.directory.valid, io.pairInfo.bits.set,    pairSetReg)
+      assert (!io.dstClaim.valid || !pairValidNow || !pairIsSrcNow || io.dstClaim.bits === pairSetNow,
               "SBC: paired source migrated outside its partner set")
     }
     val migDeferCtr = RegInit(0.U(16.W))
@@ -1267,6 +1303,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // SBC Phase 2: latch migrate advice for this set (suppressed on repeat allocations).
     migAdviceValidReg := io.migAdvice && !io.allocate.bits.repeat
     searchedReg       := false.B
+    txnCtr            := txnCtr + 1.U
   }
 
   // SBC Phase 3 (002 C1): latch the pairing on the directory result, and hold otherwise. A reload
@@ -1309,7 +1346,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       secWay   := io.directory.bits.secondaryWay
       when (willServe) {
         // ---- SERVE IN PLACE. Nothing moves; only the row we address changes. ----
+        val secEntry  = io.directory.bits.secondaryEntry
+        // The one case a parked line genuinely cannot satisfy as-is: we need TRUNK and it is only
+        // BRANCH. That is a PERMISSION shortfall, not a reason to discard the data - so serve the line
+        // and acquire permission over it, exactly as the plan block does for a home hit in BRANCH
+        // (the `new_meta.state === BRANCH && new_needT` arm). The fetch the plan block already armed
+        // becomes an AcquirePerm on its own, because a.bits.block keys off request.size/opcode.
+        val secNeedPerm = secEntry.state === BRANCH && req_needT
         secHit  := true.B
+        secPerm := secNeedPerm
         inPlace := true.B
         // Re-point meta at the parked entry. Everything downstream - the probe client mask, the
         // Grant's way, final_meta_writeback - reads meta, so this one assignment is what makes the
@@ -1317,15 +1362,22 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         meta.viewAsSupertype(chiselTypeOf(io.directory.bits.secondaryEntry)) := io.directory.bits.secondaryEntry
         meta.way := io.directory.bits.secondaryWay
         meta.hit := true.B
+        // `gotT` only matters when meta.hit is FALSE (see req_promoteT and final_meta_writeback.state,
+        // both of which select on meta.hit). We set meta.hit, so the meta-based path is taken and this
+        // is belt-and-braces - but it must still be right, because "TIP means we own it" is encoded in
+        // more than one place. Checked, not assumed.
         gotT     := secTip
         // s_sinval is deliberately NOT cleared. Keeping the parked copy IS serving in place; there is
         // no separate "keep" step, only the absence of the erase.
-        // Cancel the memory fetch the plan block armed - the line is already in the cache.
-        s_acquire    := true.B
-        w_grantfirst := true.B
-        w_grantlast  := true.B
-        w_grant      := true.B
-        s_grantack   := true.B
+        // Cancel the memory fetch the plan block armed - unless we still need permission over the line
+        // we just found, in which case the fetch stays and becomes the AcquirePerm.
+        when (!secNeedPerm) {
+          s_acquire    := true.B
+          w_grantfirst := true.B
+          w_grantlast  := true.B
+          w_grant      := true.B
+          s_grantack   := true.B
+        }
         // NEW: the parked line may be client-held now. No such logic existed before, because the old
         // `displaced => client-free` invariant guaranteed it could not be. Mirrors the plan block's
         // permission-probe arm. The probe is addressed to (request.tag, request.set) - the line's real
@@ -1341,8 +1393,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         // `!request.prio(2)`: a Release is a client HANDING BACK the line. Probing it back would ask a
         // client to relinquish something it is in the act of relinquishing.
         when ((!params.firstLevel).B && !request.prio(2) &&
-              (req_needT || io.directory.bits.secondaryEntry.state === TRUNK) &&
-              (io.directory.bits.secondaryEntry.clients & ~secSkip) =/= 0.U) {
+              (req_needT || secEntry.state === TRUNK) &&
+              (secEntry.clients & ~secSkip) =/= 0.U) {
           s_pprobe         := false.B
           w_pprobeackfirst := false.B
           w_pprobeacklast  := false.B
@@ -1350,17 +1402,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           s_writeback      := false.B
         }
         if (params.micro.sbcDebug) {
-          printf(p"[SBC] SEC-SERVE set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${io.directory.bits.secondaryEntry.state} clients=${io.directory.bits.secondaryEntry.clients} needT=${req_needT}\n")
+          printf(p"[SBC] SEC-SERVE set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${secEntry.state} clients=${secEntry.clients} needT=${req_needT} needPerm=${secNeedPerm}\n")
         }
       } .otherwise {
-        // Found, but too weak to serve (we need T and the parked copy is not TIP), or a flush. Erase
-        // the parked copy and fall through to the fetch the plan block armed - leaving a second copy
-        // alive would be a stale twin.
-        s_sinval := false.B
-        secMiss  := true.B
-        if (params.micro.sbcDebug) {
-          printf(p"[SBC] SEC-WEAK set=${request.set} partner=${pairSetReg} state=${io.directory.bits.secondaryEntry.state}\n")
-        }
+        // Only an MMIO flush reaches here, and it is asserted unsupported above. There is no longer a
+        // "found but too weak" branch: erasing a located line is what broke 2e.
+        secMiss := true.B
       }
     } .otherwise {
       secMiss := true.B

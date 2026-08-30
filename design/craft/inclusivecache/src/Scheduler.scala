@@ -527,6 +527,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkD.io.physSet := VecInit(mshrs.map(_.io.status.bits.physSet))(sinkD.io.source)
   sinkD.io.homeSet := VecInit(mshrs.map(_.io.status.bits.homeSet))(sinkD.io.source)
   sinkD.io.homeTag := VecInit(mshrs.map(_.io.status.bits.tag))(sinkD.io.source)
+  sinkD.io.txnId   := VecInit(mshrs.map(_.io.status.bits.txnId))(sinkD.io.source)
 
   // Beat buffer connections between components
   sinkA.io.pb_pop <> sourceD.io.pb_pop
@@ -664,6 +665,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // directory is single-ported) - the same property destQuery relies on.
     sbu.io.secHit  := mshrs.map(_.io.secHit).reduce(_ || _)
     sbu.io.secMiss := mshrs.map(_.io.secMiss).reduce(_ || _)
+    sbu.io.secPerm := mshrs.map(_.io.secPerm).reduce(_ || _)
     sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
     sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.homeSet))
 

@@ -123,6 +123,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_SecHits", "Secondary hits (0 in Phase 0)", volatile=true))
     val sbcSecMissField = RegField.r(32, io.sbc_stats.secMiss,
       RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
+    val sbcSecPermField = RegField.r(32, io.sbc_stats.secPerm,
+      RegFieldDesc("SBC_SecPerm", "Secondary hits that had to acquire permission (subset of SecHits)", volatile=true))
 
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
     val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
@@ -155,7 +157,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x340 -> RegFieldGroup("SBC_Ctrl", Some("Set-Balancing Cache control/counters"), Seq(sbcBalanceSetField)),
       0x348 -> Seq(sbcAttemptedField),
       0x350 -> Seq(sbcAbortedField),
-      0x358 -> RegFieldGroup("SBC_Reset", Some("Zero all SBC observation state"), Seq(sbcResetField))
+      0x358 -> RegFieldGroup("SBC_Reset", Some("Zero all SBC observation state"), Seq(sbcResetField)),
+      0x360 -> Seq(sbcSecPermField)
     )
   }
 }

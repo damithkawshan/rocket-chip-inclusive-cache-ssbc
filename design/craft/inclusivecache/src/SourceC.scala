@@ -33,6 +33,7 @@ class SourceCRequest(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val homeSet = UInt(params.setBits.W)   // ADDRESS: where the block belongs in memory
   val way    = UInt(params.wayBits.W)
   val dirty  = Bool()
+  val shadowSrc = if (params.micro.sbcShadow) Some(UInt(8.W)) else None
 }
 
 class SourceC(params: InclusiveCacheParameters) extends Module
@@ -72,10 +73,11 @@ class SourceC(params: InclusiveCacheParameters) extends Module
   val req  = Mux(!busy, io.req.bits, RegEnable(io.req.bits, !busy && io.req.valid))
   val want_data = busy || (io.req.valid && room && io.req.bits.dirty)
 
-  // SBC (003 Stage 1): scaffold. Stage 2 (Release a displaced victim at its home set) is what
-  // legitimately breaks this, and removes it.
-  assert (!io.req.valid || io.req.bits.physSet === io.req.bits.homeSet,
-          "SBC(003): SourceC request row diverged from its address set")
+  // SBC (003): the Stage-1 scaffold `physSet === homeSet` is RETIRED at Stage 9b, which is exactly
+  // what it was scaffolding: a displaced victim is now Released at its own home set while its bytes
+  // are read from the row it sits in, so the two legitimately differ here. Replaced by the net in
+  // MSHR.scala, which asserts the stronger thing - that a displaced Release never forms its address
+  // from physSet.
   io.req.ready := !busy && room
 
   io.evict_req.physSet := req.physSet
@@ -89,7 +91,7 @@ class SourceC(params: InclusiveCacheParameters) extends Module
   io.bs_adr.bits.mask := ~0.U(params.outerMaskBits.W)
   io.bs_adr.bits.shadowAddr.foreach { _ := Cat(req.tag, req.homeSet) }
   io.bs_adr.bits.shadowKind.foreach { _ := 0.U }
-  io.bs_adr.bits.shadowSrc.foreach { _ := req.source }
+  io.bs_adr.bits.shadowSrc.foreach { _ := req.shadowSrc.get }
 
   params.ccover(io.req.valid && io.req.bits.dirty && room && !io.evict_safe, "SOURCEC_HAZARD", "Prevented Eviction data hazard with backpressure")
   params.ccover(io.bs_adr.valid && !io.bs_adr.ready, "SOURCEC_SRAM_STALL", "Data SRAM busy")

@@ -131,6 +131,16 @@ class Directory(params: InclusiveCacheParameters) extends Module
 
   require (codeBits <= 256)
 
+  // SBC (003 Stage 9b, net 1): THE net for this whole class. Writing an entry to INVALID while its
+  // client mask is non-zero is an inclusion violation by definition - the L2 forgets a line a client
+  // still holds - and it is what the deleted "erase" branch did. Catching it at the directory port
+  // catches every producer at once, on the cycle it happens, instead of ~277 cycles downstream as a
+  // shadow-model mismatch whose cause is several transactions back.
+  if (params.micro.enableSetBalancing) {
+    assert (!io.write.valid || io.write.bits.data.state =/= INVALID || io.write.bits.data.clients === 0.U,
+            "SBC: directory entry invalidated while a client still holds it (inclusion violation)")
+  }
+
   write.ready := !io.read.valid
   when (!ren && wen) {
     cc_dir.write(
@@ -176,8 +186,11 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
   // SBC: displaced-reclaim backstop. The LFSR tier above is always one-hot, so these last two Mux
   // arms are unreachable today; they stay as the guarantee that victimWayOH can never be zero and
-  // trip the PopCount assert below. Safe either way: a displaced entry is clean + client-free by
-  // construction (the MSHR install invariant), so the MSHR drops it silently (no writeback, no probe).
+  // trip the PopCount assert below.
+  // SBC (003 Stage 9b): this used to add "safe either way: a displaced entry is clean + client-free by
+  // construction, so the MSHR drops it silently". BOTH HALVES ARE NOW FALSE. A displaced victim is
+  // probed and released like any other line (armEviction's displaced branch); picking one here is
+  // ordinary, not free.
   val displacedOH = ~nonDisplacedOH
   // SBC (003 Stage 2c): the way-lock. Until serve-in-place, one-MSHR-per-set (Scheduler.scala:214-215)
   // meant victim selection was never contested - a second request to a busy set queued behind the
@@ -245,16 +258,14 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: two parked copies of one line is the stale-twin hole - the search would serve a copy
   // another path can still write. Mux1H(secHits) needs one-hot anyway.
   assert (!ren2 || PopCount(secHits) <= 1.U, "SBC: two displaced copies of the same line in one set")
-  // SBC: `displaced => clean` is load-bearing - a parked line sits at the wrong physical set, so it
-  // cannot be written back. Checked on read, not only at install.
-  // SBC (003 Stage 2e): the CLIENT-FREE half is dropped. A line served in place stays displaced while
-  // a client holds it - that is the point of serving it. Its address is still reconstructible
-  // (AT[row].assocSet), so probes are fine; it is the writeback that still needs the clean half, and
-  // Stage 3 is what removes that one. This is a change to what we ASSERT about displaced lines, not
-  // to how we DETECT them - every `!w.displaced` test in TASK section 4b is untouched.
-  val displacedOwedOH = Cat(ways.map(w => w.dirty).reverse)
-  assert (!ren2 || (displacedValidOH & displacedOwedOH) === 0.U,
-          "SBC: displaced way is dirty (its address cannot be reconstructed for a writeback)")
+  // SBC (003 Stage 9b): `displaced => clean + client-free` is fully retired. Both halves were
+  // consequences of parked lines being unreachable, and serving in place is precisely the removal of
+  // that: a served line is client-held, and a served WRITER makes it dirty. Neither is now a defect.
+  // What replaced the invariant is address recovery - AT[row].assocSet gives the home set, so a parked
+  // line can be probed at its real address and released to its real address.
+  // This is a change to what we ASSERT about displaced lines, NOT to how we DETECT them: every
+  // `!w.displaced` test in TASK section 4b is untouched, and the PopCount(hits) net above still holds
+  // the line that makes them necessary.
 
   io.result.valid := ren2
   io.result.bits.viewAsSupertype(chiselTypeOf(bypass.data)) := Mux(hit, Mux1H(hits, ways), Mux(setQuash && (tagMatch || wayMatch), bypass.data, Mux1H(victimWayOH, ways)))

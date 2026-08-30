@@ -40,6 +40,9 @@ class SBCStats(setBits: Int, satBits: Int) extends Bundle
   val aborted      = UInt(32.W)            // migrations aborted (ineligible src/dst)
   val secHits      = UInt(32.W)
   val secMiss      = UInt(32.W)
+  // SBC (003 Stage 9a): of the secondary HITS, how many had to acquire permission over the parked
+  // line instead of being served outright. A subset of secHits, not a decline of it.
+  val secPerm      = UInt(32.W)
 }
 
 class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
@@ -88,6 +91,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // the term the whole design turns on.
     val secHit  = Input(Bool())
     val secMiss = Input(Bool())
+    val secPerm = Input(Bool())
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
@@ -176,8 +180,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   when (io.migAbort)   { nAbort   := nAbort + 1.U }
   val nSecHit  = RegInit(0.U(32.W))
   val nSecMiss = RegInit(0.U(32.W))
+  val nSecPerm = RegInit(0.U(32.W))
   when (io.secHit)  { nSecHit  := nSecHit + 1.U }
   when (io.secMiss) { nSecMiss := nSecMiss + 1.U }
+  when (io.secPerm) { nSecPerm := nSecPerm + 1.U }
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
   val migrateCommit = io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE
@@ -218,6 +224,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     nCommit  := 0.U
     nSecHit  := 0.U
     nSecMiss := 0.U
+    nSecPerm := 0.U
   }
 
   // Read-only stats for MMIO.
@@ -231,6 +238,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.stats.aborted      := nAbort
   io.stats.secHits      := nSecHit
   io.stats.secMiss      := nSecMiss
+  io.stats.secPerm      := nSecPerm
 
   // ---- sim-only debug printfs (Scala-gated; nothing elaborated when sbcDebug=false) ----
   if (params.micro.sbcDebug) {

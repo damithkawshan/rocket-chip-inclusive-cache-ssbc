@@ -49,14 +49,15 @@ static uint64_t sink;
 #define SBC_SECMISS    (L2_CTRL_BASE + 0x338)
 #define SBC_ATTEMPTED  (L2_CTRL_BASE + 0x348)
 #define SBC_ABORTED    (L2_CTRL_BASE + 0x350)
+#define SBC_SECPERM    (L2_CTRL_BASE + 0x360)
 static inline uint64_t mmio_rd(uintptr_t a) {
     volatile uint64_t *p = (volatile uint64_t *)a; return *p;
 }
 static void sbc_summary(void) {
-    printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu\n",
+    printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu secPerm=%lu\n",
            (unsigned long)mmio_rd(SBC_MIGRATIONS), (unsigned long)mmio_rd(SBC_ATTEMPTED),
            (unsigned long)mmio_rd(SBC_ABORTED),    (unsigned long)mmio_rd(SBC_SECHITS),
-           (unsigned long)mmio_rd(SBC_SECMISS));
+           (unsigned long)mmio_rd(SBC_SECMISS),    (unsigned long)mmio_rd(SBC_SECPERM));
 }
 
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.
