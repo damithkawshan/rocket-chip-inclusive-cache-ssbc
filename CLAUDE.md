@@ -218,10 +218,21 @@ our L2 already handles voluntary Release correctly ([MSHR.scala:401-404](design/
 **Try the flag before building the destination probe.**
 
 ⛔ **Do not build dirty-destination eviction** (the other 53%). It pays a real memory write to avoid a
-free one, and evicts a well-behaved line to preserve one we were discarding. Migrating *dirty source*
-lines is Phase 4 — it breaks `displaced ⇒ clean` and needs a directory format change.
+free one, and evicts a well-behaved line to preserve one we were discarding.
 
-### ⚠️ MEASURED 2026-08-25: SBC is data-safe but **+42% cycles / 9.29x DRAM traffic**
+⚠️ **CORRECTED 2026-08-29 — migrating *dirty source* lines does NOT need a directory format change.**
+That assessment predates strict 1:1 pinning. Under pinning the home set is one value **per set**, and
+`ATEntry.assocSet` already stores it (`SetBalanceUnit.scala:26`: *"home set (if destination)"*). The
+`+log2(sets)` bits **per way** were never needed. Verified against the RTL in coder task 003 Stage 0.
+Dirty source migration is now scheduled work — see `ai-documents/coder/003-serve-in-place/`.
+
+### ⚠️ SUPERSEDED — the +42% / 9.29x figures below are stale
+
+**Do not quote them.** They were measured before `522c540` (which let displaced ways compete for
+eviction) and before the 003 corruption fix. The last verified differential is **+0.10% cycles /
+1.00x DRAM** at `b6156d4`. Kept for the method, not the numbers.
+
+### ⚠️ MEASURED 2026-08-25 (STALE): SBC is data-safe but **+42% cycles / 9.29x DRAM traffic**
 
 First differential run (SBC on vs `NoSbcConfig`) on a real third-party benchmark — `matmult` from
 bringup-bench, N=32. SSOT: [ai-documents/matmult-differential-2026-08-25.md](ai-documents/matmult-differential-2026-08-25.md).
@@ -276,7 +287,7 @@ grep 2026-08-18) — but three **comments** still describe it, which is cleanup 
 | Q3 — copy-port priority starvation | `BankedStore.scala` | ✅ TESTED → REJECTED | Stress test: 0 arbitration stalls in 442 migration attempts. Low priority = bounded delay, not deadlock. **Do NOT reorder BankedStore priorities** (the order is load-bearing for protocol deadlock-freedom). |
 | Dst-set collision — illegal inner-D | `Scheduler.scala` | ✅ FIXED (2026-06-30) | Fixed by the **allocation-side fence**: `allocReady = alloc && !dstSetConflict` gates *both* the alloc dir-read (`:297`) and the MSHR allocate (`:337`), not just acceptance. Forced repro `dst_collision_repro` PASSES (8 migrations, data correct). ✅ **Stock-config regression PASSED 2026-08-17** — 0 asserts, no illegal inner-D, destinations spread 0/3/7. Fully closed. |
 | Displaced-line accumulation | `Directory.scala` / `MSHR.scala` | ✅ FIXED & VERIFIED (2026-06-30) | Was: displaced ways excluded from hits AND all victim tiers → immortal → `Directory.scala:156` assert → bricked. Fix = **last-resort displaced-reclaim victim tier** in `Directory.scala` (`displacedOH = ~nonDisplacedOH`, lowest priority) + `MSHR.scala` **silent-drops** a displaced victim (no Release — wrong address; assert narrowed to release-only). Baseline-exact (no flag). **Forced torture config: 20000 iters PASS, 0 asserts, 10 migrations committed, reclaim fired 3×.** ⚠️ Caveat: a 7/8-displaced set recycles its one native way until Phase-3 spreading. Stock-config run PASSED 2026-08-17, but the **reclaim tier did not fire** there (6 migrations over 3 sets never fills a set) — so reclaim remains verified under forcing only. |
-| Phase 3 — secondary search | `Directory.scala` / `MSHR.scala` / `SetBalanceUnit.scala` | 🔵 NEXT — **but gated** | Make displaced copy reusable via AT lookup (secondary hits). Enforce displaced XOR native invariant. Also: rebuild `s_verify` (now a hard prereq), fix DSS coldness. ⚠️ **Cause of low `p` is now diagnosed (stale `clients` bit — see above); the gate is now "does probe-then-migrate actually raise `p`?"** Do not start the swap datapath before step 2 of `ai-documents/July18AfterBreakWorkplan.md` returns a number. Pinned 1:1 association spec is written but unimplemented (`ai-documents/spec-sbc-phase3-prereqs.md`). |
+| Phase 3R — **serve in place** | `MSHR.scala` / `Scheduler.scala` / `Directory.scala` | ✅ **GATE 4 GREEN (2026-08-30) — SSOT is `ai-documents/coder/003-serve-in-place/`** | A parked/displaced line can now be served to the CPU directly from its partner set — no repatriation copy — including as a write target, with the correct probe-back and dirty-writeback path. `migration_stress_test` 7/7 PASS, 0 asserts, both BankedStore/directory shadow models clean. First time a migrated line has served real data without corruption. Performance payoff (`p`, real-workload gain) is still unmeasured — this config's `secHits` is low/flat because the stress test has no reuse to capture, not because the mechanism is broken. |
 
 Full arbitration/priority map: `ai-documents/priority-orders.md`. Consolidated bug record (fixed +
 open), by phase: `ai-documents/bug-fix-log.md`. Phase-2 single source of truth (absorbs the former
