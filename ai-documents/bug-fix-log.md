@@ -288,7 +288,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 
 ---
 
-### 🟡 P7 — the 1f pinning assert reads `pairSetReg` in the cycle it is written
+### ✅ P7 — the 1f pinning assert reads `pairSetReg` in the cycle it is written
 - **What:** [MSHR.scala:974](../design/craft/inclusivecache/src/MSHR.scala#L974) compares
   `io.dstClaim.bits === pairSetReg`, but `pairSetReg`/`pairValidReg`/`pairIsSrcReg` are written under
   `when (io.directory.valid)` (`:1150`) — and `migFastWantW`, which drives `dstClaim.valid` on the
@@ -301,10 +301,14 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Not a pinning violation.** The claim value is live and correct (`migrateResp.destSet` returns
   `dEntry.assocSet` from the AT for the deciding MSHR); only the register it is compared against is
   stale.
-- **Status:** ✅ no longer reachable as of 003 Stage 2b — the decide point moved to the search-resume
-  cycle, where `pairSetReg` was already written at the plan cycle, so the comparison is now correct
-  and the assert is meaningful for the first time. Recorded because the *shape* will recur: any assert
-  reading a register written under `io.directory.valid` is stale on that cycle.
+- **Status:** ✅ **FIXED in 003 Stage 9** with the live-value treatment (the 002 C1 pattern): the assert
+  reads the pairing from `io.pairInfo` on the cycle `io.directory.valid` writes the register, and from
+  the register otherwise.
+- **⚠️ "No longer reachable" was wrong, and the way it was wrong is the lesson.** After 2b I recorded
+  this as unreachable because the decide point had moved to the search-resume cycle. That was true of
+  2b's *timing* and false of the *defect*: the fast path's own exposure was never removed, only made
+  rare. Stage 9a raised the fast-path claim rate and it fired again immediately. **A latch hazard is
+  not closed by moving one of its consumers** - it is closed by reading the live value.
 - **⚠️ Also note:** `a148a82`'s earlier 7/7 was luck of the binary layout, not evidence of correctness.
 
 ## Reusable debugging facts for this repo
