@@ -733,7 +733,7 @@ no client can be releasing one.
 
 ---
 
-## Stage 2e — serve in place ⛔ **DOES NOT PASS** (`53f7c86`, WIP)
+## Stage 2e — serve in place ⛔ **superseded by Stage 9 below, which passes** (`53f7c86`, WIP)
 
 **Status: halted in case 3 on the BankedStore shadow model.** Committed to preserve the work and the
 instrumentation, not as a working step. Two real bugs found and fixed on the way; one open.
@@ -814,6 +814,99 @@ writeback never landed. `mig_dir1` is the one directory-only write in the design
 
 **I stopped here rather than try a fifth hypothesis.** The instrumentation is committed and now carries
 the requester identity on every BankedStore port, which is what the next attempt should start from.
+
+---
+
+## Stage 9a + 9b — a secondary hit is a HIT. ✅ **GATE 4 GREEN** (`97c282b`)
+
+**`migration_stress_test`: 7/7 PASS, exit 0, 0 asserts. Both shadow models clean.**
+
+```
+[SBC-COUNTERS] migrations=17616 attempted=39523 aborted=22141
+               secHits=2873 secMiss=63260 secPerm=0
+```
+
+**A parked line has served real data, for the first time in this project.**
+
+### Your diagnosis was right, and my two report errors are accepted
+
+Both corrections stand and both were mine:
+
+* **The tag decode was wrong.** `0x4008bd >> 3` is `0x80117`, not `0x80057`. Every conclusion I drew
+  from it — "no writer ever put that data there", the whole *"a directory write went missing"* lead —
+  was a search for a value that never existed. The shadow printf now decodes `tag=` and `set=` as
+  separate fields so a hand-decode is never on the path again.
+* **Hypothesis 3 was killed on nothing.** `rSrc`/`wSrc` were `mshr_select`, and every print in that
+  trace says `mshr=0`; two events 277 cycles apart on slot 0 are two *different transactions*, so a
+  matching id carried no discriminating power at all. Worse, `c.bits.source` is forced to `0` for
+  ProbeAckData, so a ProbeAck reads back as a false MSHR 0. `shadowSrc` is now a wrapping
+  per-transaction counter latched at allocate, which is what it should have been before I used it to
+  eliminate anything.
+
+I also accept the framing: I patched the general statement's **reclaim** consumer and missed its
+**erase** consumer, having written the general statement myself.
+
+### 9a — the fix
+
+`willServe` carried `(state === TIP || !req_needT)`. That term was a bug, not a filter: **the serve
+produced exactly the state its own re-entry path refused.** Serve a writer → the entry becomes TRUNK →
+the next `needT` access to that line is *guaranteed* to fail the test and erase a client-held entry
+with no probe, no writeback and no client accounting.
+
+A secondary hit is now treated exactly like a home hit, in the partner's row. `willServe` collapses to
+`secondaryHit && !request.control`; the fetch-cancel becomes conditional; `secTip` survives only where
+it is genuinely about permission.
+
+`gotT := secTip` and `req_promoteT` both checked rather than assumed: both select on `meta.hit`, which
+the serve sets, so the meta-based path is taken and `gotT` is belt-and-braces. Left correct anyway.
+
+### 9b — accepted as forced, not chosen
+
+No counter-design. Serving a parked line to a writer makes it dirty; that is the same change seen from
+the other end, and the alternative you pre-empted (write the line back when the client releases it)
+pays a DRAM write to preserve an invariant we are deliberately retiring. `armEviction`'s displaced
+branch now probes and Releases at `lineHome`; the `displaced ⇒ clean + client-free` assert and the
+stale `Directory.scala:179` comment are both retired.
+
+### The three nets
+
+All landed. **Net 1 (no INVALID write with a non-zero clients mask) fired zero times** across the full
+run — and it is placed at the directory *write port*, so it covers every producer at once rather than
+the one branch that motivated it.
+
+### GATE 4 additions — two results about the workload, reported plainly
+
+**`secPerm = 0`. Not a single secondary hit needed an AcquirePerm.** Zero serves found the entry in
+BRANCH (the state histogram below has no `state=1`). So the BRANCH+needT path is **built but entirely
+unexercised** by this workload — I am not claiming it works, only that it elaborates and is never
+taken. It needs a test that leaves a parked line in BRANCH while a writer wants it.
+
+**The hit rate is FLAT, not rising.** You asked me to flag this if it happened, so:
+
+| decile | serves | misses | hit rate |
+|---|---:|---:|---:|
+| 1 | 1436 | 7354 | **16.34%** |
+| 2-10 | ~160 each | ~6250 each | **~2.5%**, dead flat |
+
+Decile 1 is cases 1-6 (small, targeted). Deciles 2-10 are `case_bankstore_saturation` alone, and it
+does not climb. I read this as a **workload** property rather than a design failure: that case streams
+`NSAT=32` distinct tags per side-set against 8 ways, so the reuse distance exceeds capacity and there
+is no reuse for a parked pool to capture. A pool that never drains cannot help a workload with nothing
+to re-hit.
+
+**But the pool demonstrably stopped draining, which is the thing 9a was for.** Of 2875 serves,
+**351 (12.2%) found the entry in TRUNK** — a state that can only exist because an *earlier* serve to a
+writer left it there. Before 9a every one of those was erased. That is direct evidence, not inference.
+
+### Numbers that must not be compared across this change
+
+`secHits` changed meaning (found-and-erased → found-and-served), so 2b/2c/2d's ~4048 and this run's
+2873 do not measure the same thing.
+
+Migrations fell 22691 → 17616 (−22%). That is **expected and arguably the point**: parked lines now
+persist instead of being destroyed on hit, so partner sets stay occupied and fewer migrations are
+accepted. It is a capacity effect, not a regression — but it is a real change in behaviour and worth
+watching if Stage 3 changes eligibility again.
 
 ---
 

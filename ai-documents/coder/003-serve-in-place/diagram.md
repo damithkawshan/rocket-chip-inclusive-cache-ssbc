@@ -312,13 +312,19 @@ val migClean =                    !new_meta.displaced   // AFTER
 
 ## Part 7 — stage map
 
+> **Re-ordered by Amendment 1 (2026-08-29).** The original plan kept repatriation alive through three
+> stages so that deleting it last would act as an experiment isolating the corruption. **The shadow
+> model answered that question on its first run** (finding P5 — the repatriation copy overtaking the
+> migration copy into the same way). With the cause known directly, there is no reason to keep the
+> code, so serve-in-place moved to the front and the deferral/way-lock folded into it.
+
 | stage | what changes | invariant after | gate |
 |---|---|---|---|
-| 1 | asserts, shadow models, delete `MSHRStatus.set`, add `isSrc` | both halves still hold | pass/fail set **unchanged** |
-| 2 | displaced victims Release at `lineHome`, drop `!dirty` from migrate | `displaced ⇒ client-free` only | `p` measurably up |
-| 3 | `busyWays` way-lock, `secDefer` eviction deferral | unchanged | watchdogs quiet |
-| 4 | serve in place (`inPlace`), pprobe arm, C/X search | `displaced` means only "row ≠ address set" | 7/7, SecHits > 0 |
+| 1 ✅ | asserts, shadow models, delete `MSHRStatus.set`, add `isSrc` | both halves still hold | SBC-off regression green |
+| **2** ⬅ | **serve in place** (`inPlace`) — delete the repatriation copy, plus `secDefer` and `busyWays`, pprobe arm, C/X search | `displaced ⇒ clean` only | 7/7, SecHits > 0 |
+| 3 | displaced victims Release at `lineHome`, drop `!dirty` from migrate | `displaced` means only "row ≠ address set" | `p` measurably up |
 
-**The corruption experiment is Stage 4.** Stages 1-3 keep the repatriation path alive and must not
-change which stress cases pass. Stage 4 deletes it. If `case_reaccess_migrated` passes then, the bug
-was in the repatriation copy.
+**Stage 2 deletes P5's mechanism rather than fixing it** — serve-in-place performs no copy, so
+`doSecCopy` and `doMigCopy` can no longer collide. If `case_reaccess_migrated` passes once Stage 2
+lands, P5 was the long-open corruption. If it does not, P5 was real but not the whole story — and the
+shadow model is now in place to find the rest.

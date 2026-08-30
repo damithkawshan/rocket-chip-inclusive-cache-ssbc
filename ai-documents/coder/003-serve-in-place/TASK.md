@@ -472,3 +472,786 @@ Stop and report, do not push through, if:
 - both pre-existing bugs (§7) recorded in `bug-fix-log.md`
 - `p` before/after reported as a number, not an adjective
 - `REPORT.md` states plainly which of the two corruption outcomes in §9 occurred
+
+---
+
+## Amendment 1 — DO NOT FIX P5. DELETE IT. GO STRAIGHT TO SERVE-IN-PLACE. (2026-08-29)
+
+**Decision: neither of the two options you offered. Do not fix `doSecCopy`, and do not leave the run
+halted either. Delete the repatriation path now and build serve-in-place as the next thing you do.**
+
+You were right to stop and ask — the two instructions did conflict. The resolution is that one of
+them expired.
+
+### Why the staging is withdrawn
+
+**Stage 4 was an experiment to *infer* P5. You found P5 directly.** §9 kept repatriation alive through
+three stages so that deleting it in Stage 4 would tell us whether the corruption lived there. The
+shadow model answered that question on its first run, with a cycle-accurate trace and a named missing
+term. There is nothing left for the experiment to establish, so there is no reason to keep the code.
+
+**And the staged control was weaker than §5 claimed anyway.** Your §1a note is the key one: with SBC
+off, `homeSet` and `physSet` are driven from the same Scala value. But that is true in *every* build
+until `inPlace` exists — which is Stage 4. So Stages 1-3 could never detect a **reader** that picked
+the wrong field, which is the principal risk of the split. The control could not catch the thing it
+was controlling. Keeping repatriation alive to run it was buying nothing and costing a blocked task.
+
+**P5 is deleted, not hidden.** It is a collision between `doSecCopy` and `doMigCopy`. Serve-in-place
+removes `doSecCopy` entirely — no copy, nothing moves. `doMigCopy` survives with one caller and
+cannot collide with itself. The mechanism is genuinely gone, not merely unreachable.
+
+### Revised stage list
+
+Old Stages 2/3/4 are re-ordered. The eviction deferral and the way-lock were never independent of
+serve-in-place — the deferral exists *because* serve-in-place needs no home victim — so they fold in.
+
+| stage | what | status |
+|---|---|---|
+| 1 | split + nets + AT direction bit + shadow models | ✅ landed |
+| **2 (was 4+3)** | **serve in place.** Delete `doSecCopy`/`s_scopy`/`w_scopy` and the SCU write into a live set. Build `inPlace`, `secDefer`, `busyWays`, `(probeSet, probeTag)` routing, the pprobe arm, C/X search | ⬅ **next** |
+| 3 (was 2) | dirty-capable displaced lines | after |
+
+Dirty and serve-in-place are independent — both depend only on the split. Serve-in-place goes first
+because it is what unblocks the halted run.
+
+### GATE 1 is restated, and closed
+
+Your two corrections are accepted; both of my gate definitions were wrong.
+
+- **G0 becomes:** *"SBC-off delta is renames + the duplicated bundle field + sim-only asserts, with no
+  control-logic change."* Your measured 9-module accounting satisfies it. "Bit-exact / zero new
+  hardware" was unachievable the moment the split touched bundles present in both builds, and
+  `Option`-gating to dodge it would have reintroduced the exact ambiguity the split removes. You made
+  the right call and evidenced it.
+- **The SBC-on "pass/fail set unchanged" half is void** — the tree no longer has a stable pass/fail
+  set to preserve, and per the above it was not testing what I said it was. Drop it.
+- **The SBC-off regression is still required** and is now the whole of GATE 1. It validates the
+  mechanical rename's producer side. The reader side is validated by the shadow model in Stage 2,
+  once `homeSet =/= physSet` for the first time.
+
+### Carry into Stage 2
+
+- **`dstSetConflict`'s domain** — you flagged it as open at the end of §1b. It lands now: once an MSHR
+  serves at a row that is not its home set, "is this request's set fenced" and "is this row fenced"
+  stop being the same question. Resolve it as part of the way-lock work.
+- **P1's other half.** Your trace is right and my §7 fix only covers the case where an MSHR already
+  owns the fenced set. Do **not** patch the fence separately — the way-lock replaces the set fence for
+  victim protection, so re-derive P1 against the new structure rather than the old one. Keep the
+  watchdog and its `alloc`/`queue` fields.
+- **P5 and P6 stay in the register as found-in-003**, marked *closed by deletion* and *open* 
+  respectively. P5 is the explanation for `case_reaccess_migrated`; that claim is confirmed if the
+  case passes once serve-in-place lands, and if it does **not**, say so loudly — it means P5 was real
+  but not the whole story, and the shadow model is now in place to find the rest.
+- **Your `probeSet` timing finding is the more interesting one for the future.** "Name the condition
+  once" is this repo's standing rule (it is what `707445c` taught) and you correctly identified the
+  one place it is *wrong* advice, because scheduling and waiting are different questions. Keep both
+  selectors distinct and leave the comment explaining why.
+
+### One thing not to lose
+
+The headline of this task changed. It is no longer "serve in place and see if the corruption goes
+away". It is **"the shadow model found, in one run, a bug that survived two full tasks of hunting"** —
+and it did so from gate runs you had to do anyway. Make sure `REPORT.md`'s verdict says that plainly.
+
+---
+
+## Amendment 2 — GATE 1 IS CLOSED. PROCEED TO SERVE-IN-PLACE. (2026-08-29)
+
+You wrote your report before Amendment 1 landed, so it asks a question Amendment 1 already answered.
+Restating it here with the new evidence, plus the one argument of yours that needed a real reply.
+
+### GATE 1 — CLOSED ✅
+
+Under the restated G0 (Amendment 1), the SBC-off regression **is** the whole gate, and it is green:
+**7/7 PASS, exit 0, 0 asserts.** That covers both intended behavioural changes — the two-key ProbeAck
+match and the `prio(2)` exemption — in the build where they are supposed to be inert. Your netlist
+accounting closes the elaboration half. **The SBC-on "pass/fail set unchanged" half is withdrawn**
+(Amendment 1); do not try to report a number for it.
+
+Your note that the run *halts* rather than fails, so cases 4-7 were never exercised, is exactly the
+right call. Do not round that up.
+
+### Your "fix it now" argument — answered, and it does not survive one check
+
+You argued that fixing P5 gives Stages 1-3 "a working control". **It does not, and the reason is your
+own §1a argument applied one step further.**
+
+`MSHR.scala:330` today is:
+
+```scala
+val physSet = request.set        // literally request.set, unconditionally
+```
+
+So `homeSet === physSet` in **every** build — SBC off *and* SBC on — until `inPlace` introduces the
+mux. You established that a mis-classified **reader** is invisible when the two fields carry the same
+value. They carry the same value right now. **So there is no control to be had by fixing P5**: an
+SBC-on stress run today cannot validate the split's readers any more than the SBC-off run could.
+
+The split's reader correctness becomes testable for the first time in Stage 2, when `physSet` first
+differs from `homeSet`. That is where the shadow model earns its keep a second time.
+
+**So the fix buys one thing only: confirming P5 caused `case_reaccess_migrated`.** And we already have
+a cycle-accurate trace of the collision plus the exact missing term — the mechanism is established.
+What a run would add is "and it was the *only* cause", which Stage 2 answers anyway and for free.
+
+**Decision stands: do not fix `doSecCopy`. Delete the path.** Not because the fix is wrong — your
+diagnosis is right and the term is genuinely missing — but because we are removing the code, and a
+one-term patch to code being deleted is the definition of throwaway work.
+
+### Next: Stage 2, serve-in-place
+
+Per the Amendment 1 stage list. Start by deleting the repatriation path, then build `inPlace`,
+`secDefer`, `busyWays`, `(probeSet, probeTag)` routing, the pprobe arm, and the C/X search.
+
+### New acceptance item — prove repatriation is actually gone
+
+The concern behind deleting rather than rewinding is that fragments linger. Make it mechanical rather
+than a matter of faith. **Both must hold before Stage 2 is called done:**
+
+```
+grep -rn "doSecCopy\|repatriating\|s_scopy\|w_scopy" design/     →  zero hits
+```
+
+and **`SetCopyUnit` must have exactly one caller** (`doMigCopy`) afterwards. Report both in
+`REPORT.md`. (For the record: rewinding to a pre-repatriation commit was considered and rejected —
+`b6156d4` would cost the whole Stage 1 split and both shadow models, i.e. the code that found P5, and
+the earlier `7e45425` predates the directory secondary search entirely, so serve-in-place would have
+nothing to find.)
+
+### Carried forward, unchanged
+
+- **P5** → status becomes *closed by deletion*. If `case_reaccess_migrated` passes once Stage 2 lands,
+  P5 was the long-open corruption; if it does **not**, say so loudly — P5 was real but not the whole
+  story, and the shadow model is in place to find the rest.
+- **P6** stays open and recorded. Do not fix it in Stage 2 — `migFastWantW` is migration-side logic
+  that Stage 2 does not touch, and mixing it in muddies the attribution.
+- **P1's other half** — re-derive against the way-lock, not the old set fence (Amendment 1).
+- **`dstSetConflict`'s domain** — lands in Stage 2 with the way-lock.
+
+### Two things from your report worth keeping
+
+1. **The `printf` vs `assert` note** (`PRINTF_COND` gates one, not the other, so diagnostics belong in
+   the assert message) is a genuinely reusable debugging fact for this repo. It belongs in
+   `bug-fix-log.md` or the daily summary, not only in a task report that will be closed.
+2. **The `probeSet` timing finding** — that "name the condition once" is the *wrong* rule where
+   scheduling and waiting are different questions — is a real correction to this repo's standing
+   advice. Keep both selectors distinct and keep the comment explaining why.
+
+You were right to stop and ask rather than guess. The conflict you identified was real; one side of
+it had expired.
+
+---
+
+## Amendment 3 — STAGE 2 WORK ORDER (2026-08-29)
+
+Stage 2 is the whole of serve-in-place plus the deferral and way-lock folded in (Amendment 1). It is
+too big for one commit. **Five steps, each with its own check.** Do not skip a check to save a run —
+step 2a is an experiment we want the result of, and 2b is the step most likely to bite.
+
+Everything in §4 (the `displaced` discriminator, the single-hop rule) still binds unchanged.
+
+---
+
+### 2a — Delete the repatriation path ← *and this is the P5 experiment*
+
+**Delete:**
+
+- `repatriating` register, `s_scopy`, `w_scopy`
+- `doSecCopy` (`MSHR.scala:~399-405`) and the repatriation arms of the copy-lane muxes (`:402-405`)
+- the `(!repatriating || w_scopy)` term in `d_ready` (`:381`) and in `sec_dir1` (`:357`)
+- the `.otherwise { w_scopy := true.B }` arm of `io.copy_done` (`:959-963`) — the copy lane now has
+  exactly one job, so the done pulse needs no disambiguation
+- `repatriating` from `secValid` (`:334`)
+- the "migration parked into the way being repatriated" assert (`:429-431`) — it describes a race
+  that cannot exist once there is one copy job
+- the `SEC-COPY-DONE` printf
+
+**Keep:** `searching`, `s_ssearch`/`w_ssearch`, `secWay`, `s_sinval` and `sec_dir1` (the erase),
+`secHit`/`secMiss`.
+
+**Behaviour after 2a:** a secondary hit takes the path the permission-reject arm already takes — set
+`s_sinval := false.B` to erase the parked copy, and fall through to the memory fetch. Collapse the
+`(secTip || !req_needT)` branch at `:1019-1042` accordingly; every hit is temporarily a "found it,
+drop it, fetch it" event. `secHit` still counts, so the search is still measured.
+
+**Checks — all three:**
+
+```
+grep -rn "doSecCopy\|repatriating\|s_scopy\|w_scopy" design/     →  MUST be zero
+```
+- `SetCopyUnit` has **exactly one** caller (`doMigCopy`)
+- `migration_stress_test`, SBC on
+
+**⭐ This run is the experiment. Report the result prominently.**
+
+- **7/7 PASS** → **P5 was the long-open corruption.** `case_reaccess_migrated` is closed, attributed,
+  and the cause is on the record. Say so plainly in the verdict.
+- **anything else** → **STOP.** P5 was real but not the whole story. Do not start 2b. The shadow
+  models are in place and proven; use them.
+
+The 001 bisect established that search-plus-erase passes, so 7/7 is the expected result, not a hope.
+
+---
+
+### 2b — Move the evict-or-migrate decision to after the search ← *the risky one*
+
+Today `MSHR.scala:1223` arms the eviction in the **same cycle** `:1245` arms the search. Serve-in-place
+needs no home way at all, so the decision must wait for the answer.
+
+**Restructure the A-channel plan block** (`:1160-1250`): hoist the search decision above the eviction
+chain. When the search will run, arm **nothing** — no `s_release`, no `s_rprobe`, no `migrating`, no
+`migDeferred` — and set `secDefer`. Resume in the search-result block.
+
+**⛔ The whole decision moves, not just the eviction.** A paired source that only ever resumed with a
+plain eviction could never migrate again, and the parked pool would drain to nothing. Factor the
+entire assess chain (migrate-fast / migrate-defer / reclaim / normal-evict) into **one Scala `def`**
+called from both the plan block and the search resume. Bit-identical state from both call sites — a
+gate added at one and missed at the other is `707445c`, three times over now.
+
+The def must take its metadata as a parameter: `new_meta` at plan time, `meta` at resume time.
+
+**🔴 P6 must be fixed here. It stops being benign at this step.** `migFastWantW` (`:826-833`) lacks the
+`!(searching && !w_ssearch)` term that its sibling `migFastDecline` has (`:913`). At the search-resume
+cycle `io.directory.valid` is true carrying **the partner's** result — so without that term the fast
+path would assess the partner's victim as if it were ours. Add it. Update P6's row in the register
+from "believed benign" to "fixed in 2b, and here is why it stopped being benign".
+
+**Three decide points now exist**, chained and never concurrent: plan → search-resume → (maybe)
+`migDeferred`-resume (`:925`). Generalise whatever bounds them to "at most one deferral outstanding".
+
+**Watchdogs and asserts:**
+
+```scala
+assert (secDeferCtr < 1000.U,                  "SBC: secDefer stuck - the search never answered")
+assert (!(secDefer && !s_release),              "SBC: eviction committed while the search was open")
+assert (!(secDefer && io.schedule.bits.a.valid),"SBC: outer Acquire during a deferred search")
+assert (!(secDefer && migDeferred),             "SBC: two deferrals outstanding")
+```
+
+**Check:** stress test still 7/7, watchdogs quiet, migration counts **not** collapsed versus 2a — if
+migrations fall off a cliff, the decision did not really move, it just got skipped.
+
+---
+
+### 2c — Way-lock, and the two domain fixes
+
+An MSHR is about to hold a way in a row it does not own for its whole life. Nothing today stops
+another MSHR victimising that way.
+
+- **`busyWays`**: a per-row mask of ways held by live MSHRs, passed alongside the directory read and
+  masked into the victim chooser (`Directory.scala:173-177`). It steers a mux and never blocks a
+  request, so it cannot deadlock. `assert(freeWays.orR)` — provable, since at most two ways in a row
+  are locked (the row's own MSHR, and one serving in place from its partner).
+- **`dstOfferOwned`** (`Scheduler.scala:566`): must test `physSet` **as well as** `homeSet`. Missing
+  the `physSet` term lets a migration park a victim into a row being served. Silent.
+- **`partnerBusy`** (`:333`): compare `physSet`.
+- **`dstSetConflict`'s domain** — the item you flagged as open at the end of §1b. It lands here. Once
+  an MSHR serves at a row that is not its home, "is this request's set fenced" and "is this row
+  fenced" are different questions. Resolve it against the way-lock.
+- **P1's other half** — re-derive against the way-lock, **not** the old set fence. Do not patch
+  `request.ready` further. Keep the watchdog and its `alloc`/`queue` fields. If the way-lock makes the
+  fence unnecessary for victim protection, say so — that is the cleanest close.
+
+Once the way-lock is in, `partnerBusy` (`MSHR.scala:410`) should become an **assert instead of a
+wait**. Removing the last waiting edge makes the deadlock argument trivial. Do that, and write the
+argument down.
+
+**Check:** stress test still 7/7. `freeWays.orR` quiet.
+
+---
+
+### 2d — Let C and X requests find a displaced line (inert on arrival)
+
+Arm the secondary search on the **C-channel** (`:1129-1144`) and **X-channel** (`:1146-1158`) plan
+branches, so a Release or flush whose line is parked can find it instead of tripping
+`assert(new_meta.hit)` (`:1143`).
+
+**This is deliberately built before 2e.** Nothing is client-held yet, so the C-path search can never
+hit and the step is inert — which is exactly why it is safe to land first. 2e makes it live.
+
+MMIO flush stays unsupported (`phase-3.md:156-158`): **upgrade the constraint from a comment to an
+assert** rather than building flush support. A silent no-op over a displaced line becomes data loss in
+Stage 3.
+
+**Check:** stress test 7/7, unchanged. Close **P2** in the register.
+
+---
+
+### 2e — Serve in place
+
+- `inPlace` register; `physSet = Mux(inPlace, pairSetReg, request.set)` — replacing today's
+  unconditional `val physSet = request.set` (`:330`)
+- on a secondary hit, re-point `meta` at `(pairSetReg, secondaryWay)` and **do not** arm any eviction
+- `s_sinval` stays **true** — we keep the parked copy. That is the point.
+- `final_meta_writeback.displaced := inPlace` — a line served in place **stays** displaced
+- `(probeSet, probeTag)` routing goes live (already built in Stage 1)
+- **new pprobe arm** in the search-result block: the parked line may now be client-held. No such logic
+  exists today, because the old invariant guaranteed it could not be. Mirror the shape of the existing
+  permission-probe arm at `:1252-1259`.
+- relax `Directory.scala:211-213` to `displaced ⇒ clean` **only** — drop the client-free half, keep
+  the clean half (Stage 3 drops that one)
+
+**🔴 The trap, read twice.** `inPlace` must survive a `repeat` reload. `MSHR.scala:1080-1126` runs on
+`io.directory.valid || (io.allocate.valid && repeat)`. Clearing `inPlace` in that shared block leaves
+`meta` pointing at the partner row while `physSet` reverts to the home row — **every subsequent access
+off by a whole row, silently.** Clear it only under `io.directory.valid`, and assert it.
+
+**This is the first time `homeSet =/= physSet`.** Everything the split did becomes testable here and
+not one moment earlier — a mis-classified *reader* has been invisible until now because both fields
+carried the same value. **Expect the shadow model to be the thing that finds it.** If it fires, that is
+the model working, not a setback.
+
+**Check:** GATE 4 — G1 (7/7, 0 asserts), G3, G4, G5 (`SBC_SecHits` > 0 and rising). G2 if cheap.
+Close **P4**.
+
+---
+
+### Order, and what each step buys
+
+| step | what | if it fails |
+|---|---|---|
+| 2a | delete repatriation | **STOP** — P5 was not the whole story |
+| 2b | decision moves after the search (+ P6 fix) | the deferral is wrong; nothing later can work |
+| 2c | way-lock + domains | exclusivity is wrong |
+| 2d | C/X search | inert; a failure here means the arming is wrong |
+| 2e | serve in place | the first real test of the Stage-1 split |
+
+Commit each step separately. If a later step regresses, we want to bisect it in one command.
+
+### Acceptance for Stage 2
+
+- the 2a grep returns zero, and `SetCopyUnit` has one caller
+- the 2a experiment result stated plainly — P5 confirmed or not
+- P2, P4, P6 closed in the register; P1 re-derived against the way-lock; P5 marked closed-by-deletion
+- GATE 4 green
+- `SBC_SecHits` > 0 — **the first time in this project that a parked line has ever returned anything**
+
+---
+
+## Amendment 4 — 2a GATE PASSED. P5 CONFIRMED. GO ON 2b. (2026-08-29)
+
+### The gate is passed, and my wording was the thing at fault
+
+I wrote two branches — "7/7 → P5 confirmed" and "anything else → STOP, P5 wasn't the whole story" —
+and put a data-correctness question and a run-completion question into one test. **You were right to
+refuse both labels.** The correct reading:
+
+**P5 is confirmed as the long-open corruption, and `case_reaccess_migrated` is closed.** Every
+data-correctness check passes, zero shadow firings, zero `homeShadow` firings, and the run reaches
+~7.5× further than Stage 1 did. Cases 4 and 5 — the two that had been failing since 001 commit 4 —
+both pass, and they pass with **no wrong data anywhere**, which is the claim that matters.
+
+The case-7 halt is a **loud invariant assert with correct data**, which is the opposite of the failure
+mode the STOP branch was written for. STOP meant "silent corruption survives". It does not.
+
+**Record it as closed:** the corruption that survived tasks 001 and 002 was the SetCopyUnit colliding
+with itself — `doSecCopy` writing `(physSet, meta.way)` while `doMigCopy` read the same location,
+five cycles apart, because `doSecCopy` lacked the `!migDeferred` term its sibling `a.valid` has. Found
+by the Stage-1 BankedStore shadow model on its first run.
+
+It also settles 002 honestly: your reading that case 4's FAIL→PASS there was a perturbation artifact
+**holds** — it passes here for a real reason instead.
+
+### Your P6 correction is accepted, and it is the more important finding
+
+I said P6 "stops being benign when 2b moves the decision". You showed that deleting repatriation alone
+was enough, because a secondary hit used to cancel the fetch and enter the repatriation, shifting when
+the search result landed relative to `migDeferred`. **It was never benign. It was masked — by code we
+were deleting.**
+
+That generalises, and it is worth more than the bug:
+
+> **A finding marked "benign by reading" is only benign relative to the code that happens to mask it.
+> When that code is deleted, re-open every such finding rather than carrying the label forward.**
+
+P6 was the only one carrying that label, so nothing else needs re-opening — but the rule applies to
+every future one. Put it in `bug-fix-log.md` next to the two facts you already recorded there.
+
+### GO — start 2b, P6 first
+
+The stop condition was "silent corruption survives", and it does not. Proceed.
+
+Fix P6 as 2b's first item exactly as Amendment 3 specifies — add `!(searching && !w_ssearch)` to
+`migFastWantW` (`:826-833`), the term `migFastDecline` already has (`:913`). Then the rest of 2b.
+
+Your confirmation method — reading the missing term off the failing cycle (`searching=1`,
+`w_ssearch=0`, `dirHit=0`) rather than inferring it — is the standard this project should hold. The
+`dirHit=0` observation is the part to keep: a miss on the **partner's** search result says nothing
+about our own victim, which is precisely why the fast path must not look at it.
+
+Update P6's register row from "believed benign, recorded, not fixed" to **"never benign — masked by
+the repatriation path; exposed by 2a, fixed in 2b"**, with the failing-cycle values.
+
+### Housekeeping
+
+- **Thank you for the `git add -A` correction.** My owed-list was wrong; `tmp.md` and
+  `spec-sbc-phase3-prereqs.md` are committed in `0672f79`. Explicit paths from here on is the right
+  call. **I have now `git rm`'d `tmp.md`** — its surviving lead is in `bug-fix-log.md` as A5.1/A5.2,
+  so the scratch file has no reason to exist. Still owed as *content*, by me not you: `phase-3.md`,
+  `CLAUDE.md`, `destination-side-blocker.md`.
+- **A5.1 / A5.2 need a status pass.** Both say "never tested as the cause" — that is now settled: P5
+  was the cause, so neither was. A5.1's header also says "code deleted in 003 Stage 4", but
+  `SetCopyUnit.scala:137` still exists and still serves the migration copy, so A5.1 is **not** deleted
+  and remains a live RTL fact. Correct both headers when you next touch that file.
+
+---
+
+## Amendment 5 — BUGS FIRST. The punch list, with owners. (2026-08-29)
+
+Priority is explicit now: **close the open findings before adding capability.** No step counts as
+done while a finding it was supposed to close is still open in the register. "Landed but not closed"
+is how P6 spent two tasks marked benign.
+
+### Yours, in this order
+
+| # | bug | when | done when |
+|---|---|---|---|
+| **P6** | `migFastWantW` reads the partner's search result as its own victim | **now** — first thing in 2b | case 7 stops halting; register row updated to *"never benign — masked by repatriation, exposed by 2a, fixed in 2b"* with the failing-cycle values |
+| **A5.1 / A5.2** | status is stale in `bug-fix-log.md` | **now** — a doc edit, do it alongside P6 | both say "never tested as the cause" → settled, P5 was. A5.1's header claims its code is deleted in Stage 4; `SetCopyUnit.scala:137` still exists and still serves the migration copy, so it is **live**, not deleted |
+| **P1** | C-channel head-of-line, half-fixed | 2c | re-derived against the way-lock, **not** patched further at `request.ready`. If the way-lock makes the fence unnecessary for victim protection, say so — that is the clean close |
+| **P2** | C/X requests cannot find a displaced line | 2d | search armed on both plan branches; flush constraint is an assert |
+| **P4** | `inPlace` must survive a `repeat` reload | 2e | assert in place and GATE 4 green |
+
+P3 and P5 are closed. Do not reopen them without evidence.
+
+### The rule that comes out of P6
+
+> **A finding marked "benign by reading" is only benign relative to the code that happens to mask it.
+> Delete that code and it becomes live. Re-open every such finding when nearby code is removed.**
+
+Put it in `bug-fix-log.md` beside the two facts you already recorded there. It is the most reusable
+thing this task has produced so far.
+
+### Mine, in parallel — the three documents that now contradict the RTL
+
+Not your work, listed so you know it is not forgotten and so you do not trust them meanwhile:
+
+- **`phase-3.md`** — still says serving in place is impossible, and its coherence audit rests on
+  "a displaced line has no clients and can never gain one", which 2e deletes
+- **`CLAUDE.md`** — the "needs a directory format change" claim (false under pinning, your Stage-0
+  check confirmed it), and the stale `+42% / 9.29x` headline
+- **`destination-side-blocker.md`** — same false directory-format claim
+
+Until those are rewritten, **`ai-documents/coder/003-serve-in-place/` is the only current
+description of this design.** If any of the three contradicts your TASK, the TASK wins — and tell me,
+because that means I missed one.
+
+---
+
+## Amendment 6 — 2b ACCEPTED. PROCEED TO 2c. Record P7 first. (2026-08-29)
+
+**2b is accepted as clean.** 7/7 PASS, exit 0, 0 asserts, all four watchdogs quiet, migration count
+not collapsed. The shared `armEviction`/`migFastTerms` structure and the deliberate choice to keep
+the two cycle-selectors separate (the `probeSet` lesson, applied on purpose this time) are exactly
+right. The self-caught partial-edit mistake is a good practice, not a blemish — record it.
+
+### Before starting 2c: record P7
+
+**P7 — the 1f pinning assert (`MSHR.scala:1063`) reads a stale register in the same cycle it is
+written.** Same family as the 002 C1 fix and P6: `pairSetReg` updates on `io.directory.valid`, and the
+fast-path claim (`migFastWantW` → `dstClaim.valid`) is gated on the same signal — so at a plan-time
+claim the assert compares this transaction's destination against the *previous* transaction's
+partner. **This is a false-alarm bug in the watchdog, not a pinning violation** — the actual claim
+(`migOffer.bits`, sourced live from the AT) is correct. 2b's new resume-cycle timing happens not to
+hit it, because `pairSetReg` was already written at the plan cycle for that same transaction — but
+the fast path's own exposure is unresolved.
+
+Add to the findings register:
+
+| P7 | 1f assert compares against a stale `pairSetReg` on the fast-path claim cycle — same latch-timing family as 002 C1 and P6 | fix pending, low priority | found via A/B regression against `a148a82`; false alarm only, no data ever wrong |
+
+Also record in `bug-fix-log.md`, and add this line to the pattern note already there next to P6's
+rule — it is the same lesson, third instance:
+
+> Every one of this project's three worst bugs (002 C1, P6, P7) has been the same shape: something
+> reads a register in the same cycle something else writes it, and gets the old value. Any new signal
+> gated on `io.directory.valid` should be checked against this by default, not discovered by accident.
+
+**Do not fix P7 now.** It costs nothing (no data is wrong, it only produces a false alarm under a
+timing this project no longer normally exercises), and fixing it correctly means giving it the same
+live-value treatment as the 002 C1 fix — that is worth doing carefully, not as a detour mid-stage.
+Parked for the first future step that touches this assert.
+
+### Then: proceed to 2c
+
+Build 2c exactly as specified below Amendment 3 §2c — the way-lock (`busyWays`/`freeWays`), the two
+domain fixes (`dstOfferOwned` gains `physSet`, `partnerBusy` compares `physSet`), `dstSetConflict`'s
+domain resolved against the way-lock, and P1 re-derived against it rather than patched further at
+`request.ready`. If the way-lock makes the old set fence unnecessary for victim protection, say so —
+that is the clean close TASK §7 already anticipates.
+
+Check: stress test still 7/7, `freeWays.orR` quiet.
+
+---
+
+## Amendment 7 — the run to 2e. Batching, and one thing 2c needs to know. (2026-08-29)
+
+### Why 2c exists at all — the baseline does not have this problem, and that is the point
+
+Worth stating before you build it, because the obvious question is "surely two MSHRs fighting over a
+way is a pre-existing bug?" It is not. **The baseline prevents the situation rather than handling
+it.** `Scheduler.scala:214-215`:
+
+```scala
+val setMatches = Cat(mshrs.map { m => m.io.status.valid && m.io.status.bits.homeSet === request.bits.set }.reverse)
+val alloc = !setMatches.orR
+```
+
+One MSHR per set, enforced at allocate. A second request to a busy set queues or nests behind the
+owner; it never gets its own MSHR. So victim selection is never contested — there is only ever one
+party inside a set.
+
+**Serve-in-place is the first thing that breaks the assumption underneath that rule.** The check is
+keyed on `homeSet`. An MSHR serving in place has `homeSet = S` but is physically working in row `D`.
+The Scheduler sees it as "on S", so a second MSHR is still free to allocate on `D` — and now two
+independent MSHRs really are inside one physical row. That has never been possible before.
+
+So 2c is **not** a missed guard being retrofitted. It is new protection for a new situation, and it
+should be scoped to exactly that: protect the way being borrowed, change nothing else. Do not
+generalise it into a broader locking scheme.
+
+### Batching — do not stop between 2c and 2d
+
+You have been stopping at every gate, which was right while the corruption was open. It is costing
+round trips now. For the rest of this stage:
+
+- **Record P7** (Amendment 6) — bookkeeping, no run needed.
+- **Build 2c.** Check: stress test still 7/7, `freeWays.orR` quiet. If green, **do not stop** —
+- **Build 2d** straight after. It is inert by construction (nothing is client-held yet), so a
+  regression here means the arming is wrong, not the design. Check: still 7/7.
+- **Then STOP and report**, before 2e.
+
+**2e gets its own go-ahead.** It is the step where `homeSet =/= physSet` for the first time in this
+project's history, so it is the first real test of everything Stage 1 built. It deserves a clean
+start and your full attention, not a tail-end of a long session.
+
+### One thing about 2e's numbers, so it is not misread later
+
+After 2e, **`SBC_SecHits` changes meaning.** Today it counts a hit that is then erased and refetched.
+After 2e it counts a hit that is actually *served*. Do not compare 2b's `secHits=4044` against 2e's
+number as if they measure the same thing — say explicitly in the report that the metric changed.
+
+Expect the *shape* to change too: parked lines are no longer destroyed on hit, so the pool stops
+draining and the hit rate should climb over a run rather than staying flat. If it does not climb,
+that is a finding worth reporting on its own.
+
+### After 2e
+
+**Stage 3 — dirty-capable displaced lines**, the migration-rate unlock. Specced in Amendment 1; it
+gets its own instruction once 2e's numbers are in, because what 2e measures may change how it is
+scoped. Do not start it speculatively.
+
+---
+
+## Amendment 8 — GO on 2e. One gap found by reading before you build it. (2026-08-30)
+
+2c and 2d accepted. Closing P1 outright (not just re-deriving it) and keeping `partnerBusy` a wait
+with the reasoning recorded at the declaration were both the right calls — better than what Amendment
+3 asked for. 7/7 stable, migrations flat across all three steps, counters make sense.
+
+**2e is authorised. This is its own commit — the payoff step, not a tail-end of 2c/2d's session.**
+
+Build exactly what Amendment 1 §"Stage 4 — serve in place" and `diagram.md` Part 2/3 already specify,
+against the current code:
+
+- the search-result block is `MSHR.scala:1185-1224` now (moved since 2b/2c)
+- do **not** call `armEviction` on the branch that will serve — only on the branch that still falls
+  through to a fetch (weak permission, or a miss)
+- `inPlace := true.B`, `physSet := pairSetReg` (or the equivalent mux), re-point `meta` at
+  `(pairSetReg, secondaryWay)`
+- `final_meta_writeback.displaced := inPlace`
+- **do not set `s_sinval := false.B`** on the serve branch — today that line (`:1212`) is what arms
+  the erase. Skipping it is what "keep the parked copy" means in practice, not a separate step.
+
+### ⚠️ Found by reading, not yet built: the way-lock will not protect a served line
+
+`io.status.bits.lockValid := !s_sinval` (`MSHR.scala:402`). The lock's whole window is defined as
+*"from the moment the search names the way until the erase retires it"* — i.e. it is keyed to
+`s_sinval` being false, which is exactly the register 2e must **not** set false.
+
+**So as written, a served hit gets zero way-lock protection**, for the entire time this MSHR is
+reading `(pairSetReg, secondaryWay)` out through SourceD and however long the line stays client-held
+afterward. The row's own native MSHR could pick that same way as a victim mid-serve, or a subsequent
+native miss could reclaim it while a probe is still outstanding on it — the way-lock's `assert
+(freeWays.orR)` proof from 2c does not fail, but the *scope* it was built to prevent (another MSHR
+touching the way we are actively using) is left uncovered for the one operation that matters most.
+
+**Decide and implement one of these — do not skip it:**
+
+1. Widen `lockValid` to also cover `inPlace` — e.g. `!s_sinval || inPlace` — so a served line stays
+   protected for as long as this MSHR still holds it (until it retires or the way is legitimately
+   reclaimed by design, not by accident).
+2. Or make the case for why the exposure window is actually safe without it (e.g. if the grant read
+   completes in a single, uninterruptible cycle sequence and nothing else can reach that way in that
+   window) — but that argument has to survive the same scrutiny partnerBusy's did in 2c, not be
+   assumed.
+
+State which one you built and why in the report.
+
+### One more thing to verify while you're in this code: `d_ready`'s timing
+
+`d_ready = w_pprobeack && w_grant` (`MSHR.scala:462`) carries **no wait term** now — the old
+`(!repatriating || w_scopy)` term was deleted with repatriation. For a serve-in-place hit, confirm
+`inPlace`/`physSet`/`meta` are committed no later than the cycle `d.valid` can first fire, so SourceD
+never reads before the MSHR has repointed. If there is a gap, it needs the same kind of gate `w_scopy`
+used to provide — say so rather than patch around it silently.
+
+### Then, as already specified
+
+- new pprobe arm in the search-result block for a client-held parked line (§ Stage 4 / diagram Part 2
+  step 4) — no such logic exists today because the old invariant guaranteed it was never needed
+- `(probeSet, probeTag)` routing goes live for the first time
+- relax `Directory.scala:211-213` to `displaced ⇒ clean` only
+- **P4** — `inPlace` must survive a `repeat` reload (`MSHR.scala:1080-1126`); clear it only under
+  `io.directory.valid`, with an assert
+
+### Gate
+
+GATE 4: `migration_stress_test` 7/7 PASS, 0 asserts; shadow models (G3/G4) clean; **`SBC_SecHits` > 0
+and actually returning data** (G5) — the first time in this project a parked line has served anything.
+
+**Remember the metric-meaning change from Amendment 7:** `secHits` before 2e counted "found and
+erased"; after 2e it counts "found and served". Do not compare the two numbers as if they measure the
+same thing — say explicitly that the metric changed. Report whether the hit rate climbs over a run
+now that parked lines are no longer destroyed on hit (expected), and flag it if it does not.
+
+**This is the first time `homeSet =/= physSet` in this project's history.** If the shadow model fires
+here, characterise it the way you did for P5 before assuming it's a bug — but also don't assume it
+isn't. Either way, this is the run the whole Stage 1 split was built to be tested by.
+
+---
+
+## Amendment 9 — 2e's open failure is DIAGNOSED. It is a design bug, not a mystery. (2026-08-30)
+
+**Read this before you try a fifth hypothesis.** You stopped in the right place, and the
+instrumentation you added is what made this findable. But the failure is not in the datapath — it is
+in the serve/decline rule itself, and the evidence is already in the log you produced.
+
+### 1. What the log shows
+
+Four lines, 27 apart, at the end of `migration_stress_test.out`:
+
+```
+[SBC] SEC-SERVE  set=5 partner=7 way=5 state=3 clients=1 needT=1
+[SBC][SCHED] DIR-WRITE set=7 way=5 state=2 displaced=1 tag=557057   <- the serve's own writeback
+...
+[SBC] SEC-WEAK   set=5 partner=7 state=2
+[SBC][SCHED] DIR-WRITE set=7 way=5 state=0 displaced=0 tag=0        <- the SAME entry, erased
+```
+
+With `INVALID=0, BRANCH=1, TRUNK=2, TIP=3`:
+
+* the serve found the parked line in **TIP**, granted it to a client with `needT`, and wrote the entry
+  back as **TRUNK** — correct, and exactly what serving a writer must do;
+* a later `needT` request found that entry in **TRUNK**, failed `willServe`, and took the erase branch,
+  which wiped the directory entry **with no probe, no writeback, and no client accounting** while the
+  client still held the line.
+
+### 2. The defect
+
+`MSHR.scala:991-993`:
+
+```scala
+val willServe = ... && (secondaryEntry.state === TIP || !req_needT) && !request.control
+```
+
+**The serve produces exactly the state its own re-entry path refuses.** Serve to a writer, the entry
+becomes TRUNK, and the next `needT` access to that line is then *guaranteed* to take
+`MSHR.scala:1355-1363`, which does `s_sinval := false` and nothing else.
+
+Consequences, in order:
+
+1. **Inclusion violation.** The L2 forgets a line a client holds exclusively and may have dirtied.
+2. **The way is freed** and reallocated, so the client's copy becomes invisible.
+3. The observed shadow mismatch at `(5,3)` is the *aftermath*, several transactions downstream.
+4. **The parked pool drains by construction** — every served line is destroyed on its next write. Any
+   `SBC_SecHits` number measured on this build flatters a system that is demolishing its own hits.
+
+`MSHR.scala:1370` (`C-channel request for a line that is neither resident nor parked`) is the second
+alarm for the same thing. The shadow model simply got there first.
+
+**This is the twin of the bug you already found and fixed.** Your 2e item #1 — *"the displaced-reclaim
+path must probe a client-held parked line before dropping it"* — is the general statement. It has two
+consumers. You patched reclaim and missed erase.
+
+### 3. Two corrections to the 2e report
+
+* **The tag was decoded wrong.** `believed=0x4008bd >> 3` is **524567 (0x80117)**, not `0x80057`. That
+  tag *is* in the trace — `DIR-WRITE set=5 way=3 state=2 tag=524567`, an ordinary install that was
+  never touched again. "No writer ever put that data in it" and the whole *"a directory write went
+  missing"* lead came from searching for a value that never existed. **Decode the shadow word in the
+  printf itself** (`tag` and `set` as separate fields) so this cannot recur.
+* **Hypothesis 3 was killed on nothing.** `rSrc`/`wSrc` are `mshr_select` (`Scheduler.scala:167-168`)
+  and *every* print in this trace says `mshr=0`. Two events 277 cycles apart on slot 0 are two
+  different transactions, so "same source id" carries no discriminating power. Worse,
+  `c.bits.source` is forced to `0` for ProbeAckData, so a ProbeAck reads back as a false "MSHR 0".
+  `shadowSrc` needs a per-transaction id (a wrapping counter latched at allocate) before it can
+  eliminate anything.
+
+### 4. What to build — 9a: a secondary hit is a hit. Never erase one.
+
+**Delete the erase branch.** "Found, but too weak to serve" is repatriation-era thinking: it treats a
+line we located as garbage. The correct rule is the one the design already uses for a home hit —
+**treat a secondary hit exactly like a home hit, in the partner's row.**
+
+Concretely, on `io.directory.bits.secondaryHit`, unconditionally:
+
+* set `inPlace`, re-point `meta` at the parked entry, `meta.hit := true` — as you already do;
+* then arm **exactly what the plan block would arm for a home hit carrying that metadata**:
+  * clients present and (`req_needT` or `state === TRUNK`) → **pprobe** (you already have this at
+    `MSHR.scala:1343-1351`; it simply never gets to run for the TRUNK case);
+  * `state === BRANCH && req_needT` → **keep the fetch as an AcquirePerm** rather than cancelling it.
+    This is the one case that genuinely cannot be served as-is, and the plan block already knows how
+    to arm it (`MSHR.scala:1542`). Serve in place *and* acquire permission — do not erase and refetch.
+  * otherwise (TIP, TRUNK, or `!req_needT`) → cancel the fetch, as you do today.
+
+So `willServe` collapses to `secondaryHit && !request.control`, and the fetch-cancel becomes
+conditional instead. `secTip` survives only where it is genuinely about permission.
+
+**Why not "make the erase safe" instead:** an erase-then-fetch has to invalidate a line in row `d` and
+install a different line in row `s` in one transaction — two rows, one `meta`, one `physSet`. The
+probe response for the erased line would land in the wrong row. Always-serve makes that whole class of
+problem not exist.
+
+**Re-check these two, because "TIP means we own it" is encoded in more than one place:**
+`gotT := secTip` (`MSHR.scala:1320`) and `req_promoteT` (`MSHR.scala:615`). With `meta.hit := true` the
+latter reads the post-serve `meta`, so it should already be right — confirm, do not assume.
+
+### 5. What to build — 9b: the consequence you cannot defer
+
+**Serving a parked line to a writer makes parked lines dirty.** That is not optional and it is not
+Stage 3's problem any more — it is the direct, immediate consequence of 9a:
+
+* `Directory.scala:256` (`displaced way is dirty`) will fire. It must be relaxed.
+* `armEviction`'s `.elsewhen (m.displaced)` branch (`MSHR.scala:1042-1061`) currently **drops** the
+  line. Once it can be dirty, it must **Release it at `lineHome`** — `SourceC.bits.homeSet := lineHome`
+  is already wired for exactly this (Stage 1).
+* `Directory.scala:179` still says a displaced entry is *"clean + client-free by construction"*. Both
+  halves are now false. Fix the comment in the same change.
+
+**Do not** try to keep `displaced => clean` by writing the line to memory when the client releases it —
+that pays a DRAM write to preserve an invariant we are deliberately retiring.
+
+⚠️ **This is a scope increase to 2e and it is forced, not chosen.** Serve-in-place and
+dirty-capable parked lines are not separable. Say so in the report if you disagree, with the
+counter-design, before building.
+
+### 6. Nets — these are required, not optional
+
+1. `assert` that **no directory entry is ever written to INVALID while its `clients` mask is non-zero**,
+   anywhere in the design. That single net catches this entire class on the cycle it happens instead of
+   ~277 cycles downstream. It is the highest-value line in this amendment.
+2. `assert` that a Release of a `displaced` entry never forms its address from `physSet`. Risk 2 in the
+   plan; now live.
+3. Decode `shadowAddr` into `tag=` and `set=` fields in the BankedStore printf (see §3).
+
+### 7. GATE 4 — unchanged, plus one
+
+`migration_stress_test` 7/7, exit 0, 0 asserts; both shadow models clean; `SBC_SecHits > 0 and rising`.
+**New:** report the count of secondary hits that were **served** versus **declined-to-AcquirePerm**.
+If declines dominate, say so — that is a real result about the workload, not a failure.
+
+### 8. Standing note carried forward
+
+The `SBC_SecHits` metric changes meaning at this step (from "found and erased" to "found and served").
+Do not compare the numbers across the change as if they measure the same thing.

@@ -37,4 +37,4 @@ coder/
 | 000 | internalRead + DSS rotation (pre-convention; filed retroactively) | closed |
 | 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | **closed** (2026-08-28) — commits 1-3 landed; commit 4 handed to 002 |
 | 002 | Fix the partner-set latch, then land commit 4 | **closed** (2026-08-28) — C1+C3 landed (`0f5a7ac`); both hypotheses killed by gates; instrumentation pass withdrawn |
-| 003 | Serve in place, and let displaced lines be first-class (dirty + client-held) | **open** (2026-08-28) |
+| 003 | Serve in place, and let displaced lines be first-class (dirty + client-held) | **in progress** — Stage 1 landed; shadow model caught the long-open corruption (P5) on its first run; Amendment 1 re-ordered to serve-in-place next |

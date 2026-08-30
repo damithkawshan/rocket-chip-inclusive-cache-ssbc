@@ -177,7 +177,16 @@ the entire reason we only migrate clean lines.
 low miss-pressure is one whose lines **hit constantly**. W is therefore a well-behaved, frequently-hit
 line. We would be evicting a hot line to preserve one we were about to throw away.
 
-### Migrating dirty lines from the **source** — 🔵 Phase 4, not now
+### Migrating dirty lines from the **source** — ⚠️ SECTION CORRECTED 2026-08-29
+
+> **The "directory format change" cost below is WRONG and this section is superseded.** It predates
+> strict 1:1 pinning. Under pinning, all displaced lines in a row come from exactly one source set, so
+> the home set is one value **per set** — which `ATEntry.assocSet` already stores
+> (`SetBalanceUnit.scala:26`). No per-way directory field is needed, and the address IS reconstructable
+> via `expandAddress(tag, AT[row].assocSet)`. Verified against the RTL in coder task 003 Stage 0.
+> Current design: `ai-documents/coder/003-serve-in-place/`. The reasoning below is kept for the record.
+
+#### (superseded) Original assessment — 🔵 Phase 4, not now
 
 Breaks the `displaced ⇒ clean` invariant, which is load-bearing:
 

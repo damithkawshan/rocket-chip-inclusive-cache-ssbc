@@ -1,5 +1,18 @@
 # Phase 3 — Making migration pay off (always-use design)
 
+> # ⚠️ SUPERSEDED 2026-08-29 — this file describes SWAP/REPATRIATE, which is deleted
+>
+> **The current design is serve-in-place. SSOT: [coder/003-serve-in-place/](coder/003-serve-in-place/)**
+> (`TASK.md` for the work order, `diagram.md` for the visuals).
+>
+> The paper (MICRO'09 §2.4) does **not** swap: *"the SBC does not swap lines to return them to their
+> original set... swapping... had a negligible impact on performance."* We overrode that at Q1 and
+> built repatriation; it was reversed on 2026-08-28 and **deleted from the RTL** in `50524ea`.
+>
+> Three claims in this file are now known false. They are marked inline below. Everything about
+> **pinned 1:1 association, teardown, thresholds and the performance model still stands** — that is
+> why this file is kept rather than deleted.
+
 ## What Phase 3 is for
 
 After Phase 2, migration moves lines to cold sets, but those moved copies are dead. If the CPU asks for one again, the cache ignores the on-chip copy and refetches from memory. So today the migration machinery gives zero speedup — it is pure overhead.
@@ -165,10 +178,23 @@ Today each migration re-picks a destination and overwrites the association table
 
 Every displaced line is **clean** by construction (Phase 2 only migrates clean, client-free victims), so memory holds identical bytes. That means **"drop the copy and fetch from memory" is always correct.** Every hard corner below degrades to this — losing speed, never correctness.
 
+> **⚠️ This net is being given up on purpose.** It is exactly what forbids migrating dirty victims,
+> and in any real workload most victims are dirty — so it is the cap on SBC's coverage, not just a
+> convenience. 003 step 2e drops the client-free half; Stage 3 drops the clean half. What replaces it
+> is address recovery via the AT (`expandAddress(tag, AT[row].assocSet)`) plus the `homeShadow`
+> sim-only check that polices it. **Read that as: after 003, "drop it and refetch" is no longer
+> universally safe.**
+
 ## Coherence audit — what cannot go wrong
 
-- **Releases** (L1 evicting to L2) can't target a displaced line — a Release needs a client holding the line, but a displaced line has no clients and can never gain one (it can't hit).
-- **Inner probes** can't target a displaced line — same reason.
+- ~~**Releases** (L1 evicting to L2) can't target a displaced line — a Release needs a client holding the line, but a displaced line has no clients and can never gain one (it can't hit).~~
+- ~~**Inner probes** can't target a displaced line — same reason.~~
+
+  **❌ PREMISE DEAD, 2026-08-29.** Both rest on "a displaced line has no clients and can never gain
+  one". Serving in place gives it one. Both cases are now real and handled: Releases/flushes arm the
+  secondary search on the C and X plan branches (003 step 2d, finding P2), and probe responses route
+  on `(probeSet, probeTag)` rather than set alone (003 Stage 1). **Redo this audit against
+  `coder/003-serve-in-place/TASK.md` §7, not against this list.**
 - **Permission upgrades** (e.g. BtoT) act only on native lines — an upgrade means a client holds it, so it's native in S.
 - **No outer probes** exist — the CacheCork below the L2 turns everything into uncached memory traffic.
 
@@ -182,7 +208,7 @@ Every displaced line is **clean** by construction (Phase 2 only migrates clean, 
 
 1. **Correctness prerequisite** — pinned 1:1 association (plus the shared building blocks: directory secondary-search, MSHR pairInfo latch). Lands first; makes everything else safe. The flush fix is dropped — MMIO flush unsupported on this platform (documented constraint).
 2. **Mandatory secondary search on miss** — the second directory read of the partner with a displaced-tag match (reuses the Phase-2 `dread` lane).
-3. **The swap** — swap-then-replay serving.
+3. ~~**The swap** — swap-then-replay serving.~~ **❌ built, then deleted (`50524ea`). Replaced by serve-in-place — see `coder/003-serve-in-place/`.**
 4. **Teardown** — OR-of-displaced-bits, native-miss trigger, plus our cold-source drain (a full partner never gets native misses to clean itself, so we drain quiet ones in the background).
 5. **Later** — re-enable `s_verify`, the serve-from-buffer latency optimization, and a throttle if thrashing shows up.
 
@@ -193,7 +219,7 @@ Every displaced line is **clean** by construction (Phase 2 only migrates clean, 
 - **Fence pressure:** the partner-set fence blocks all requests to the partner during a swap window. Bounded (already true in Phase 2), but always-use makes windows frequent — worth a counter to watch.
 - **Throughput:** every miss in a paired set now pays a mandatory second directory read, and the one-token rule serializes swaps to one in flight. Fine for v1, measure later.
 - **Destination-side `clients` staleness (2026-08-24):** 46% of migration aborts are on a `clients` bit that is provably false — max true client-held fraction is 6.25% (the I$ is not a TL-C client, so all bits come from a 4-line D$), measured 52%. Root cause is Rocket's `acquireBeforeRelease = false` default (`silentDrop`), **not** our RTL. Try the config flag before building the destination probe: [destination-side-blocker.md](destination-side-blocker.md).
-- **Migration is currently a net negative — now MEASURED (2026-08-25):** first SBC-on vs SBC-off differential run on a real benchmark (`matmult` N=32). Data correct (identical checksum, 1,737 migrations), but **+42% cycles and 9.29x the DRAM traffic**. Miss rate ~10% -> ~93%: the L2 effectively stops working. Leading (unproven) cause: sets fill with displaced lines, which cannot serve hits and are evictable only by the last-resort reclaim tier, so effective associativity collapses. **This is the number Phase 3 has to beat.** SSOT: [matmult-differential-2026-08-25.md](matmult-differential-2026-08-25.md).
+- **Migration is a net negative — MEASURED 2026-08-25, ⚠️ figures now STALE (superseded by `522c540` and the 003 corruption fix; last verified differential is +0.10% / 1.00x at `b6156d4`):** first SBC-on vs SBC-off differential run on a real benchmark (`matmult` N=32). Data correct (identical checksum, 1,737 migrations), but **+42% cycles and 9.29x the DRAM traffic**. Miss rate ~10% -> ~93%: the L2 effectively stops working. Leading (unproven) cause: sets fill with displaced lines, which cannot serve hits and are evictable only by the last-resort reclaim tier, so effective associativity collapses. **This is the number Phase 3 has to beat.** SSOT: [matmult-differential-2026-08-25.md](matmult-differential-2026-08-25.md).
 
 ## Threshold fix + re-run (carried over)
 
@@ -241,14 +267,17 @@ counters (risks 4/6 — cheap, recommended).
 ## Not in Phase 3 (on purpose)
 
 - Tag/data decoupling (data-pointer method) — shelved; breaks 1:1 tag↔data indexing and the bounded two-set window.
-- Serving a secondary hit *in place* (zero movement) — TileLink inclusivity denies it; that's why we swap.
+- ~~Serving a secondary hit *in place* (zero movement) — TileLink inclusivity denies it; that's why we swap.~~
+  **❌ FALSE, retracted 2026-08-29.** Inclusivity does not deny it — it requires the probe and release
+  paths to take their set from the AT rather than from the entry's location. That is exactly what
+  task 003 builds. Serve-in-place is the current design.
 - Handling dirty / client-held lines at the destination — Phase 4.
 - Everything stays gated by the SBC enable flag; baseline runs unaffected.
 
 ## Decisions locked in
 
 - **Always-use**, not detect-first.
-- **Swap-then-replay** serving (serve-from-buffer deferred).
+- ~~**Swap-then-replay** serving (serve-from-buffer deferred).~~ **❌ REVERSED 2026-08-28. Serve in place, per the paper.**
 - **Destination pinned until teardown; strict 1:1** (matches the paper).
 - **Pinned association is THE correctness prerequisite** — build first. The flush fix is dropped: MMIO flush is unsupported on this platform (documented constraint, no hardware).
 - **Clean-copy drop-and-refetch** is the universal escape hatch for every corner.
