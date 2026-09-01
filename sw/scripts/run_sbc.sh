@@ -5,8 +5,8 @@ set -euo pipefail
 
 # ----------------------- edit this block -----------------------
 CHIPYARD=/home/damith/Research/repos/chipyard_performance_eval/chipyard
-CONFIGS=(VerilatorRocket8KL116KL2Config) # VerilatorRocket8KL116KL2DstCollisionConfig)  # forced dst=0 → collision fires every run
-TESTS=(migration_stress_test) # dst_collision_repro migration_stress_test)     # directed repro + the run that crashed @426us
+CONFIGS=(VerilatorRocket8KL116KL2Config)  # add VerilatorRocket8KL116KL2SipTestConfig for serve_in_place_test
+TESTS=(migration_stress_test)  # add serve_in_place_test alongside the SIP config
 LABEL="phase2-verification-test"                  # optional suffix on the output dir name (e.g. "no_bug_003")
 MAX_CYCLES=100000000  # sim iteration cap (+max-cycles)
 THREADS=19            # VERILATOR_THREADS

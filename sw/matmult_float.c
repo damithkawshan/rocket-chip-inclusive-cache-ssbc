@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <stdint.h>
+#include "sbc_mmio.h"
 
 /* Matrix dimensions */
 #define UPPERLIMIT 10
@@ -157,6 +158,16 @@ int main(void)
     
     /* Verify result */
     printf("Verifying result...\n");
+    /* Amendment 11 §11.3: full SBC counter line alongside this benchmark's own golden verify. */
+    printf("[SBC-COUNTERS] mig=%lu att=%lu abo=%lu secHits=%lu secMiss=%lu secWrite=%lu secProbe=%lu "
+           "dispRel=%lu dispDrop=%lu secC=%lu secPerm=%lu homeBranch=%lu parked=%lu\n",
+           (unsigned long)sbc_rd(SBC_MIGRATIONS), (unsigned long)sbc_rd(SBC_ATTEMPTED),
+           (unsigned long)sbc_rd(SBC_ABORTED),    (unsigned long)sbc_rd(SBC_SECHITS),
+           (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECWRITE),
+           (unsigned long)sbc_rd(SBC_SECPROBE),   (unsigned long)sbc_rd(SBC_DISPRELEASE),
+           (unsigned long)sbc_rd(SBC_DISPDROP),   (unsigned long)sbc_rd(SBC_SECC),
+           (unsigned long)sbc_rd(SBC_SECPERM),    (unsigned long)sbc_rd(SBC_HOMEBRANCH),
+           (unsigned long)sbc_rd(SBC_PARKED));
     if (verify_benchmark()) {
         printf("\n==========================================\n");
         printf("PASS: Matrix multiply verification passed\n");

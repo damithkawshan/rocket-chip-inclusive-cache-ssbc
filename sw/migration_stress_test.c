@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include "sbc_mmio.h"   /* shared SBC MMIO register map */
 
 /* real bus transactions, never optimized away */
 static inline uint64_t do_ld(uintptr_t a) {
@@ -40,24 +41,12 @@ static inline uintptr_t set_addr(int s, int t) {
 
 static uint64_t sink;
 
-/* SBC MMIO counters (Control.scala). Read-only; used only for the end-of-run summary, so the cases
- * above stay pure loads/stores. Added in 003 Stage 2b: "did migrations collapse?" is a required
- * check when the evict-or-migrate decision moves, and it cannot be answered from a non-verbose log. */
-#define L2_CTRL_BASE   0x2010000UL
-#define SBC_MIGRATIONS (L2_CTRL_BASE + 0x328)
-#define SBC_SECHITS    (L2_CTRL_BASE + 0x330)
-#define SBC_SECMISS    (L2_CTRL_BASE + 0x338)
-#define SBC_ATTEMPTED  (L2_CTRL_BASE + 0x348)
-#define SBC_ABORTED    (L2_CTRL_BASE + 0x350)
-#define SBC_SECPERM    (L2_CTRL_BASE + 0x360)
-static inline uint64_t mmio_rd(uintptr_t a) {
-    volatile uint64_t *p = (volatile uint64_t *)a; return *p;
-}
+/* SBC MMIO counters — offsets live in the shared header so the two test binaries cannot drift. */
 static void sbc_summary(void) {
     printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu secPerm=%lu\n",
-           (unsigned long)mmio_rd(SBC_MIGRATIONS), (unsigned long)mmio_rd(SBC_ATTEMPTED),
-           (unsigned long)mmio_rd(SBC_ABORTED),    (unsigned long)mmio_rd(SBC_SECHITS),
-           (unsigned long)mmio_rd(SBC_SECMISS),    (unsigned long)mmio_rd(SBC_SECPERM));
+           (unsigned long)sbc_rd(SBC_MIGRATIONS), (unsigned long)sbc_rd(SBC_ATTEMPTED),
+           (unsigned long)sbc_rd(SBC_ABORTED),    (unsigned long)sbc_rd(SBC_SECHITS),
+           (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECPERM));
 }
 
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.
