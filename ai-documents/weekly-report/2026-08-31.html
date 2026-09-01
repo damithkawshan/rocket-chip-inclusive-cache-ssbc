@@ -1,0 +1,799 @@
+<title>Serving From the Partner Set</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #F6F8FA;
+    --surface:    #EBEEF3;
+    --surface-2:  #E1E6ED;
+    --ink:        #16202B;
+    --ink-soft:   #4A5765;
+    --ink-mute:   #798796;
+    --rule:       #D2D8E1;
+    --rule-soft:  #E2E6EC;
+    --accent:     #A65423;
+    --accent-bg:  #F2E5DA;
+    --good:       #2C6B4B;
+    --good-bg:    #DEEBE3;
+    --bad:        #9E362B;
+    --bad-bg:     #F1DEDB;
+
+    --bleed: 0px;
+
+    --f-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    --f-body:    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #11171E;
+      --surface:   #1A222B;
+      --surface-2: #212B35;
+      --ink:       #E3E8EE;
+      --ink-soft:  #AAB6C2;
+      --ink-mute:  #7E8B99;
+      --rule:      #2C3742;
+      --rule-soft: #222B35;
+      --accent:    #D8894E;
+      --accent-bg: #2E2118;
+      --good:      #6FBE90;
+      --good-bg:   #16281F;
+      --bad:       #E08575;
+      --bad-bg:    #2C1A17;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #11171E;
+    --surface:   #1A222B;
+    --surface-2: #212B35;
+    --ink:       #E3E8EE;
+    --ink-soft:  #AAB6C2;
+    --ink-mute:  #7E8B99;
+    --rule:      #2C3742;
+    --rule-soft: #222B35;
+    --accent:    #D8894E;
+    --accent-bg: #2E2118;
+    --good:      #6FBE90;
+    --good-bg:   #16281F;
+    --bad:       #E08575;
+    --bad-bg:    #2C1A17;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 17px;
+    line-height: 1.65;
+    overflow-x: clip;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 74ch;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 1rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 6vw, 3.1rem);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .lede {
+    font-size: 1.14rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem 1.1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    color: var(--ink-mute);
+  }
+  .stamp b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---- headline result ---- */
+  .verdict {
+    background: var(--good-bg);
+    border-left: 3px solid var(--good);
+    padding: 1.4rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .verdict .big {
+    font-family: var(--f-display);
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--good);
+    letter-spacing: -0.01em;
+  }
+  .verdict p { margin: 0; color: var(--ink-soft); font-size: 0.98rem; }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 1rem; }
+
+  h2 {
+    font-family: var(--f-display);
+    font-size: 1.42rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    line-height: 1.25;
+    margin: 0;
+    text-wrap: balance;
+    padding-bottom: 0.65rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  p { margin: 0; max-width: 66ch; }
+  .muted { color: var(--ink-soft); }
+
+  /* ---- the fixes ---- */
+  .fix {
+    display: grid;
+    grid-template-columns: 3.1rem 1fr;
+    gap: 0 1.15rem;
+    padding: 1.5rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .fix:last-of-type { border-bottom: 0; }
+
+  .fix .num {
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 0.28rem;
+    letter-spacing: 0.04em;
+  }
+  .fix .body { display: flex; flex-direction: column; gap: 0.7rem; min-width: 0; }
+  .fix h3 {
+    font-family: var(--f-display);
+    font-size: 1.13rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.3;
+  }
+
+  .qa { display: flex; flex-direction: column; gap: 0.45rem; }
+  .qa .k {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+  .qa p { font-size: 0.99rem; }
+
+  .outcome {
+    align-self: flex-start;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-family: var(--f-mono);
+    font-size: 0.79rem;
+    font-weight: 500;
+    padding: 0.34rem 0.7rem;
+  }
+
+  /* ---- figure: breaks the text column ---- */
+  @media (min-width: 74rem) { :root { --bleed: 5rem; } }
+
+  figure {
+    margin: 0;
+    margin-inline: calc(-1 * var(--bleed));
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+  .plate {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 1.6rem 1.4rem;
+    overflow-x: auto;
+  }
+  .plate svg { display: block; width: 100%; height: auto; min-width: 33rem; }
+  figcaption {
+    font-size: 0.9rem;
+    color: var(--ink-mute);
+    line-height: 1.6;
+    max-width: 72ch;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 500; }
+
+  /* SVG tokens */
+  .d-frame { fill: none; stroke: var(--rule); stroke-width: 1.5; }
+  .d-box   { fill: var(--paper); stroke: var(--rule); stroke-width: 1.5; }
+  .d-core  { fill: var(--surface-2); stroke: var(--ink-mute); stroke-width: 1.5; }
+  .d-dir   { fill: var(--good-bg); stroke: var(--good); stroke-width: 1.5; }
+  .d-ours  { fill: var(--accent-bg); stroke: var(--accent); stroke-width: 1.5; }
+  .d-band  { fill: none; stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 5 4; opacity: 0.55; }
+  .d-line  { stroke: var(--ink-mute); stroke-width: 1.5; fill: none; }
+  .d-dash  { stroke: var(--good); stroke-width: 1.4; fill: none; stroke-dasharray: 5 4; }
+  .d-h     { font-family: var(--f-display); font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .d-t     { font-family: var(--f-body); font-size: 11.5px; fill: var(--ink-soft); }
+  .d-l     { font-family: var(--f-mono); font-size: 10px; fill: var(--ink-mute); letter-spacing: 0.06em; }
+  .d-cap   { font-family: var(--f-mono); font-size: 9.5px; fill: var(--accent); letter-spacing: 0.12em; }
+
+  /* ---- the split figure ---- */
+  .split {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.9rem;
+  }
+  @media (min-width: 46rem) { .split { grid-template-columns: repeat(3, 1fr); } }
+  .split .card {
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-top: 2px solid var(--accent);
+    padding: 0.95rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .split .card .nm {
+    font-family: var(--f-mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .split .card .ds { font-size: 0.87rem; color: var(--ink-soft); line-height: 1.5; }
+  .split .card .us {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    color: var(--ink-mute);
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--rule-soft);
+    margin-top: 0.15rem;
+  }
+  .was {
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    color: var(--ink-mute);
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .was code { background: var(--bad-bg); color: var(--bad); }
+
+  /* ---- table ---- */
+  .scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.93rem;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.62rem 0.9rem 0.62rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    white-space: nowrap;
+  }
+  th {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    border-bottom: 1px solid var(--rule);
+  }
+  td:first-child, th:first-child { white-space: normal; min-width: 17ch; }
+  td.n { font-family: var(--f-mono); }
+  .now { color: var(--good); font-weight: 600; }
+  .then { color: var(--ink-mute); }
+  .fail { color: var(--bad); }
+
+  /* ---- lists ---- */
+  ul { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  li { max-width: 64ch; padding-left: 0.15rem; }
+  li::marker { color: var(--accent); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.87em;
+    background: var(--surface);
+    padding: 0.1em 0.36em;
+    color: var(--ink);
+  }
+
+  .note {
+    background: var(--surface);
+    padding: 1.35rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .note h2 { border: 0; padding: 0; font-size: 1.13rem; }
+
+  .caution {
+    background: var(--bad-bg);
+    border-left: 3px solid var(--bad);
+    padding: 1.2rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .caution h3 {
+    font-family: var(--f-display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--bad);
+  }
+  .caution p { font-size: 0.95rem; color: var(--ink-soft); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    color: var(--ink-mute);
+    line-height: 1.7;
+  }
+
+  @media (max-width: 34rem) {
+    body { font-size: 16px; }
+    .wrap { padding: 2.5rem 1.15rem 4rem; gap: 2.5rem; }
+    .fix { grid-template-columns: 1fr; gap: 0.5rem; }
+    .fix .num { padding-top: 0; }
+    .plate { padding: 1rem 0.8rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Research progress · Set-Balancing Cache</p>
+    <h1>A moved line served real data for the first time</h1>
+    <p class="lede">
+      The cache can now find a line that was relocated to a neighbouring set and answer from where it
+      sits &mdash; with no trip to main memory. That is the mechanism the whole project exists for,
+      and it works. The data-corruption bug that had been open since the start of this phase is
+      closed.
+    </p>
+    <div class="stamp">
+      <span><b>Platform</b> Chipyard · Rocket · Verilator</span>
+      <span><b>Design</b> L2 inclusive cache, Chisel RTL</span>
+      <span><b>Date</b> 31 Aug 2026</span>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <div class="big">7 of 7 tests pass · 2,873 lines served from a partner set</div>
+    <p>No assertion failures, both data-integrity monitors clean. Last week that count was zero,
+    because the mechanism did not exist. Cost when the feature does not fire: +0.10% cycles, 1.00×
+    memory traffic.</p>
+  </div>
+
+  <section>
+    <h2>Where last week left off</h2>
+    <p class="muted">The 21 August report ended with three next steps. All three are done.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Last week&rsquo;s next step</th><th>Outcome</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Apply the stale-record fix on the <em>receiving</em> side</td>
+            <td style="white-space:normal">Done &mdash; and it was two defects, not one. The cache was heating its own sets by looking at them, and &ldquo;coldest&rdquo; measured the wrong thing: a set whose lines always hit looks idle while being completely full.</td>
+          </tr>
+          <tr>
+            <td>Re-measure on a realistic workload</td>
+            <td style="white-space:normal">Done. A third-party benchmark suite is ported to the platform. The first measurement was bad (+42% cycles); after this week&rsquo;s fixes it is <span class="now">+0.10% cycles, 1.00&times; memory traffic</span>.</td>
+          </tr>
+          <tr>
+            <td>Begin Phase&nbsp;3 &mdash; serve the line from the partner set</td>
+            <td style="white-space:normal">Done, and finished. This is the headline.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>The architecture</h2>
+    <p>
+      What the L2 cache looks like, and where our additions sit. The three blocks in
+      <span style="color:var(--accent);font-weight:500">terracotta</span> are ours; the directory in
+      <span style="color:var(--good);font-weight:500">green</span> is a stock component we extended.
+      Everything else is the unmodified SiFive design.
+    </p>
+
+    <figure>
+      <div class="plate">
+        <svg viewBox="0 0 800 604" role="img" aria-labelledby="archtitle archdesc">
+          <title id="archtitle">Block diagram of the L2 inclusive cache with Set-Balancing additions</title>
+          <desc id="archdesc">The Rocket core connects to the L2 cache, which contains a Directory, an MSHR pool and a BankedStore data array, plus three added blocks: the SetBalanceUnit, the Destination Selector and the SetCopyUnit. The L2 connects downward to main memory.</desc>
+
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="context-stroke" />
+            </marker>
+          </defs>
+
+          <!-- CPU -->
+          <rect class="d-core" x="250" y="8" width="300" height="46" />
+          <text class="d-h" x="400" y="30" text-anchor="middle">Rocket core</text>
+          <text class="d-t" x="400" y="46" text-anchor="middle">L1 instruction and data caches</text>
+
+          <!-- CPU link -->
+          <line class="d-line" x1="400" y1="54" x2="400" y2="140" marker-end="url(#ar)" marker-start="url(#ar)" />
+          <text class="d-l" x="412" y="90">requests, answers, probes</text>
+
+          <!-- L2 frame -->
+          <rect class="d-frame" x="8" y="96" width="784" height="404" />
+          <text class="d-cap" x="24" y="118">L2 INCLUSIVE CACHE &mdash; ONE BANK</text>
+
+          <!-- Directory -->
+          <rect class="d-dir" x="32" y="140" width="228" height="122" />
+          <text class="d-h" x="46" y="167">Directory</text>
+          <text class="d-t" x="46" y="188">tag and state, one row per set</text>
+          <text class="d-t" x="46" y="212">+ displaced bit: this line is</text>
+          <text class="d-t" x="46" y="227">&#160;&#160;a guest from another set</text>
+          <text class="d-t" x="46" y="248">+ secondary search: guests only</text>
+
+          <!-- MSHR -->
+          <rect class="d-core" x="286" y="140" width="228" height="122" />
+          <text class="d-h" x="300" y="167">MSHR pool</text>
+          <text class="d-t" x="300" y="188">the protocol engine</text>
+          <text class="d-t" x="300" y="212">one slot per in-flight request</text>
+          <text class="d-t" x="300" y="236">decides: evict, move, or serve</text>
+
+          <!-- BankedStore -->
+          <rect class="d-core" x="540" y="140" width="228" height="122" />
+          <text class="d-h" x="554" y="167">BankedStore</text>
+          <text class="d-t" x="554" y="188">the 64-byte blocks themselves</text>
+          <text class="d-t" x="554" y="212">found by row, way, beat</text>
+          <text class="d-t" x="554" y="236">knows nothing about addresses</text>
+
+          <!-- horizontal links -->
+          <line class="d-line" x1="262" y1="201" x2="284" y2="201" marker-end="url(#ar)" marker-start="url(#ar)" />
+          <line class="d-line" x1="516" y1="201" x2="538" y2="201" marker-end="url(#ar)" marker-start="url(#ar)" />
+
+          <!-- SBC band -->
+          <rect class="d-band" x="32" y="298" width="736" height="172" />
+          <text class="d-cap" x="46" y="318">SET-BALANCING ADDITIONS</text>
+
+          <!-- SetBalanceUnit -->
+          <rect class="d-ours" x="46" y="330" width="228" height="124" />
+          <text class="d-h" x="60" y="356">SetBalanceUnit</text>
+          <text class="d-t" x="60" y="377">per-set heat counters</text>
+          <text class="d-t" x="60" y="401">Association Table: which set is</text>
+          <text class="d-t" x="60" y="416">paired with which &mdash; and so</text>
+          <text class="d-t" x="60" y="431">where a guest really belongs</text>
+
+          <!-- DSS -->
+          <rect class="d-ours" x="298" y="330" width="204" height="124" />
+          <text class="d-h" x="312" y="356">Destination Selector</text>
+          <text class="d-t" x="312" y="377">picks a cold partner set</text>
+          <text class="d-t" x="312" y="401">for a hot set to spill into</text>
+
+          <!-- SetCopyUnit -->
+          <rect class="d-ours" x="526" y="330" width="228" height="124" />
+          <text class="d-h" x="540" y="356">SetCopyUnit</text>
+          <text class="d-t" x="540" y="377">moves one block from</text>
+          <text class="d-t" x="540" y="401">one row to another</text>
+
+          <!-- Directory -> SBU (heat events) -->
+          <line class="d-dash" x1="120" y1="264" x2="120" y2="328" marker-end="url(#ar)" />
+          <text class="d-l" x="130" y="300">hit / miss events</text>
+
+          <!-- MSHR -> SBU -->
+          <line class="d-line" x1="330" y1="264" x2="248" y2="328" marker-end="url(#ar)" marker-start="url(#ar)" />
+          <text class="d-l" x="196" y="288">am I paired?</text>
+
+          <!-- SBU <-> DSS -->
+          <line class="d-line" x1="276" y1="392" x2="296" y2="392" marker-end="url(#ar)" marker-start="url(#ar)" />
+
+          <!-- MSHR -> SCU -->
+          <line class="d-line" x1="470" y1="264" x2="562" y2="328" marker-end="url(#ar)" />
+          <text class="d-l" x="480" y="300">move this block</text>
+
+          <!-- SCU -> BankedStore -->
+          <line class="d-line" x1="700" y1="328" x2="700" y2="264" marker-end="url(#ar)" />
+
+          <!-- memory link -->
+          <line class="d-line" x1="400" y1="500" x2="400" y2="548" marker-end="url(#ar)" marker-start="url(#ar)" />
+          <text class="d-l" x="412" y="528">fetch, write back, data</text>
+
+          <!-- DRAM -->
+          <rect class="d-core" x="250" y="548" width="300" height="46" />
+          <text class="d-h" x="400" y="570" text-anchor="middle">Main memory</text>
+          <text class="d-t" x="400" y="586" text-anchor="middle">DRAM</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>How a request flows through it.</b> A request misses in its own set, and the cache
+        <b>holds the eviction back</b> instead of acting on it. It asks the Association Table whether
+        its set is paired, and with whom. It then runs a <b>secondary search</b> of the partner set,
+        looking only for guest lines. Found &rarr; serve the block straight out of the partner&rsquo;s
+        row: nothing evicted, nothing copied, nothing fetched. Not found &rarr; arm the held-back
+        eviction and run the ordinary miss path. The cost of having looked is one extra directory
+        read.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>The change of direction, and why</h2>
+    <p>We had built the wrong thing, and this week we replaced it.</p>
+    <p class="muted">
+      The old design <em>copied the line back home</em> on a hit: evict a healthy line from the home
+      set to make room, copy the block across, erase the original. The reference paper does not do
+      this &mdash; it serves the line where it already sits. We had overridden that choice earlier for
+      two reasons, and both turned out to be wrong.
+    </p>
+    <ul>
+      <li><strong>&ldquo;Serving in place needs a bigger directory &mdash; every slot would have to
+      record which set its line really belongs to.&rdquo;</strong> False. Because each set is paired
+      with exactly one partner, that information is <em>one value per set</em>, and the Association
+      Table already stores it. We were pricing a per-slot field we never needed.</li>
+      <li><strong>&ldquo;Our test L1 cache is tiny, so a served line falls straight back
+      out.&rdquo;</strong> True, but an artifact of the small test configuration, not of the
+      design.</li>
+    </ul>
+    <p>
+      Serving in place is cheaper on every single hit &mdash; it deletes one block copy, one eviction
+      of a healthy line, and one directory write &mdash; and it is the prerequisite for the next
+      phase.
+    </p>
+  </section>
+
+  <section>
+    <h2>The structural change underneath it</h2>
+    <p>
+      One field in the design, named <code>set</code>, had been doing two different jobs that were
+      always the same number &mdash; until now. For a guest line the bytes are in <em>row 7</em>, but
+      the address belongs to <em>set 5</em>. Use the wrong one on a write-back and you overwrite an
+      unrelated line in memory: silent, unrecoverable corruption.
+    </p>
+
+    <figure>
+      <div class="plate">
+        <p class="was" style="margin-bottom:1rem">
+          <span>ONE FIELD</span> <code>set</code> <span>&rarr; THREE, EACH WITH ONE JOB</span>
+        </p>
+        <div class="split">
+          <div class="card">
+            <span class="nm">physSet</span>
+            <span class="ds">Which physical row of memory the bytes are actually in.</span>
+            <span class="us">directory · data array · hazards</span>
+          </div>
+          <div class="card">
+            <span class="nm">homeSet</span>
+            <span class="ds">Which part of the real memory address this is.</span>
+            <span class="us">fetches · write-backs</span>
+          </div>
+          <div class="card">
+            <span class="nm">probeSet + probeTag</span>
+            <span class="ds">Where a reply from the CPU should be routed back to.</span>
+            <span class="us">probes to the L1</span>
+          </div>
+        </div>
+      </div>
+      <figcaption>
+        <b>We deleted the field rather than renaming it.</b> That turned all thirteen places that used
+        it into compile errors, so each one had to be decided deliberately. Renaming would have left
+        any missed site working perfectly for ordinary lines and failing only for guests &mdash; the
+        worst possible failure mode, and one this project had already been caught by twice.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What we found and fixed</h2>
+    <p class="muted">Six real defects. Three are worth the time.</p>
+
+    <div class="fix">
+      <div class="num">01</div>
+      <div class="body">
+        <h3>The corruption bug that had survived two debugging tasks</h3>
+        <div class="qa">
+          <span class="k">How it was found</span>
+          <p>On the <strong>first run</strong> of a new simulation-only monitor that records, for
+          every block written into the data array, which address the writer <em>believed</em> it was
+          writing &mdash; then checks that on every read.</p>
+        </div>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>The block-copy engine collided with itself. The copy-home path and the copy-away path
+          could target the same slot five cycles apart, because one of them was missing a guard the
+          other had.</p>
+        </div>
+        <div class="qa">
+          <span class="k">Outcome</span>
+          <p>The failing test passes. The bug is now <strong>gone rather than fixed</strong> &mdash;
+          the copy-home path it lived in was deleted wholesale when we switched to serving in
+          place.</p>
+        </div>
+        <p class="outcome">Monitor built in an afternoon · paid for itself that evening</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">02</div>
+      <div class="body">
+        <h3>Serving a line put it into a state the code then refused to accept</h3>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>Serving a line to a <em>writer</em> leaves it exclusively held by the CPU &mdash; but the
+          acceptance test for serving <strong>rejected exactly that state</strong>. So the next write
+          to the same line was <em>guaranteed</em> to be rejected, and rejection meant erasing the
+          entry with no probe to the CPU, no write-back and no accounting. The cache forgot a line the
+          CPU still held and had modified.</p>
+        </div>
+        <div class="qa">
+          <span class="k">Fix</span>
+          <p>Treat a hit in the partner set exactly like an ordinary hit that happens to be in a
+          different row. If the CPU holds it, ask for it back &mdash; the same thing the cache already
+          does for ordinary lines.</p>
+        </div>
+        <p class="outcome">12% of all serves now find that once-fatal state, and survive it</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">03</div>
+      <div class="body">
+        <h3>&ldquo;No longer reachable&rdquo; was wrong, and that is the lesson</h3>
+        <div class="qa">
+          <span class="k">Cause</span>
+          <p>A monitoring check was reading a value one cycle before it was written, producing a false
+          alarm. We recorded it as harmless and <em>no longer reachable</em>, because an unrelated
+          change had moved the code that triggered it.</p>
+        </div>
+        <div class="qa">
+          <span class="k">What actually happened</span>
+          <p>The defect was never removed &mdash; only made rare. When fix 02 above made that code
+          path busier, it fired again immediately.</p>
+        </div>
+        <p class="outcome">Three of this project&rsquo;s worst bugs have now been this exact shape</p>
+      </div>
+    </div>
+
+    <p class="muted">
+      Also fixed: a channel that could deadlock the cache permanently; a case where the cache could
+      drop a line the CPU still held, breaking the inclusion property; and a stale-record defect that
+      had been labelled &ldquo;harmless&rdquo; for a whole task &mdash; it was never harmless, only
+      hidden by code we then deleted.
+    </p>
+  </section>
+
+  <section>
+    <h2>Measured results</h2>
+    <p class="muted">Full correctness suite, seven directed tests, feature on.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Metric</th><th>21 Aug</th><th>31 Aug</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Correctness suite</td><td class="n then">7 / 7</td><td class="n now">7 / 7</td></tr>
+          <tr><td>Assertion failures</td><td class="n then">none</td><td class="n now">none</td></tr>
+          <tr><td><strong>Lines served from a partner set</strong></td><td class="n then">0 &mdash; no mechanism</td><td class="n now">2,873</td></tr>
+          <tr><td>Memory block-fetches avoided</td><td class="n then">0</td><td class="n now">2,873</td></tr>
+          <tr><td>Data-integrity monitors</td><td class="n then">none</td><td class="n now">2, both clean</td></tr>
+          <tr><td>Long-open corruption bug</td><td class="n then fail">open</td><td class="n now">closed</td></tr>
+          <tr><td>Cost when the feature is idle</td><td class="n then fail">+42% cycles · 9.29&times;</td><td class="n now">+0.10% cycles · 1.00&times;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted">
+      Migrations fell 22,691 &rarr; 17,616 (&minus;22%) across the serve change. <strong>This is
+      expected, and arguably the point:</strong> moved lines now survive being used instead of being
+      destroyed, so partner sets stay occupied and fewer new moves are accepted. A capacity effect,
+      not a regression.
+    </p>
+  </section>
+
+  <section>
+    <h2>Two results reported plainly, because both are negative</h2>
+
+    <div class="caution">
+      <h3>The serve hit rate is flat, not rising</h3>
+      <p>
+        It starts at 16% in the small targeted tests and settles at ~2.5% for the rest of the run. The
+        bulk of that run is one saturation test that streams 32 distinct lines per set against 8 slots
+        &mdash; the reuse distance exceeds capacity, so there is <em>nothing to re-hit</em>. A pool of
+        preserved lines cannot help a workload with no reuse. This reads as a property of the test
+        rather than the design, but it needs a workload with real reuse to confirm.
+      </p>
+    </div>
+
+    <div class="caution">
+      <h3>One code path is built but never exercised</h3>
+      <p>
+        When the cache holds only a <em>shared</em> copy and the CPU wants to write, it must serve the
+        data and fetch write permission separately. That path elaborates and is asserted safe, but
+        this workload never took it once. <strong>It is not proven working</strong> and needs a
+        directed test.
+      </p>
+    </div>
+
+    <p class="muted">
+      Both are consequences of the test configuration: 8 sets, 8 ways, 256-byte L1 caches. Adequate
+      for proving correctness, <strong>not</strong> adequate for a performance claim.
+    </p>
+  </section>
+
+  <section>
+    <h2>Next steps</h2>
+    <ul>
+      <li><strong>Allow moved lines to be dirty.</strong> Only clean lines can be moved today. In real
+      programs most candidates are dirty, so this is the single biggest constraint on how often the
+      mechanism can fire &mdash; and the address-recovery machinery it needs was built and proved this
+      week.</li>
+      <li><strong>A bigger, more realistic configuration.</strong> The current one is too small for a
+      performance number to mean anything. It requires rewriting the test&rsquo;s hard-coded geometry
+      first.</li>
+      <li><strong>A directed test for the two unexercised paths</strong> &mdash; the
+      shared-copy-plus-write case, and a workload with genuine reuse, to find out whether the hit rate
+      climbs.</li>
+    </ul>
+  </section>
+
+  <div class="note">
+    <h2>A note on method</h2>
+    <p class="muted">
+      The strongest result of the week was not a fix, it was an instrument. A simulation-only monitor
+      that records what each writer <em>believed</em> it was doing, and checks it on every read, found
+      a bug in one run that two full tasks of reasoning had failed to locate &mdash; and it found it
+      on the cycle it happened, rather than as a wrong value in memory ten million cycles later.
+    </p>
+    <p class="muted">
+      The corresponding warning: three separate defects this week were logged as &ldquo;harmless by
+      inspection&rdquo;, and every one was actually <em>hidden by other code</em>. When that other
+      code was deleted, they became live. Findings marked benign are now re-opened whenever nearby
+      code is removed.
+    </p>
+  </div>
+
+  <footer>
+    Verified on the stock Verilator configuration (8&nbsp;sets × 8&nbsp;ways L2, single Rocket core).<br>
+    Correctness suite: seven directed corner-case tests, each checking data integrity after a line has been moved.<br>
+    Block-fetches avoided is arithmetic from the serve counter, not an independent memory-traffic measurement.
+  </footer>
+
+</div>

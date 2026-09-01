@@ -1041,3 +1041,175 @@ One caveat that *is* live now: **the `migration_stress_test` numbers below cover
 cases**, because the run halts at case 4. Any statement about migration counts, `SEC-HIT`/`SEC-MISS`
 or the C-head watchdog covers 646k cycles, not a full run, and I have not quoted any of them as a
 result.
+
+---
+
+# GATE 5 — the serve-in-place test (Amendment 10) — IN PROGRESS
+
+Status as of this entry: **RTL + counters + configs + test harness built and elaborating clean;
+single-core run is feature-correct with zero RTL asserts; three cases are still coverage gaps and one
+harness change regressed. Not signed off.**
+
+## What was built
+
+**RTL / counters (all elaborate clean; SBC-off unchanged).**
+- 8 new MMIO counters at `0x368`–`0x3A0` (`SBC_SecWrite/SecProbe/DispRelease/DispDrop/SecC/HomeBranch/
+  AtAssoc/Parked`), wired MSHR-pulse → Scheduler OR-reduce → SBU counter → `SBCStats` → Control regmap.
+  Single shared header `sw/sbc_mmio.h`; `migration_stress_test.c` switched to it (its only edit).
+- `SBC_Parked` is a plain occupancy counter (++ on commit, −− on displaced erase/reclaim), no assert.
+- `SBC_HomeBranch` pulses only on the home-read result cycle (not the search / 2nd-dir-read cycles).
+- **BRANCH reachability settled at elaboration:** `[SBC][elab] BRANCH reachability: p=false m=true
+  r=false b=false`. `b=false` ⇒ BRANCH is unreachable on this platform, so `secPerm=0` is correct by
+  construction and `secNeedPerm` is dead code here (kept for platforms where an outer manager returns
+  read-only). Confirmed at runtime by S9: `homeBranch=0`.
+
+**Bug/consistency fixes (RTL).**
+- `sbcForceDstSet` now honours 1:1 pinning (`forcedLegal` in `SetBalanceUnit`): the forced set is
+  offered only when unpaired or already this source's partner. Scala-`if` gated ⇒ zero hardware off.
+  This let the obsolete dst-collision repro be deleted (`sw/dst_collision_repro.c`, its 2 configs) and
+  **three pinning asserts re-armed** (the two commit-time nets in `SetBalanceUnit`, and the "paired
+  source migrated outside its partner" net in `MSHR`).
+- S10 one-hop net: `MSHR.scala:709` now also asserts `!meta.displaced` on a migration source.
+- Scenario-10 watchdog: `Directory.scala` asserts a `SEC-MISS` never coincides with a locked **dirty**
+  displaced way (the stale-refetch race, documented as scenario 10 in `diagram_after_migration_v1.md`),
+  and the stale `Directory.scala:246` comment (which argued refetch-is-safe from `displaced ⇒ clean`)
+  is fixed.
+
+**Test harness.**
+- `VerilatorRocket8KL116KL2SipTestConfig` (pairing pinned 5↔6 via `sbcForceDstSet=6`, `sbcShadow`,
+  `sbcDebug`). Partner 6 chosen so HOT_SET 5 and PARTNER 6 sit in different L1 D$ sets.
+- `sw/serve_in_place_test.c` (single-core S1/S2/S5–S12) + `sw/sip_common.h` shared helpers.
+- **Dual-core** `VerilatorRocket8KL116KL2SipTestDualConfig` + `sw/serve_in_place_dual.c` +
+  `sw/compile_sip_dual.sh` for **S3/S4**. This is a scope addition, agreed with the thinker: the
+  probe-back path (`secProbe`) cannot fire on one core — `skipProbeN` is true for AcquireBlock/Get, so
+  the serve block always skips the requester's own client, and one core has exactly one probe-capable
+  client. A second core holds the parked line while the first accesses it. Both configs build clean;
+  the dual run has not been executed yet.
+
+## Run result (single-core, feature-correctness read)
+
+Best run (aggressive-drain `park`): **6 of the 9 single-core cases PASS, and no RTL assert fired
+anywhere** — not the scenario-10 watchdog, not the BankedStore/homeShadow shadow models, not the
+pinning nets. `data=1` on every executed case.
+
+| case | verdict | note |
+|---|---|---|
+| S1 read parked clean | PASS | secHits+, secProbe=0, data ok |
+| S2 write parked | PASS | secWrite+, readback secHits+, data ok |
+| S5 tag alias | FAIL (coverage) | data **correct**; secHits+0 in window |
+| S6 evict dirty parked | FAIL (coverage) | data + canary **correct**; got dispDrop, not dispRelease |
+| S7 evict client parked | PASS | dispDrop+, data ok |
+| S8 C-channel release | PASS | secC+, data ok |
+| S10 no second hop | PASS | parked ≤ ways, data ok |
+| S11 reuse soak | FAIL (coverage) | data correct; soak hit L1, secHits+0 |
+| S9 BRANCH check | PASS | homeBranch=0 secPerm=0 (unreachable, confirmed) |
+
+Totals: `mig=23 att=634 abo=611 secHits=18 secMiss=921 secWrite=5 secProbe=0 dispRel=2 dispDrop=19
+secC=2 secPerm=0 homeBranch=0`.
+
+## Open items (honest)
+
+1. **S5 / S6 / S11 are EVENT-COVERAGE gaps, not feature defects.** Data is correct in all three; the
+   case's specific counter didn't move because the harness parked too few lines (S5/S6) or the soak
+   hit L1 (S11). These are test-authoring, not RTL bugs.
+2. **A later harness change (`park_n`, weaker partner-drain) regressed the whole run to 0 migrations.**
+   That is a defect in MY test helper, not in the feature. Left as-is on instruction ("do not fix bugs
+   during tests"); the harness needs a settled `park` before a clean full run.
+3. **Dual-core S3/S4 not yet run** (config + binary built).
+4. **S12** (MMIO-flush-of-parked negative case) not yet run by hand.
+5. `secProbe=0` and `secPerm=0` on the single-core config are both **correct-by-construction** here
+   (single client; BRANCH unreachable), not coverage holes — S3/S4 on the dual config are what exercise
+   the probe path.
+
+**GATE 5 is NOT signed off.** What is established: the serve-in-place datapath is data-correct and
+trips no safety net under this test; what remains is settling the harness so S5/S6/S11 prove their
+events, and running the dual-core probe cases.
+
+---
+
+# Amendment 11 — bug hunt via a real benchmark + the shadow checker (2026-08-31)
+
+**Goal:** prove the serve-in-place datapath is corruption-free on a *real* self-checking workload,
+with the sim-only shadow models armed, instead of a hand-built unit test. Correctness only — no perf,
+no multi-core.
+
+## What was built (all additive; no RTL `src/` logic change)
+
+- **Config `VerilatorRocket8KL116KL2SbcShadowConfig`** — the standard SBC config + `sbcShadow=true`
+  + `sbcDebug=true`, natural migration (no `sbcForceDstSet`). See the follow-up below for the one
+  hardware knob that had to change to make a benign workload migrate at all.
+- **`sw/tmp.c`** and **`sw/matmult_float.c`** — each now `#include "sbc_mmio.h"` and print the full
+  SBC counter line once, **after** the checksum/verify is computed, so the read cannot perturb the
+  data or the checksum.
+
+## The blocker found first, and the fix
+
+The first run of `tmp.c` (32×32) migrated **once in 4.1 M cycles** (att=1, committed 0). Root cause is
+not the workload — it is the auto-derived threshold in `WithInclusiveCache`:
+`migrationThreshold (T_hi) = 2*nWays-1 = 15 = satMax`. A set only migrates when its saturation counter
+is pinned at the absolute ceiling (15 net misses), which a benign matmul essentially never reaches on
+8 sets. Elaboration confirmed `T_hi=15 T_lo=8`.
+
+Fix (a **cache-configuration** change, per the user's direction to make migrations actually happen):
+`SbcShadowConfig` now sets `migrationThreshold=4, migrationClearThreshold=2` — a set migrates after a
+few net misses. `tmp.c` is left **unchanged**, so its checksum oracle (vs `NoSbcConfig`) still
+validates the migrated data byte-for-byte. Elaboration after the change: `T_hi=4 T_lo=2`.
+
+Elaboration also printed, on every build:
+`[SBC][elab] BRANCH reachability: p=false m=true r=false b=false (b false => secPerm=0 is correct)`
+— so `secPerm=0` is correct by construction on this platform, as expected.
+
+## Runs and the per-run counter table
+
+Oracle (ground truth): `tmp.c` on `NoSbcConfig` → **Checksum `0xb4777fc5`**, `*** PASSED ***`,
+0 asserts (all SBC counters read a tie-down 0 — SBC off, no hang).
+
+| # | Config (T_hi) | Bench | Checksum / verify | mig | att | abo | secHits | secMiss | secWrite | secProbe | dispRel | dispDrop | secC | secPerm | homeBranch | parked | asserts | verdict |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
+| A | SbcShadow (15) | tmp 32×32 | `0xb4777fc5` ✅ | 0 | 1 | 1 | **0** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | none | PASS a/b/c, **fails d** — feature cold |
+| B | SbcShadow (15) | matmult_float | golden PASS | 0 | 0 | 0 | **0** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | none | PASS a/b/c, **fails d** — feature cold |
+| **C** | **SbcShadow (4)** | **tmp 32×32** | **`0xb4777fc5` ✅** | **20** | 65 | 45 | **53** | 2611 | 0 | 0 | **0** | 16 | 0 | 0 | 0 | 4 | **none** | **PASS a/b/c/d** |
+| D | SbcShadow (4) | matmult_float | golden PASS | 0 | 0 | 0 | **0** | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | none | PASS a/b/c, fails d — footprint fits L2 |
+
+Run C is the result. `*** PASSED ***`, 4,124,706 cycles; SCU-DONE=23 ↔ COPY-DONE=23; 0 asserts across
+the entire 52 MB `.out`. Accounting is internally consistent: att 65 = abo 45 + mig 20, and
+parked 4 = mig 20 − dispDrop 16.
+
+## Verdict per §11.4
+
+**Run C PASSES all four:** (a) checksum equals the NoSbc oracle `0xb4777fc5`; (b) zero shadow-model
+asserts (BankedStore wrong-row, Directory `homeShadow`); (c) zero other RTL asserts; (d) `secHits=53 > 0`
+— the serve-in-place **read** path was genuinely exercised 53 times and returned correct data every
+time. **For the first time, a migrated line has served real data on a real workload with the shadow
+address models armed and no corruption.**
+
+`matmult_float` is a valid independent oracle (its built-in golden verify passes) but its footprint
+fits the 4 KB L2, so it never migrates — it confirms correctness, not feature coverage.
+
+## The one path still cold: dirty-writeback (`dispRelease = 0`) — and why matmul cannot reach it
+
+`dispRelease` counts a **dirty** parked line written back to its real home address on eviction. It
+stayed 0, and this is **structural for matmul**, not a coverage accident:
+
+- A parked line only becomes dirty if the CPU **writes** it *while parked* — i.e. `secWrite > 0` must
+  happen first. `secWrite = 0` here.
+- In matmul the lines that get hot and are therefore migrated are `A` and `B`, which are **read-only**
+  in the kernel — they are exactly the lines re-read as the 53 secHits, and are never written.
+- The one written matrix, `Res`, is written **once at allocation** (a miss, not a serve) and never
+  migrated-then-rewritten.
+
+So `secWrite → dispRelease` cannot fire under matmul regardless of threshold or forced destination.
+The task's optional "rerun on the forced-dst SipTestConfig to raise collision pressure" would raise
+eviction pressure but still cannot make a read-only parked line dirty — it would report `dispRelease=0`
+too. Reaching this path needs one of: a **write-heavy workload** that repeatedly writes a working set
+large enough to migrate (so a migrated line is later written); the **directed GATE-5 cases S6/S7**,
+which construct "park → store → evict" by hand; or the **§10.10 dirty-source migration** (out of scope
+here). Flagged as a decision point, not worked around.
+
+## Bottom line
+
+The serve-in-place **read** datapath (including clean-parked eviction, `dispDrop=16`) is
+**corruption-clean on a real, self-checking workload** — 53 serves, checksum identical to the
+SBC-off oracle, zero shadow/RTL asserts. The **dirty-parked writeback** path remains **unexercised**
+and is the next target; it cannot be hit with matmul and needs a write-heavy workload or the directed
+cases.

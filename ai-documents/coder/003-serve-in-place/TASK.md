@@ -1255,3 +1255,445 @@ If declines dominate, say so — that is a real result about the workload, not a
 
 The `SBC_SecHits` metric changes meaning at this step (from "found and erased" to "found and served").
 Do not compare the numbers across the change as if they measure the same thing.
+
+---
+
+## Amendment 10 — the serve-in-place test. Every case proves its own event. (2026-08-31)
+
+**Status: SPEC. Build this next.** GATE 4 is green, but green on a test that was written for
+migrate-on-eviction, not for serve-in-place. This amendment defines the test that actually covers the
+feature we just shipped.
+
+### 10.1 Why a new test, and the one rule it exists to enforce
+
+`migration_stress_test.c` is a good **migration** regression. Keep it, unchanged, on the stock config.
+It is a poor **serve-in-place** test, for one structural reason:
+
+> Six of its seven cases pass or fail on **data correctness only**. A scenario that silently never
+> happened still prints PASS.
+
+That failure mode has already cost us twice on this project:
+
+- Phase-2 sign-off: six of seven cases had been commented out, so every prior "PASS" was 1/7 coverage.
+- Stage 9a: `secPerm = 0` over 17,616 migrations. Nobody noticed, because nothing failed when a path
+  was never taken.
+
+So the new test has exactly one rule, and it is not negotiable:
+
+> **Every case reads an MMIO counter before and after, and FAILS if its own event count did not move.**
+> "The scenario never happened" must be a FAIL, not a PASS.
+
+Data correctness stays, on top. It is necessary and not sufficient.
+
+### 10.2 The method — what software can and cannot see
+
+Software cannot ask "is line A parked, and where?". There is no such query and building one would mean
+a directory read port on the control block. Do not build it.
+
+What software *can* do, and what every case below is built on:
+
+1. **Force the population** — hammer a hot set until migrations commit, so *some* of a known tag set is
+   parked in a known partner row.
+2. **Force the access pattern** — then perform the specific access (load / store / re-store after L1
+   eviction) against every tag in that set.
+3. **Prove the event by counter delta** — the case passes only if the counter belonging to *its* path
+   moved, and (where it matters) the counters belonging to *other* paths did not.
+4. **Prove the data** — golden arrays, checked at the end, after a capacity flush where the point of
+   the case is that the line left the cache.
+
+That is the whole method. It does not require knowing which individual line got parked.
+
+### 10.3 Determinism — build the test on its own config
+
+Add a config **`VerilatorRocket8KL116KL2SipTestConfig`**, identical to the stock SBC config except:
+
+    sbcAutoMigrate = true
+    sbcForceDstSet = 6
+    sbcShadow      = true
+
+`sbcForceDstSet` is exactly what it was kept for (CLAUDE.md Batch D). With it, the pairing is
+**5 <-> 6, fixed and known at compile time**, so the test can address the partner row directly.
+
+Why 6 and not 7: the L1 D$ is 2 sets x 2 ways x 64B, so **D$ set = L2 set & 1**. `HOT_SET = 5` is D$
+set 1. A partner of 7 would also be D$ set 1, meaning every partner-row access evicts hot lines from
+the D$ — which destroys the "hold a line in the D$ while hammering the partner" recipes below. Partner
+6 is D$ set 0. Different D$ set. That is the whole reason for the choice; do not change it casually.
+
+Set map for the test:
+
+    5  HOT_SET     - migration source
+    6  PARTNER     - migration destination (forced)
+    3  SCRUB_ODD   - used only to evict D$ set 1 (same parity as HOT_SET)
+    2  SCRUB_EVEN  - used only to evict D$ set 0 (same parity as PARTNER)
+    0, 1, 4, 7     - background / soak traffic
+
+`migration_stress_test.c` keeps running on the **stock** config. Both must pass.
+
+### 10.4 One thing to settle BEFORE writing any case
+
+**(a) Is BRANCH reachable on this platform at all?** This decides whether `secPerm = 0` is a coverage
+hole or a fact. `MSHR.scala:795-801` gives:
+
+    p = !lastLevel                                   -> FALSE here (require(lastLevel))
+    m = a client exists that does not support probe  -> TRUE  (the I$; ICache.scala:154)
+    r = an outer manager exists with !alwaysGrantsT
+    b = r || p                                       -> so b == r
+
+`transition(S_INVALID, S_BRANCH, b && m)` at `:843` is commented *"only MMIO can bring us to BRANCH
+state"*. So the entire question is `r`, plus whether any outer Grant ever actually arrives with
+`param =/= toT` (`gotT` at `:1252`).
+
+Do this first, it is two lines: **`println` the values of `p`, `m`, `r`, `b` at elaboration**, and add
+a counter `SBC_HomeBranch` that increments whenever any request finds its own home line in BRANCH.
+
+- If `b == false`, or `HomeBranch == 0` across the whole run: BRANCH never occurs, `secPerm = 0` is
+  **correct by construction**, the `secNeedPerm` arm is dead code on this platform that we keep for
+  correctness elsewhere. Record that and close it. Do not write a software case for it.
+- If `HomeBranch > 0` and `secPerm == 0`: that is a **real** hole and we chase it.
+
+Either way we stop guessing. Case S9 below is the check, not a workload.
+
+**(b) One test-writing rule, from the deferred `SBC_Reset` hazard in §10.9.**
+The obvious way to get per-case counts is to zero the counters between cases. **Do not.** Write the
+test with read-and-subtract deltas instead. `SBC_Reset` (0x358) also wipes the AT, which is deferred
+work (§10.9) — costing nothing here, because deltas are just as good and the test is the only thing
+that would ever have written that register.
+
+**`SBC_Parked` is still built now**, as a plain observability counter with no assert attached: `++` on
+a migration commit, `--` on a displaced-way erase or reclaim. S10's pass condition uses it, and it is
+the **displaced-occupancy** number CLAUDE.md has wanted since the matmult run ("add a
+displaced-occupancy counter before quoting the mechanism"). The *guard* built on top of it is §10.9.
+
+### 10.5 New MMIO counters, and one header
+
+Append these. Do not renumber anything existing.
+
+    0x368  SBC_SecWrite     R  serves where the requester needed T (parked line went to TRUNK)
+    0x370  SBC_SecProbe     R  serves that had to probe a client off the parked line first (the 9a path)
+    0x378  SBC_DispRelease  R  dirty parked lines written back, addressed by lineHome
+    0x380  SBC_DispDrop     R  clean parked lines dropped silently
+    0x388  SBC_SecC         R  secondary searches raised by a C-channel Release
+    0x390  SBC_HomeBranch   R  requests that found their own HOME line in BRANCH (see 10.4a)
+    0x398  SBC_AtAssoc      R  AT[SBC_SetSel].assocSet in bits [7:0], bit 8 = sd (0 = source side)
+    0x3A0  SBC_Parked       R  live displaced lines currently resident (plain counter; see 10.4b)
+
+`SBC_SecWrite`, `SBC_SecProbe` and `SBC_SecC` all pulse inside the serve-in-place block at
+`MSHR.scala:1345-1400`, where `secHit`/`secPerm` already do — same wiring pattern, no new plumbing.
+`SBC_DispRelease` / `SBC_DispDrop` pulse in the displaced branch of `armEviction`.
+
+**Put every offset in one place: a new `sw/sbc_mmio.h`.** There are now two test binaries; two copies
+of these `#define`s will drift. CLAUDE.md's rule *"if you change any register offset in Control.scala,
+update the SW-side header in the same change"* gets exactly one header to update.
+`migration_stress_test.c` switches to including it in the same change.
+
+### 10.6 The cases
+
+New file `sw/serve_in_place_test.c`. Address helper unchanged in shape:
+
+    addr(s, t) = 0x81000000 + t*512 + s*64        // tag == t, L2 set == s, D$ set == s & 1
+
+Every case owns a **disjoint tag range** — case k uses `t` in `[k*32, k*32+32)` — so no case can
+contaminate another's lines. Every case takes its counter snapshot at entry and computes deltas at
+exit. Suggested budget: ~2000 iterations per short case, ~8000 for the soak, to stay near the current
+test's runtime.
+
+Two helpers every case needs:
+
+    park(tags)      hammer HOT_SET with the given tags until SBC_Migrations moves; FAIL if it does not
+    scrub_l1(par)   touch 2 lines in SCRUB_ODD (par==1) or SCRUB_EVEN (par==0) to evict that D$ set,
+                    without touching HOT_SET or PARTNER
+
+`scrub_l1` is the load-bearing primitive. Rocket's `acquireBeforeRelease = false` means a clean line is
+**silently dropped** from the D$, leaving the L2 entry's `clients` bit set but stale. That stale bit is
+what drives the probe-back cases, and it is the common case on this platform, not a corner.
+
+---
+
+**S1 — read a parked, client-free line.** The base case.
+Force: `park()` with loads only, `scrub_l1(1)`, then load every tag once.
+Pass: `secHits` delta > 0, `secWrite` delta == 0, `secProbe` delta == 0, all values match golden.
+
+**S2 — write a parked line (it becomes TRUNK and stays displaced).**
+Force: `park()`, `scrub_l1(1)`, then store a fresh value to every tag; read back.
+Pass: `secWrite` delta > 0, read-back matches what was stored.
+This is the case that proves a store lands in the **partner row** and a later load finds it there.
+
+**S3 — write a parked line that is already TRUNK. This is the 9a bug, exactly.**
+Force: `park()`; store to tag t (L2 goes TRUNK, D$ holds it); `scrub_l1(1)` so the D$ **silently**
+drops it, leaving `clients` set but stale; then store to tag t again. The L2 now sees a displaced entry
+in TRUNK with clients, must probe it back, then serve.
+Pass: `secProbe` delta > 0, final value correct.
+Before 9a this entry was **erased with no probe and no writeback**. If `secProbe` stays 0, the case did
+not run and the test must fail — do not accept a green run without it.
+
+**S4 — read a parked line that is TRUNK.**
+Same as S3 but the second access is a **load**. Covers the `secEntry.state === TRUNK` half of the probe
+arm at `MSHR.scala:1396`, where S3 covers the `req_needT` half. Two independent terms, two cases.
+Pass: `secProbe` delta > 0, value correct.
+
+**S5 — the tag alias. Same tag, same row, one native and one parked.**
+Highest-value case in this list, and today it happens only by accident.
+Force: park `addr(HOT_SET, t0)` (tag `t0`, now sitting in row 6). Then make `addr(PARTNER, t0)`
+resident natively — **same tag `t0`, same row 6**, different address. Then alternate loads of the two,
+with distinct pre-seeded values.
+Pass: both return their own value. `PopCount(hits) <= 1` (`Directory.scala:237`) and
+`PopCount(secHits) <= 1` (`:260`) must not fire.
+The failure mode if the `displaced` term is ever weakened is `Mux1H` returning garbage — silent, and
+guaranteed rather than rare, because `addr()` puts the tag entirely above the set bits.
+Verify the pairing is what the test assumes: write `HOT_SET` to `SBC_SetSel`, read `SBC_AtAssoc`,
+FAIL unless it reads `PARTNER` with `sd == 0`.
+
+**S6 — evict a DIRTY parked line. The Release must use lineHome, not the physical row.**
+This is risk 2 in the plan: getting it wrong writes real data to an unrelated DRAM address.
+Force: `park()`; store to every parked tag (dirty while displaced); **seed canaries** at
+`addr(PARTNER, t)` for the tags a wrong-address Release would hit; then flood row 6 with many fresh
+tags to push the parked lines out; then re-read the originals.
+Pass: `dispRelease` delta > 0; originals return the **stored** values; **and every canary is intact**.
+The canary is the point — it turns "we lost our data" into "we also detect the collateral corruption",
+which is the failure this case exists to catch.
+
+**S7 — evict a parked line that a client still holds.**
+Force: `park()`; store to tag t (TRUNK + clients); `scrub_l1(1)` to drop it silently from the D$; then
+flood row 6 to evict the parked line while `clients` is still set. The reclaim path must probe first,
+then Release.
+Pass: `dispRelease` delta > 0, no assert, value correct on re-read.
+
+**S8 — C-channel: a client voluntarily Releases a line that is parked.**
+The Stage-2d search path. `MSHR.scala:1524` calls it *"INERT ON ARRIVAL ... 2e is what makes it live"*.
+2e has landed. It is live now, and it has never been tested.
+Force: `park()`; store to tag t so serve-in-place makes it TRUNK + client-held **while displaced**; then
+force the D$ to evict it while dirty (`scrub_l1(1)` twice, filling both ways of D$ set 1) — a dirty line
+cannot be silently dropped, so a real `ReleaseData` reaches the L2 for a line that is not natively
+resident in its home set.
+Pass: `secC` delta > 0, value correct on re-read.
+Most likely place in the whole feature for a latent bug: the path was built under an assumption 9a
+removed.
+
+**S9 — BRANCH reachability probe. Not a workload; a falsifiable check.** See 10.4a.
+Pass: `secPerm == 0 && homeBranch == 0` (BRANCH unreachable, expected on this platform) **or**
+`secPerm > 0`. FAIL on `homeBranch > 0 && secPerm == 0` — that is the real hole.
+
+**S10 — a parked line must never be migrated a second time.**
+Force: after `park()`, make row 6 hot too (flood it) so the L2 tries to migrate *out of* the partner,
+with displaced lines sitting in it.
+Pass: `migrations` still advances, `SBC_Parked` never exceeds ways-per-set, no assert, data correct.
+Add the RTL net if it is not already there: `assert` that a migration source way is never `displaced`.
+Hard rule from the register — the AT records **one hop only**.
+
+**S11 — the reuse soak, and the honest hit-rate number.**
+`case_bankstore_saturation` streams `NSAT = 32` distinct tags per side-set against 8 ways. Reuse
+distance exceeds capacity, so there is nothing to re-hit — that, and not a broken mechanism, is why the
+run reported `secHits = 2873` against `secMiss = 63260`.
+Force: same sustained bank load, but a working set that **fits** — 6 tags per side-set against 8 ways,
+looped, so lines survive to be re-hit.
+Pass: data correct, and print `secHits / (secHits + secMiss)` as a ratio. No threshold on the ratio yet
+— we have no baseline. Record the number; it becomes the baseline.
+
+**S12 — MMIO flush of a parked line. Negative case, and it must NOT be in the pass/fail run.**
+`MSHR.scala:1343` asserts on it. Expected result is "the simulation dies with that exact assert".
+Guard it with `#ifdef SIP_EXPECT_ASSERT`, run it by hand, record the assert text in the report.
+A test whose pass condition is a crash cannot share a binary with one whose pass condition is exit 0.
+
+### 10.7 What this test deliberately does NOT cover — say so, do not fake it
+
+- **Way-lock exhaustion** (`assert(freeWays.orR)`, `Directory.scala:219`). Forcing every way in a row
+  to be locked needs several concurrent MSHRs on one row. A single in-order Rocket core cannot generate
+  enough outstanding misses. It stays covered by the assert under the S11 soak load, and that is a
+  weaker claim than a targeted case. State it as a known gap; do not write a case that pretends.
+- **BRANCH + needT serve** (`secPerm`) — see 10.4a. Either provably unreachable here, or a real hole
+  that S9 will name. Not something a workload on this platform can force.
+- **Outer probes.** None exist: `require(lastLevel)`, `out.b.ready := true.B`, no `SinkB.scala`.
+  Already a documented platform constraint.
+- **Multi-client coherence.** One TL-C client (the D$). The I$ is not TL-C. Everything above is
+  single-client behaviour and must be re-run on a multicore config before any coherence claim.
+
+### 10.8 Gate
+
+**GATE 5** is: `serve_in_place_test` on the SIP config — **all cases PASS, exit 0, zero asserts, and
+every per-case counter delta non-zero** — *and* `migration_stress_test` still 7/7 on the **stock**
+config, unchanged.
+
+A run where every case prints PASS but some delta is zero is a **FAIL**. That is the entire point of
+the amendment. Report the full counter table, per case, deltas included — not just the totals.
+
+### 10.9 DEFERRED — the `SBC_Reset` / AT-wipe hazard. Bottom of the list. Do not build it now.
+
+**Recorded, not scheduled.** Do not work on this as part of GATE 5, and do not let it block anything.
+
+**What it is.** A write to `SBC_Reset` (0x358) zeroes the whole Association Table
+(`SetBalanceUnit.scala:214-227`). The AT is the only record of where a parked line came from, and it is
+the sole input to `lineHome` (`MSHR.scala:373`):
+
+    lineHome = Mux(meta.displaced && pairValidReg && !pairIsSrcReg, pairSetReg, request.set)
+
+Wipe the AT and `pairValidReg` goes false, so that Mux falls through to `request.set` — the row the line
+is **parked in**, not the address it belongs to. A dirty parked line evicted after that is `ReleaseData`d
+to `expandAddress(tag, parkedRow)`: real data written over an unrelated DRAM line, and the true line
+lost. Second half: `canSearch` also needs `pairLive` (`MSHR.scala:1516`), so the secondary search stops
+running and parked lines become invisible to lookups — a stale DRAM copy is refetched while the dirty
+parked copy waits to do the above.
+
+**Why it is safe to defer.**
+
+- **Nothing writes 0x358.** Not the tests, not the benchmarks, not the boot code. It is a loaded gun,
+  not a fired one, and §10.4(b) keeps the one thing that would have fired it out of the new test.
+- **It was harmless before 9b.** A parked line was clean and client-free by construction, so losing its
+  home set cost a missed hit and nothing more. 9b retired `displaced ⇒ clean`; the AT went from a
+  performance hint to the address of real data, and the reset path was never revisited. That is the
+  whole delta.
+- **Sim would catch it** if `sbcShadow` is on: the `homeShadow` assert at `MSHR.scala:465` checks
+  `meta.homeShadow === lineHome`. No such net exists in real hardware.
+
+**The fix, when it comes up.** Split `io.clear` in two: *counters only* (`nAttempt`, `nAbort`,
+`nCommit`, `nSecHit`, `nSecMiss`, `nSecPerm`, plus the §10.5 additions) — always legal; and
+*AT + sat + armed + DSS* — legal only when nothing is parked, guarded by the `SBC_Parked` counter that
+§10.4(b) already builds:
+
+    assert(!io.clear || parked === 0.U, "SBC: AT cleared while lines are still parked")
+
+Delete the now-stale TODO at `SetBalanceUnit.scala:218` in the same change. Until then, treat 0x358 as
+**software-unsafe while SBC is enabled** and say so wherever the register map is documented.
+
+### 10.10 NEXT OPTIMIZATION — migrate DIRTY lines out of the home set
+
+**Priority: after GATE 5, before §10.9.** This is the largest remaining eligibility win and 9b already
+paid for the hard half of it.
+
+**What is blocked today.** Migration eligibility still refuses any dirty victim:
+
+    MSHR.scala:1036   val migClean = !m.dirty && !m.displaced
+    MSHR.scala:709    assert(!mig_dir1 || (!meta.dirty && ...), "migrate source must be clean+client-free")
+
+So a hot set full of dirty lines migrates nothing. Per CLAUDE.md's abort breakdown, dirty victims are
+roughly **half** of all aborts — the single biggest remaining loss, alongside the stale `clients` bit.
+
+**Do not confuse this with the banned item.** CLAUDE.md's ⛔ is on dirty-**destination** eviction —
+throwing out a dirty line in the *partner* row to make space. That verdict stands. This is dirty
+**source** migration: moving our own dirty victim into the partner instead of writing it back. Different
+change, opposite sign.
+
+**Why it is nearly free now.** The expensive prerequisite was "a parked line can be dirty, and can be
+written back to the right address." **That is exactly what 9b built** — `lineHome` (`MSHR.scala:373`),
+the Release path at `:753`, and the inverted assert at `:711-715`. Migrating a dirty line produces
+precisely the state 9b already handles.
+
+**And it does not cost a DRAM write.** The line still gets written back eventually, just later, from the
+partner row, to the same address. One write either way. The gain is that the line **stays cached and can
+now serve hits in place** (9a) instead of leaving. That is the whole argument, and it is the same
+argument as clean migration — which is why this is favourable where dirty-destination eviction was not.
+
+**The blocker, and it is a real one.**
+
+> `ai-documents/bug-fix-log.md` / memory `sbc-copy-without-commit`: **50-78% of completed copies never
+> commit** — the data is written into the destination way and then overwritten with no directory write.
+
+For a **clean** line that is waste, not damage: DRAM still holds the truth. For a **dirty** line it is
+**data loss**. So dirty-source migration is gated on closing copy-without-commit. Close that first, or
+this optimization converts a known inefficiency into a known corruption.
+
+Two more things move from "nice" to "correctness-critical" at the same moment, for the same reason —
+the migrated copy becomes the *only* copy:
+
+- **`copy_safe` / `copy_wsafe`** (the SCU RaW/WaR interlocks). A copy that races and reads stale bytes
+  is currently recoverable from DRAM. It stops being recoverable.
+- **`s_verify`**, deleted in `a2975d6` for a read-port starvation deadlock. CLAUDE.md already calls
+  rebuilding it "a hard prereq, since Phase 3 serves copies". Dirty migration makes that emphatic.
+
+**The change itself, once the blocker is closed.**
+
+1. `MSHR.scala:1036` — drop `!m.dirty` from `migClean`. **Keep `!m.displaced`.** The one-hop rule is
+   not negotiable: the AT records a single pairing per set, so a line may be migrated exactly once.
+2. `MSHR.scala:709` — relax to client-free only; dirty is now legal. Keep the `displacedEntry.state
+   =/= TRUNK` assert at `:710` unchanged.
+3. Confirm `displacedEntry.dirty` carries `meta.dirty` through the bulk connect rather than being
+   defaulted. It is not assigned explicitly in the block at `:698-708` — check, do not assume.
+4. `MSHR.scala:1137` — `migAbort := !meta.dirty` exists to *"count declines apart from dirty rejects"*.
+   That distinction disappears; the counter's meaning changes with it.
+5. `sw/migration_stress_test.c` — `case_dirty_victims` currently passes **because dirty lines are
+   skipped**. Its meaning inverts: it becomes "a dirty hot victim migrates, and its data survives the
+   trip". Rewrite it in the same change, do not leave a case that asserts the old rule.
+6. New coverage, on the §10.6 pattern: park a **dirty** line, then evict it from the partner and prove
+   the bytes reach DRAM at the home address, with a canary at the physical row's address. That is S6
+   with a dirty *source* rather than a line dirtied after parking — a different path to the same state,
+   and worth its own case.
+
+**Expected result.** Eligibility `p` up by roughly the dirty share of aborts; `SBC_Parked` up; DRAM
+traffic flat. If DRAM traffic rises, something is writing back twice — stop and find it.
+
+## Amendment 11 — BUG HUNT FIRST, via real benchmarks + the shadow checker. (2026-08-31)
+
+**Do this before any performance work and before the dirty-source optimization (§10.10).** GATE 5
+proved the serve-in-place datapath is data-correct on the cases that ran and trips no assert — but the
+three highest-value cases (tag alias, dirty-parked writeback, reuse) never fired their events, and the
+one genuinely dangerous path — writing a **dirty displaced line back to its real memory address** —
+has never executed once. A crafted unit test struggled to create that situation even a single time. A
+real benchmark drives the serve path thousands of times *naturally* and carries its own end-to-end
+correctness oracle; the shadow checker localizes any fault to the exact cycle. That combination is a
+stronger corruption net than the hand-built test. Goal: prove the datapath is corruption-free on a
+real workload.
+
+**Scope — correctness only.** No performance numbers (this tiny geometry measures slowdown, not
+benefit — cycle counts are noise for this purpose). No multi-core (one core cannot exercise the
+probe-back path — that stays with the dual-core S3/S4 run).
+
+### 11.1 — one new config
+
+Add `VerilatorRocket8KL116KL2SbcShadowConfig`: identical to the standard `VerilatorRocket8KL116KL2Config`
+(SBC on, **natural** migration — no `sbcForceDstSet`, migrations land where the workload sends them)
+**plus** `sbcShadow = true` and `sbcDebug = true`. Both flags are sim-only ⇒ no hardware change vs the
+standard config; they just arm the BankedStore address model, the `homeShadow` check, and the counter
+printfs. This is the missing config — today the shadow checkers are armed only where the pairing is
+force-pinned, which distorts a real workload.
+
+### 11.2 — the runs (all single-core)
+
+1. `tmp.c` (32×32 matmul, large footprint) on **SbcShadowConfig** — the primary hunt.
+2. `tmp.c` on **NoSbcConfig** — the oracle; its checksum is ground truth.
+3. `matmult_float.c` on **SbcShadowConfig** — a second, independent oracle (self-checks against its
+   built-in golden answer).
+
+Optional, only if the dirty path stays cold (see 11.4): rerun `tmp.c` on the existing
+**SipTestConfig** (forced dst=6) to funnel every migration into one row and raise collision pressure.
+
+### 11.3 — print at the end of every run
+
+The full SBC counter line — migrations, attempted, aborted, secHits, secMiss, secWrite, secProbe,
+dispRelease, dispDrop, secC, parked — alongside the benchmark's own checksum / verify result. A pass
+we cannot see the paths behind is not a pass.
+
+### 11.4 — the pass/fail rule (all four, per §10.1)
+
+A run PASSES only if **all** hold:
+- (a) the benchmark's own check passes — `matmult_float` verifies its golden; `tmp.c`'s checksum on
+  SbcShadowConfig **equals** its checksum on NoSbcConfig;
+- (b) zero shadow-model asserts (BankedStore address model, `homeShadow`);
+- (c) zero other RTL asserts;
+- (d) at least one serve-in-place event fired (`secHits > 0`) — otherwise the workload never touched
+  the feature and the run proves nothing.
+
+**The dirty-writeback path is the real target, and it may not fire on its own.** Migration sources are
+clean today (`migClean` requires `!dirty`), so displaced lines start clean and turn dirty only if the
+CPU writes one *while it is parked*. Watch `dispRelease`:
+- `dispRelease > 0` → the dirty-displaced writeback path ran and, given (a)+(b), ran correctly. **This
+  is the result we most want** — record the count.
+- `dispRelease == 0` → the path never ran. Not a pass for that path: report it as "not exercised."
+  That is the trigger for the optional forced rerun, and evidence that reaching this path needs a
+  targeted workload or the §10.10 dirty-source migration.
+
+### 11.5 — when the shadow checker fires, that IS the find
+
+A shadow assert is not a test failure to route around. Report, from the sim log: the cycle, the
+address the checker expected vs the address it saw, the set/way/MSHR in flight, and which counter was
+mid-update. That tuple localizes the RTL bug. Do **not** edit the benchmark or the checker to get past
+it — stop and report.
+
+### 11.6 — what NOT to do
+
+- No workload tuning to force a matching checksum. A mismatch is a finding, not a nuisance.
+- No performance claims from these runs.
+- No RTL change until the shadow firing is reported and decoded per 11.5.
+
+**Deliverable.** A REPORT section: the counter table per run, checksum match/mismatch, any shadow
+firing decoded per 11.5, and a one-line verdict per 11.4. If every run is green **and**
+`dispRelease > 0`, the serve-in-place datapath is corruption-clean on a real workload for the first
+time — state that plainly.
