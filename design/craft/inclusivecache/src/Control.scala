@@ -125,6 +125,25 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
     val sbcSecPermField = RegField.r(32, io.sbc_stats.secPerm,
       RegFieldDesc("SBC_SecPerm", "Secondary hits that had to acquire permission (subset of SecHits)", volatile=true))
+    // SBC (003 §10.5): serve-in-place / displaced-eviction observability.
+    val sbcSecWriteField = RegField.r(32, io.sbc_stats.secWrite,
+      RegFieldDesc("SBC_SecWrite", "Serves where the requester needed T", volatile=true))
+    val sbcSecProbeField = RegField.r(32, io.sbc_stats.secProbe,
+      RegFieldDesc("SBC_SecProbe", "Serves that probed a client off the parked line first", volatile=true))
+    val sbcDispReleaseField = RegField.r(32, io.sbc_stats.dispRelease,
+      RegFieldDesc("SBC_DispRelease", "Dirty parked lines written back (addressed by lineHome)", volatile=true))
+    val sbcDispDropField = RegField.r(32, io.sbc_stats.dispDrop,
+      RegFieldDesc("SBC_DispDrop", "Clean parked lines released with no data", volatile=true))
+    val sbcSecCField = RegField.r(32, io.sbc_stats.secC,
+      RegFieldDesc("SBC_SecC", "Serves raised by a C-channel Release", volatile=true))
+    val sbcHomeBranchField = RegField.r(32, io.sbc_stats.homeBranch,
+      RegFieldDesc("SBC_HomeBranch", "Requests that found their own HOME line in BRANCH", volatile=true))
+    // bits [7:0] = AT[sel].assocSet, bit 8 = sd (0 = source side). sd forced to bit 8 regardless of setBits.
+    val sbcAtAssocField = RegField.r(9,
+      Cat(io.sbc_stats.atSd, 0.U((8 - sbcSetBits).W), io.sbc_stats.atAssocSet),
+      RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
+    val sbcParkedField = RegField.r(32, io.sbc_stats.parked,
+      RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
 
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
     val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
@@ -158,7 +177,15 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x348 -> Seq(sbcAttemptedField),
       0x350 -> Seq(sbcAbortedField),
       0x358 -> RegFieldGroup("SBC_Reset", Some("Zero all SBC observation state"), Seq(sbcResetField)),
-      0x360 -> Seq(sbcSecPermField)
+      0x360 -> Seq(sbcSecPermField),
+      0x368 -> Seq(sbcSecWriteField),
+      0x370 -> Seq(sbcSecProbeField),
+      0x378 -> Seq(sbcDispReleaseField),
+      0x380 -> Seq(sbcDispDropField),
+      0x388 -> Seq(sbcSecCField),
+      0x390 -> Seq(sbcHomeBranchField),
+      0x398 -> Seq(sbcAtAssocField),
+      0x3A0 -> Seq(sbcParkedField)
     )
   }
 }

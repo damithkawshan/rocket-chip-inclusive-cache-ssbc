@@ -586,6 +586,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // Stats are surfaced to the MMIO control block.
   if (params.micro.enableSetBalancing) {
     val sbu = Module(new SetBalanceUnit(params))
+    // SBC (003 §10.4a): is BRANCH reachable on this platform? b == false => secPerm=0 is correct by
+    // construction and the secNeedPerm arm is dead code here. See case S9 for the runtime check.
+    val brP = !params.lastLevel
+    val brM = params.inner.client.clients.exists(!_.supports.probe)
+    val brR = params.outer.manager.managers.exists(!_.alwaysGrantsT)
+    println(s"[SBC][elab] BRANCH reachability: p=$brP m=$brM r=$brR b=${brR || brP} (b false => secPerm=0 is correct)")
     sbu.io.dirTap     := directory.io.tap
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
@@ -666,6 +672,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.secHit  := mshrs.map(_.io.secHit).reduce(_ || _)
     sbu.io.secMiss := mshrs.map(_.io.secMiss).reduce(_ || _)
     sbu.io.secPerm := mshrs.map(_.io.secPerm).reduce(_ || _)
+    // SBC (003 §10.5): the six new serve/eviction event pulses, same fan-in pattern.
+    sbu.io.secWrite    := mshrs.map(_.io.secWrite).reduce(_ || _)
+    sbu.io.secProbe    := mshrs.map(_.io.secProbe).reduce(_ || _)
+    sbu.io.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
+    sbu.io.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
+    sbu.io.secC        := mshrs.map(_.io.secC).reduce(_ || _)
+    sbu.io.homeBranch  := mshrs.map(_.io.homeBranch).reduce(_ || _)
     sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
     sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.homeSet))
 

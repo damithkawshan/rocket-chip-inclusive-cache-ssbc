@@ -190,6 +190,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // SBC (003 Stage 9a): of the hits, how many could not be served as-is and had to acquire
     // permission over the parked line (BRANCH + needT). A subset of secHit, never a decline of it.
     val secPerm = Output(Bool())
+    // SBC (003 §10.5): serve-in-place / displaced-eviction event pulses to the SBU counters.
+    val secWrite    = Output(Bool())  // serve where the requester needed T
+    val secProbe    = Output(Bool())  // serve that probed a client off the parked line first
+    val dispRelease = Output(Bool())  // dirty parked victim written back (addressed by lineHome)
+    val dispDrop    = Output(Bool())  // clean parked victim released with no data
+    val secC        = Output(Bool())  // serve raised by a C-channel Release
+    val homeBranch  = Output(Bool())  // this request found its own HOME line in BRANCH
     // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait, and
     // a set that was already owned can have its ways refilled while we look.
     //
@@ -337,6 +344,17 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.migCommit  := migCommit
   io.migRejectDst.valid := migRejectDst
   io.migRejectDst.bits  := migDstSet
+  // SBC (003 §10.5): event pulses, defaulted low and raised in the serve block / armEviction below.
+  val secWritePulse    = WireInit(false.B)
+  val secProbePulse    = WireInit(false.B)
+  val dispReleasePulse = WireInit(false.B)
+  val dispDropPulse    = WireInit(false.B)
+  val secCPulse        = WireInit(false.B)
+  io.secWrite    := secWritePulse
+  io.secProbe    := secProbePulse
+  io.dispRelease := dispReleasePulse
+  io.dispDrop    := dispDropPulse
+  io.secC        := secCPulse
   // [1]: We cannot issue outer Acquire while holding blockB (=> outA can stall)
   // However, inB and outC are higher priority than outB, so s_release and s_pprobe
   // may be safely issued while blockB. Thus we must NOT try to schedule the
@@ -706,7 +724,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   displacedEntry.displaced := true.B
   // The migrated victim is one of OUR native lines, so its home is our own set.
   displacedEntry.homeShadow.foreach { _ := lineHome }
-  assert(!mig_dir1 || (!meta.dirty && (meta.clients & ~probes_toN) === 0.U), "migrate source must be clean+client-free")
+  // SBC (003 §10.6 S10): a migration source must also be UNDISPLACED. The AT records ONE HOP ONLY, so
+  // a line already parked here must never be migrated again.
+  assert(!mig_dir1 || (!meta.dirty && (meta.clients & ~probes_toN) === 0.U && !meta.displaced), "migrate source must be clean+client-free+undisplaced")
   assert(!mig_dir1 || displacedEntry.state =/= TRUNK, "SBC: displaced entry must not be TRUNK (TRUNK implies a client, displaced has none)")
   // SBC (003 Stage 9b, net 2): a displaced victim IS released now - what must never happen is forming
   // its address from the row it sits in. `physSet` is where the bytes are; `homeSet` is where they
@@ -1083,6 +1103,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         w_rprobeackfirst := false.B
         w_rprobeacklast  := false.B
       }
+      // SBC (003 §10.5): dirty parked victim -> ReleaseData (dispRelease); clean -> Release (dispDrop).
+      when (m.dirty) { dispReleasePulse := true.B } .otherwise { dispDropPulse := true.B }
       if (params.micro.sbcDebug) {
         printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way} clients=${m.clients} dirty=${m.dirty}\n")
       }
@@ -1184,20 +1206,20 @@ class MSHR(params: InclusiveCacheParameters) extends Module
             cf"set=${request.set}%d dirHit=${io.directory.bits.hit}%d")
     assert (!migStartNow || io.migOffer.valid,          "SBC: migration started off an invalid destination offer")
     assert (!migStartNow || migStartDst =/= physSet, "SBC: migration destination equals its own source set")
-    // SBC Phase 3 (1f): a paired source may only ever spill into its own partner.
-    if (params.micro.sbcForceDstSet < 0) {
-      // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
-      // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, and the
-      // fast-path claim is gated on that same signal - so comparing against the register on a
-      // plan-time claim tested this transaction's destination against the PREVIOUS transaction's
-      // partner, and raised a false alarm. No data was ever wrong; the claim itself
-      // (`migOffer.bits`, sourced live from the AT) was always correct.
-      val pairValidNow = Mux(io.directory.valid, io.pairInfo.valid,       pairValidReg)
-      val pairIsSrcNow = Mux(io.directory.valid, io.pairInfo.bits.isSrc,  pairIsSrcReg)
-      val pairSetNow   = Mux(io.directory.valid, io.pairInfo.bits.set,    pairSetReg)
-      assert (!io.dstClaim.valid || !pairValidNow || !pairIsSrcNow || io.dstClaim.bits === pairSetNow,
-              "SBC: paired source migrated outside its partner set")
-    }
+    // SBC Phase 3 (1f): a paired source may only ever spill into its own partner. No longer carved
+    // out under sbcForceDstSet - forcedLegal in the SBU keeps 1:1 intact even when the destination is
+    // forced, so the SIP test runs with this net armed.
+    // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
+    // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, and the
+    // fast-path claim is gated on that same signal - so comparing against the register on a
+    // plan-time claim tested this transaction's destination against the PREVIOUS transaction's
+    // partner, and raised a false alarm. No data was ever wrong; the claim itself
+    // (`migOffer.bits`, sourced live from the AT) was always correct.
+    val pairValidNow = Mux(io.directory.valid, io.pairInfo.valid,       pairValidReg)
+    val pairIsSrcNow = Mux(io.directory.valid, io.pairInfo.bits.isSrc,  pairIsSrcReg)
+    val pairSetNow   = Mux(io.directory.valid, io.pairInfo.bits.set,    pairSetReg)
+    assert (!io.dstClaim.valid || !pairValidNow || !pairIsSrcNow || io.dstClaim.bits === pairSetNow,
+            "SBC: paired source migrated outside its partner set")
     val migDeferCtr = RegInit(0.U(16.W))
     when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
     assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
@@ -1270,6 +1292,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // Bootstrap new requests
   val allocate_as_full = WireInit(new FullRequest(params), init = io.allocate.bits)
   val new_meta = Mux(io.allocate.valid && io.allocate.bits.repeat, final_meta_writeback, io.directory.bits)
+  // SBC (003 §10.4a): a request that found its OWN home line in BRANCH. Pulsed only in the reset/plan
+  // block below (the home-read result cycle), NOT on the search-result or 2nd-dir-read cycles where
+  // the directory result is about the partner row, not this request's home. If this stays 0 while
+  // secPerm is 0, BRANCH is unreachable here and secPerm=0 is correct by construction (case S9).
+  val homeBranchPulse = WireInit(false.B)
+  io.homeBranch := homeBranchPulse
   val new_request = Mux(io.allocate.valid, allocate_as_full, request)
   val new_needT = needT(new_request.opcode, new_request.param)
   val new_clientBit = params.clientBit(new_request.source)
@@ -1355,6 +1383,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         val secNeedPerm = secEntry.state === BRANCH && req_needT
         secHit  := true.B
         secPerm := secNeedPerm
+        // SBC (003 §10.5): a served WRITE promotes the parked line to TRUNK; a C-channel Release that
+        // served is the 2e path made live. Counted here where secHit/secPerm already pulse.
+        secWritePulse := req_needT
+        secCPulse     := request.prio(2)
         inPlace := true.B
         // Re-point meta at the parked entry. Everything downstream - the probe client mask, the
         // Grant's way, final_meta_writeback - reads meta, so this one assignment is what makes the
@@ -1400,6 +1432,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           w_pprobeacklast  := false.B
           w_pprobeack      := false.B
           s_writeback      := false.B
+          secProbePulse    := true.B  // SBC (003 §10.5): had to probe a client off before serving
         }
         if (params.micro.sbcDebug) {
           printf(p"[SBC] SEC-SERVE set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${secEntry.state} clients=${secEntry.clients} needT=${req_needT} needPerm=${secNeedPerm}\n")
@@ -1453,6 +1486,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   } .elsewhen (io.directory.valid || (io.allocate.valid && io.allocate.bits.repeat)) {
     meta_valid := true.B
     meta := new_meta
+    // SBC (003 §10.4a): count a home line found in BRANCH. Only on a real dir-read (not a repeat).
+    when (io.directory.valid) { homeBranchPulse := new_meta.hit && (new_meta.state === BRANCH) }
     probes_done := 0.U
     probes_toN := 0.U
     probes_noT := false.B

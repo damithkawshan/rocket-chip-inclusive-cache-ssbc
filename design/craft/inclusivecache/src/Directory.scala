@@ -243,10 +243,20 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC (003 Stage 2e): `& freeWays` is the search side of the way-lock. Without it the search can
   // match a way that the row's own MSHR has already committed to evicting, and the two then work on
   // the same way from opposite ends - one serving the line, the other reading it out for a Release.
-  // Not finding it is always safe: the requester simply fetches from memory instead.
+  // Not finding it is safe ONLY for a CLEAN parked line: DRAM still holds the truth, so the requester
+  // refetches it. 9b retired `displaced => clean`, so a DIRTY parked way that is masked out here is the
+  // one exception - the refetch would return STALE data (scenario 10 in diagram_after_migration_v1.md).
+  // The watchdog below traps exactly that case under the S11 soak; a single core cannot force it in a
+  // directed test.
   val secHits = Cat(ways.zipWithIndex.map { case (w, i) =>
     secondarySearch && w.tag === tag && w.state =/= INVALID && w.displaced && (!setQuash || i.U =/= bypass.way)
   }.reverse) & freeWays
+  // SBC (003 §Step-3 net 2 / scenario 10): a tag-matching DIRTY displaced way that the way-lock masked
+  // out. If the search then reports no hit, the requester will refetch a stale DRAM copy.
+  val secLockedDirty = Cat(ways.zipWithIndex.map { case (w, i) =>
+    secondarySearch && w.tag === tag && w.state =/= INVALID && w.displaced && w.dirty &&
+    busyWays(i) && (!setQuash || i.U =/= bypass.way)
+  }.reverse)
   // A displaced entry written this cycle is not in `ways` yet. Missing it would let the refill install
   // a second copy of the same line - the stale-twin hole - so match the write bypass too.
   val secBypassHit = secondarySearch && setQuash && bypass.data.tag === tag &&
@@ -258,6 +268,12 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3: two parked copies of one line is the stale-twin hole - the search would serve a copy
   // another path can still write. Mux1H(secHits) needs one-hot anyway.
   assert (!ren2 || PopCount(secHits) <= 1.U, "SBC: two displaced copies of the same line in one set")
+  // SBC (003 scenario-10 watchdog): the search must never MISS a dirty parked line just because the
+  // way-lock masked it out - that is the stale-refetch race. Never observed; trap it if it happens.
+  if (params.micro.enableSetBalancing) {
+    assert (!ren2 || !(secondarySearch && !(secHits.orR || secBypassHit) && secLockedDirty.orR),
+            "SBC: secondary search missed a locked DIRTY displaced line (stale-refetch race, scenario 10)")
+  }
   // SBC (003 Stage 9b): `displaced => clean + client-free` is fully retired. Both halves were
   // consequences of parked lines being unreachable, and serving in place is precisely the removal of
   // that: a served line is client-held, and a served WRITER makes it dirty. Neither is now a defect.

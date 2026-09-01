@@ -43,6 +43,16 @@ class SBCStats(setBits: Int, satBits: Int) extends Bundle
   // SBC (003 Stage 9a): of the secondary HITS, how many had to acquire permission over the parked
   // line instead of being served outright. A subset of secHits, not a decline of it.
   val secPerm      = UInt(32.W)
+  // SBC (003 §10.5): serve-in-place and displaced-eviction event counts, plus AT read-back.
+  val secWrite     = UInt(32.W)   // serves where the requester needed T
+  val secProbe     = UInt(32.W)   // serves that had to probe a client off the parked line first
+  val dispRelease  = UInt(32.W)   // dirty parked lines written back (addressed by lineHome)
+  val dispDrop     = UInt(32.W)   // clean parked lines released with no data
+  val secC         = UInt(32.W)   // serves raised by a C-channel Release
+  val homeBranch   = UInt(32.W)   // requests that found their own HOME line in BRANCH
+  val atAssocSet   = UInt(setBits.W)  // AT[satReadSet].assocSet
+  val atSd         = Bool()           // AT[satReadSet].sd (0 = source side)
+  val parked       = UInt(32.W)   // live displaced lines currently resident
 }
 
 class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
@@ -92,6 +102,13 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     val secHit  = Input(Bool())
     val secMiss = Input(Bool())
     val secPerm = Input(Bool())
+    // SBC (003 §10.5): serve-in-place and displaced-eviction pulses (OR-reduced across MSHRs).
+    val secWrite    = Input(Bool())
+    val secProbe    = Input(Bool())
+    val dispRelease = Input(Bool())
+    val dispDrop    = Input(Bool())
+    val secC        = Input(Bool())
+    val homeBranch  = Input(Bool())
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
@@ -168,7 +185,16 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   val dIsSource = dEntry.valid && !dEntry.sd   // already paired -> pinned to its partner
   val dIsDest   = dEntry.valid &&  dEntry.sd   // someone's destination -> must never source
   // A pinned source gets NO coldness test: the partner is the partner regardless of temperature.
-  io.migrateResp.destOk  := !dIsDest && Mux(dIsSource, true.B, dssOK)
+  // sbcForceDstSet (debug) forces WHICH set a migration targets, never WHETHER. Under the force knob
+  // the 1:1 rule still applies: only offer the forced set if it is unpaired, or already this source's
+  // partner. Scala `if` -> zero hardware when the knob is off (-1). Without it a hot background set
+  // could re-pair the forced row and orphan another set's parked lines (a wrong-address writeback).
+  val forcedLegal =
+    if (params.micro.sbcForceDstSet >= 0) {
+      val f = at(params.micro.sbcForceDstSet.U)
+      !f.valid || (f.sd && f.assocSet === dSet)
+    } else true.B
+  io.migrateResp.destOk  := !dIsDest && Mux(dIsSource, true.B, dssOK) && forcedLegal
   io.migrateResp.destSet := Mux(dIsSource, dEntry.assocSet, dssPick)
 
   // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
@@ -184,19 +210,36 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   when (io.secHit)  { nSecHit  := nSecHit + 1.U }
   when (io.secMiss) { nSecMiss := nSecMiss + 1.U }
   when (io.secPerm) { nSecPerm := nSecPerm + 1.U }
+  // SBC (003 §10.5): the six new event counters.
+  val nSecWrite    = RegInit(0.U(32.W))
+  val nSecProbe    = RegInit(0.U(32.W))
+  val nDispRelease = RegInit(0.U(32.W))
+  val nDispDrop    = RegInit(0.U(32.W))
+  val nSecC        = RegInit(0.U(32.W))
+  val nHomeBranch  = RegInit(0.U(32.W))
+  when (io.secWrite)    { nSecWrite    := nSecWrite + 1.U }
+  when (io.secProbe)    { nSecProbe    := nSecProbe + 1.U }
+  when (io.dispRelease) { nDispRelease := nDispRelease + 1.U }
+  when (io.dispDrop)    { nDispDrop    := nDispDrop + 1.U }
+  when (io.secC)        { nSecC        := nSecC + 1.U }
+  when (io.homeBranch)  { nHomeBranch  := nHomeBranch + 1.U }
+  // SBC (003 §10.4b): live displaced-line occupancy. Plain observability counter, no assert.
+  // ++ when a line gets parked (migration commit), -- when a displaced line leaves (release or drop).
+  // Saturates at 0 so an underflow cannot print as a huge number.
+  val nParked   = RegInit(0.U(32.W))
+  val parkErase = io.dispRelease || io.dispDrop
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
   val migrateCommit = io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE
-  // SBC Phase 3 (1d): pinning must hold at every commit. The force-destination debug knob breaks 1:1
-  // on purpose, so it carves these out (Scala if -> no hardware either way).
-  if (params.micro.sbcForceDstSet < 0) {
-    assert(!migrateCommit || !at(io.commit.bits.src).valid ||
-           (!at(io.commit.bits.src).sd && at(io.commit.bits.src).assocSet === io.commit.bits.dst),
-           "SBC: commit would re-pair an already-paired source (pinning broken)")
-    assert(!migrateCommit || !at(io.commit.bits.dst).valid ||
-           (at(io.commit.bits.dst).sd && at(io.commit.bits.dst).assocSet === io.commit.bits.src),
-           "SBC: commit targets a destination already in another pairing (1:1 broken)")
-  }
+  // SBC Phase 3 (1d): pinning must hold at every commit. The force-destination debug knob no longer
+  // carves these out - forcedLegal (above) keeps 1:1 intact even when the destination is forced, so
+  // the SIP test runs with these nets armed.
+  assert(!migrateCommit || !at(io.commit.bits.src).valid ||
+         (!at(io.commit.bits.src).sd && at(io.commit.bits.src).assocSet === io.commit.bits.dst),
+         "SBC: commit would re-pair an already-paired source (pinning broken)")
+  assert(!migrateCommit || !at(io.commit.bits.dst).valid ||
+         (at(io.commit.bits.dst).sd && at(io.commit.bits.dst).assocSet === io.commit.bits.src),
+         "SBC: commit targets a destination already in another pairing (1:1 broken)")
   // Both halves of the pairing leave the DSS candidate pool (see DSS.io.remove).
   dss.io.remove.valid    := migrateCommit
   dss.io.remove.bits.src := io.commit.bits.src
@@ -210,6 +253,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     at(io.commit.bits.dst).sd       := true.B             // destination side
     at(io.commit.bits.dst).assocSet := io.commit.bits.src
   }
+  when (migrateCommit && !parkErase)                        { nParked := nParked + 1.U }
+  .elsewhen (!migrateCommit && parkErase && nParked =/= 0.U) { nParked := nParked - 1.U }
 
   // SBC reset: a write to MMIO SBC_Reset zeroes every piece of SBC observation state in one cycle.
   // Placed after all update logic above so a same-cycle dirTap update / commit loses to the clear.
@@ -225,6 +270,14 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     nSecHit  := 0.U
     nSecMiss := 0.U
     nSecPerm := 0.U
+    nSecWrite    := 0.U
+    nSecProbe    := 0.U
+    nDispRelease := 0.U
+    nDispDrop    := 0.U
+    nSecC        := 0.U
+    nHomeBranch  := 0.U
+    // nParked deliberately NOT cleared here: clearing the AT while lines are still parked orphans
+    // them (§10.9, deferred). Nothing writes SBC_Reset today; this keeps the occupancy honest.
   }
 
   // Read-only stats for MMIO.
@@ -239,6 +292,15 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.stats.secHits      := nSecHit
   io.stats.secMiss      := nSecMiss
   io.stats.secPerm      := nSecPerm
+  io.stats.secWrite     := nSecWrite
+  io.stats.secProbe     := nSecProbe
+  io.stats.dispRelease  := nDispRelease
+  io.stats.dispDrop     := nDispDrop
+  io.stats.secC         := nSecC
+  io.stats.homeBranch   := nHomeBranch
+  io.stats.atAssocSet   := at(io.satReadSet).assocSet
+  io.stats.atSd         := at(io.satReadSet).sd
+  io.stats.parked       := nParked
 
   // ---- sim-only debug printfs (Scala-gated; nothing elaborated when sbcDebug=false) ----
   if (params.micro.sbcDebug) {
