@@ -35,6 +35,9 @@
 #define SBC_HOMEBRANCH   (L2_CTRL_BASE + 0x390)  /* R   requests that found their HOME line in BRANCH  */
 #define SBC_ATASSOC      (L2_CTRL_BASE + 0x398)  /* R   AT[sel]: bits[7:0]=assocSet, bit8=sd           */
 #define SBC_PARKED       (L2_CTRL_BASE + 0x3A0)  /* R   live displaced lines currently resident        */
+/* 004 total L2 hit-rate counters — free-running, always active (NOT SBC-gated), NOT reset by SBC_Reset */
+#define SBC_L2_ACCESSES  (L2_CTRL_BASE + 0x3A8)  /* R   total primary directory lookups (hit+miss)     */
+#define SBC_L2_HITS      (L2_CTRL_BASE + 0x3B0)  /* R   total primary hits                             */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;

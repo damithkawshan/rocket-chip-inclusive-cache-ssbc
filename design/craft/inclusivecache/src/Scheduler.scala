@@ -38,6 +38,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC MMIO: SW-selected set index in, read-only stats out
     val sbcSatReadSet = Input(UInt(params.setBits.W))
     val sbcStats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
+    // SBC 004: free-running L2 hit-rate counters (baseline stat, NOT gated by enableSetBalancing)
+    val l2Accesses    = Output(UInt(64.W))
+    val l2Hits        = Output(UInt(64.W))
     // SBC MMIO: SW arm pulse in (a write to SBC_BalanceSet)
     val sbcBalanceSet = Flipped(Valid(UInt(params.setBits.W)))
     // SBC MMIO: SW reset pulse in (a write to SBC_Reset)
@@ -714,6 +717,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   } else {
     io.sbcStats := 0.U.asTypeOf(new SBCStats(params.setBits, params.micro.satCounterBits))
   }
+
+  // SBC 004: free-running L2 hit-rate counters. Driven OUTSIDE the enableSetBalancing if/else above
+  // (which zeroes io.sbcStats when SBC is off) so they stay non-zero on VerilatorRocket8KL116KL2NoSbcConfig.
+  io.l2Accesses := directory.io.l2Accesses
+  io.l2Hits     := directory.io.l2Hits
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

@@ -250,9 +250,10 @@ int main(void) {
 
     snap_t f; snap(&f);
     printf("[SIP-TOTALS] mig=%lu att=%lu abo=%lu secHits=%lu secMiss=%lu secWrite=%lu secProbe=%lu "
-           "dispRel=%lu dispDrop=%lu secC=%lu secPerm=%lu homeBranch=%lu parked=%lu\n",
+           "dispRel=%lu dispDrop=%lu secC=%lu secPerm=%lu homeBranch=%lu parked=%lu l2Accesses=%lu l2Hits=%lu\n",
            (ulong)f.mig,(ulong)f.att,(ulong)f.abo,(ulong)f.sh,(ulong)f.sm,(ulong)f.sw,(ulong)f.sp,
-           (ulong)f.dr,(ulong)f.dd,(ulong)f.sc,(ulong)f.spm,(ulong)f.hb,(ulong)f.pk);
+           (ulong)f.dr,(ulong)f.dd,(ulong)f.sc,(ulong)f.spm,(ulong)f.hb,(ulong)f.pk,
+           (ulong)sbc_rd(SBC_L2_ACCESSES),(ulong)sbc_rd(SBC_L2_HITS));
     printf("GATE5 single-core: %s\n", ok ? "*** PASSED ***" : "*** FAILED ***");
     return ok ? 0 : 1;
 }

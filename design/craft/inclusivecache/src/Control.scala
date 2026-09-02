@@ -43,6 +43,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // SBC: SW-selected set index out, read-only stats in
       val sbc_satReadSet = Output(UInt(log2Ceil(outer.cache.sets).W))
       val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
+      // SBC 004: free-running L2 hit-rate counters (NOT part of SBCStats -> not gated by enableSetBalancing)
+      val l2Accesses = Input(UInt(64.W))
+      val l2Hits     = Input(UInt(64.W))
       // SBC: SW arm pulse out (a write to SBC_BalanceSet → 1-cycle valid+set)
       val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
       // SBC: SW reset pulse out (a write to SBC_Reset → 1-cycle high; zeroes all SBC observation state)
@@ -144,6 +147,11 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
     val sbcParkedField = RegField.r(32, io.sbc_stats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
+    // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
+    val l2AccessesField = RegField.r(64, io.l2Accesses,
+      RegFieldDesc("L2_Accesses", "Total primary directory lookups (hit+miss), free-running", volatile=true))
+    val l2HitsField = RegField.r(64, io.l2Hits,
+      RegFieldDesc("L2_Hits", "Total primary hits, free-running", volatile=true))
 
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
     val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
@@ -185,7 +193,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x388 -> Seq(sbcSecCField),
       0x390 -> Seq(sbcHomeBranchField),
       0x398 -> Seq(sbcAtAssocField),
-      0x3A0 -> Seq(sbcParkedField)
+      0x3A0 -> Seq(sbcParkedField),
+      0x3A8 -> Seq(l2AccessesField),
+      0x3B0 -> Seq(l2HitsField)
     )
   }
 }

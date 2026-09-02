@@ -201,6 +201,8 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x348` | `SBC_Attempted` | R — migrations attempted (setup reached) |
 | `0x350` | `SBC_Aborted` | R — migrations aborted (ineligible src/dst) |
 | `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state |
+| `0x3A8` | `L2_Accesses` | R — total primary directory lookups (hit+miss), free-running, always active (SBC on or off), **not** reset by SBC_Reset |
+| `0x3B0` | `L2_Hits` | R — total primary hits, free-running (misses = accesses − hits) |
 
 **If you change any register offset in Control.scala, update the SW-side header in the same change.**
 

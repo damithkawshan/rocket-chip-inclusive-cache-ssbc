@@ -43,10 +43,12 @@ static uint64_t sink;
 
 /* SBC MMIO counters — offsets live in the shared header so the two test binaries cannot drift. */
 static void sbc_summary(void) {
-    printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu secPerm=%lu\n",
+    printf("[SBC-COUNTERS] migrations=%lu attempted=%lu aborted=%lu secHits=%lu secMiss=%lu secPerm=%lu "
+           "l2Accesses=%lu l2Hits=%lu\n",
            (unsigned long)sbc_rd(SBC_MIGRATIONS), (unsigned long)sbc_rd(SBC_ATTEMPTED),
            (unsigned long)sbc_rd(SBC_ABORTED),    (unsigned long)sbc_rd(SBC_SECHITS),
-           (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECPERM));
+           (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECPERM),
+           (unsigned long)sbc_rd(SBC_L2_ACCESSES),(unsigned long)sbc_rd(SBC_L2_HITS));
 }
 
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.

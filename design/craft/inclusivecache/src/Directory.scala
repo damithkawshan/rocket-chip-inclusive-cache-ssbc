@@ -99,6 +99,9 @@ class Directory(params: InclusiveCacheParameters) extends Module
     val result = Valid(new DirectoryResult(params))
     val ready  = Bool() // reset complete; can enable access
     val tap    = Valid(new DirectoryTap(params)) // SBC: result-aligned observation tap
+    // SBC 004: free-running L2 hit-rate counters (always active, NOT gated by enableSetBalancing)
+    val l2Accesses = UInt(64.W)
+    val l2Hits     = UInt(64.W)
   })
 
   val codeBits = new DirectoryEntry(params).getWidth
@@ -299,6 +302,18 @@ class Directory(params: InclusiveCacheParameters) extends Module
   io.tap.bits.set := set
   io.tap.bits.hit := io.result.bits.hit
   io.tap.bits.way := io.result.bits.way
+
+  // SBC 004: total L2 hit-rate counters. One primary lookup = one io.result.valid (ren2) pulse;
+  // io.result.bits.hit gives hit/miss on the SAME cycle. Free-running for the life of the sim,
+  // never reset by SBC_Reset, and driven to Control OUTSIDE the enableSetBalancing gate.
+  val l2AccCount = RegInit(0.U(64.W))
+  val l2HitCount = RegInit(0.U(64.W))
+  when (io.result.valid) {
+    l2AccCount := l2AccCount + 1.U
+    when (io.result.bits.hit) { l2HitCount := l2HitCount + 1.U }
+  }
+  io.l2Accesses := l2AccCount
+  io.l2Hits     := l2HitCount
 
   // SBC Phase 1 debug: trace every preferEvictable read so we can see whether the flag arrives and
   // whether the set held an eligible (clean, client-free) way for it to pick.

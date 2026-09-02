@@ -146,14 +146,15 @@ int main(void)
     /* Amendment 11 §11.3: the full SBC counter line, next to the checksum. Read at the very end,
      * after the checksum is computed, so it cannot perturb the data or the checksum. */
     printf("[SBC-COUNTERS] mig=%lu att=%lu abo=%lu secHits=%lu secMiss=%lu secWrite=%lu secProbe=%lu "
-           "dispRel=%lu dispDrop=%lu secC=%lu secPerm=%lu homeBranch=%lu parked=%lu\n",
+           "dispRel=%lu dispDrop=%lu secC=%lu secPerm=%lu homeBranch=%lu parked=%lu l2Accesses=%lu l2Hits=%lu\n",
            (unsigned long)sbc_rd(SBC_MIGRATIONS), (unsigned long)sbc_rd(SBC_ATTEMPTED),
            (unsigned long)sbc_rd(SBC_ABORTED),    (unsigned long)sbc_rd(SBC_SECHITS),
            (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECWRITE),
            (unsigned long)sbc_rd(SBC_SECPROBE),   (unsigned long)sbc_rd(SBC_DISPRELEASE),
            (unsigned long)sbc_rd(SBC_DISPDROP),   (unsigned long)sbc_rd(SBC_SECC),
            (unsigned long)sbc_rd(SBC_SECPERM),    (unsigned long)sbc_rd(SBC_HOMEBRANCH),
-           (unsigned long)sbc_rd(SBC_PARKED));
+           (unsigned long)sbc_rd(SBC_PARKED),
+           (unsigned long)sbc_rd(SBC_L2_ACCESSES), (unsigned long)sbc_rd(SBC_L2_HITS));
     printf("DONE\n");
 
     return 0;
