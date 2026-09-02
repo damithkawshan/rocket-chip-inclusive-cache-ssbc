@@ -306,9 +306,12 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC 004: total L2 hit-rate counters. One primary lookup = one io.result.valid (ren2) pulse;
   // io.result.bits.hit gives hit/miss on the SAME cycle. Free-running for the life of the sim,
   // never reset by SBC_Reset, and driven to Control OUTSIDE the enableSetBalancing gate.
+  // !internalRead is load-bearing: an MSHR dread (secondary search / migration dst read) has `hit`
+  // forced false at :230, so counting it would add guaranteed misses to the SBC run only, biasing
+  // every SBC-on vs SBC-off hit-rate comparison against SBC. Same gate as io.tap above.
   val l2AccCount = RegInit(0.U(64.W))
   val l2HitCount = RegInit(0.U(64.W))
-  when (io.result.valid) {
+  when (io.result.valid && !internalRead) {
     l2AccCount := l2AccCount + 1.U
     when (io.result.bits.hit) { l2HitCount := l2HitCount + 1.U }
   }

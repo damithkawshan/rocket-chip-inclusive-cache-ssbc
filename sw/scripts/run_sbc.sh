@@ -37,7 +37,10 @@ for cfg in "${CONFIGS[@]}"; do
     fi
 
     echo "==== run $test on $cfg ===="
-    make -j"$JOBS" run-binary-debug \
+    # run-binary, NOT run-binary-debug: the -debug target builds the traced simulator and dumps a
+    # VCD/FST per run, which costs a lot of time and disk for waveforms we never open. Both targets
+    # still write $test.out (the [SBC] printfs) and $test.log (stdout), which is all we parse.
+    make -j"$JOBS" run-binary \
       BINARY="$SW/build/$test.riscv" \
       CONFIG="$cfg" \
       VERILATOR_THREADS="$THREADS" \
@@ -47,7 +50,7 @@ for cfg in "${CONFIGS[@]}"; do
     dst="$LOGS/${test}_${cfg}${LABEL:+_$LABEL}"
     echo "==== collect -> $dst ===="
     mkdir -p "$dst"
-    cp "$out/$test".{log,out,dump} "$dst"/ 2>/dev/null || true
+    cp "$out/$test".{log,out} "$dst"/ 2>/dev/null || true  # no .dump: that was a run-binary-debug artefact
     grep '\[SBC\]' "$out/$test.out" > "$dst/sbc.log" || true
     python3 "$SW/scripts/sbc_stats.py" "$dst"
   done

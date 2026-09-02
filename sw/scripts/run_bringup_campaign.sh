@@ -22,9 +22,22 @@ RESULTS="$GEN/results/initial_bringup_results"
 SBC_CFG=VerilatorRocket8KL116KL2Config
 NOSBC_CFG=VerilatorRocket8KL116KL2NoSbcConfig
 
-# Shortlist, ordered by how likely the access pattern is to produce a HOT set next to a COLD one
-# (which is the only situation SBC can exploit). Rationale is in summary.md.
-BENCHES="matmult fft-int congrad checkers graph-tests huff-encode life distinctness dhrystone sieve idct-alg lu-decomp"
+# Shortlist chosen 2026-09-03 by inspecting every bringup-bench source for working-set size and
+# access stride. SBC can only help when (a) the working set exceeds the 4KB L2, and (b) the stride
+# concentrates pressure on a FEW of the 8 sets while others stay cold. Set index = addr[8:6], so a
+# stride that is a multiple of 512B lands on ONE set; a 256B stride alternates between TWO.
+# Full rationale table is emitted into summary.md. Tiers:
+#   T1 strong  - power-of-2 stride, working set >> L2
+#   T2 medium  - working set > L2, irregular but non-uniform set pressure
+#   T3 control - expected ~zero gain; they prove SBC does no harm on uniform/streaming patterns
+#
+# Dropped as pointless (whole working set fits in the 4KB L2, so nothing is ever evicted or migrated):
+#   lu-decomp 200B, idct-alg 512B, shortest-path 256B, max-subseq 1.6KB, distinctness 2.5KB,
+#   life 3KB, checkers, graph-tests, tiny-NN. The previous shortlist contained six of these.
+BENCHES_T1="matmult huff-encode heapsort fft-int"
+BENCHES_T2="congrad knapsack dhrystone"
+BENCHES_T3="sieve pi-calc bloom-filter"
+BENCHES="$BENCHES_T1 $BENCHES_T2 $BENCHES_T3"
 NOVR=""
 LABEL="initial_bringup"
 CLEAN=0
@@ -200,13 +213,31 @@ for r in sorted(rows, key=lambda x: (x["cycles_delta_pct"] is None, x["cycles_de
         cs=fmt(r["sbc_cycles"]), cn=fmt(r["nosbc_cycles"]),
         cd=fmt(r["cycles_delta_pct"], sign=True)))
 
-out += ["", "## Caveat on the hit% columns", "",
-        "`L2_Accesses` currently counts SBC's own internal directory reads (the secondary search and",
-        "the migration destination read). Those are marked `internalRead`, and `Directory.scala:230`",
-        "forces `hit` false for every one of them, so they enter the denominator as guaranteed misses",
-        "and drag the SBC hit rate down. **The hit% columns are not a like-for-like comparison until",
-        "the counter is gated on `!internalRead`.** The cycles columns are unaffected and are the",
-        "metric to trust.", ""]
+out += ["", "## Why these benchmarks", "",
+        "Set index is `addr[8:6]`, so with 8 sets a **512B stride lands on one set** and a **256B",
+        "stride alternates between two**. SBC can only help when the working set exceeds the 4KB L2",
+        "*and* the stride concentrates pressure on a few sets while others stay cold.", "",
+        "| bench | tier | working set | why |",
+        "|---|---|---|---|",
+        "| matmult | T1 strong | 4x `int[64][64]` = 64KB | row = 256B, so the column walk on B uses only 2 of 8 sets |",
+        "| huff-encode | T1 strong | `char codes[256][256]` = 64KB | row = 256B, same 2-set alternation |",
+        "| heapsort | T1 strong | `int64_t[2048]` = 16KB | heap index doubling gives power-of-2 address strides |",
+        "| fft-int | T1 strong | 256-pt FFT + 1024-entry sine table, ~5KB | butterfly strides are powers of 2 - the textbook conflict-miss pattern |",
+        "| congrad | T2 medium | sparse CG, ~50KB | indirect `x[col_idx[j]]` gives non-uniform set pressure |",
+        "| knapsack | T2 medium | DP table ~51KB | row = 1004B, not a power of 2, so pressure spreads more |",
+        "| dhrystone | T2 medium | small scattered records | standard reference workload, pointer and string chasing |",
+        "| sieve | T3 control | `char[8192]` = 8KB | prime strides spread evenly over all 8 sets - expect ~0 migrations |",
+        "| pi-calc | T3 control | `int[52514]` = 210KB | pure descending streaming sweep, no reuse - nothing worth keeping |",
+        "| bloom-filter | T3 control | 1KB bit array | hash-scattered, uniform across sets |",
+        "",
+        "T3 rows are the ones to watch for **harm**: if SBC costs cycles there, it is paying for",
+        "migrations it can never recover.", "",
+        "## On the hit% columns", "",
+        "`L2_Accesses` counts **demand lookups only**. SBC's own internal directory reads (the",
+        "secondary search and the migration destination read) are marked `internalRead` and have",
+        "`hit` forced false at `Directory.scala:230`; counting them would have added guaranteed",
+        "misses to the SBC run alone and biased the comparison against SBC. They are excluded as",
+        "of the !internalRead fix, so hit% is like-for-like between the two configs.", ""]
 open(os.path.join(RESULTS, "summary.md"), "w").write("\n".join(out) + "\n")
 print("\n".join(out))
 print(f"\n[wrote {RESULTS}/summary.csv and summary.md]")
