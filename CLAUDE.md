@@ -46,6 +46,46 @@ make -C sims/verilator CONFIG=VerilatorRocket8KL116KL2Config
 make -C sims/verilator CONFIG=VerilatorRocket8KL116KL2Config run-binary BINARY=<path/to.riscv>
 ```
 
+### ⚠️ ALWAYS simulate through `make run-binary` / `run_sbc.sh` — never a bare `$SIM` invocation
+
+The `make … run-binary` recipe (and `sw/scripts/run_sbc.sh`, `scripts/ssbc-script/verilator_sim.sh`,
+which wrap it) passes **`+dramsim +dramsim_ini_dir=…`** — the realistic DRAMSim2 memory model. A bare
+direct invocation of the simulator binary
+
+```bash
+# ❌ WRONG for debugging — omits +dramsim, so it uses the FAST IDEAL-memory model
+$SIM +permissive +max-cycles=N +permissive-off <bin>.riscv
+```
+
+**omits `+dramsim`**, which silently switches the memory system to the fast ideal model. That changes
+L2 **eviction/refill timing**, and the sim-only `BankedStore` shadow checker is **beat-blind**
+(`shIdx = Cat(way,set)` — one address per `(set,way)`, no beat/sub-bank). Under ideal-memory timing a
+legitimate evict-read of the victim and refill-write of the new line land on the same `(set,way)` in
+adjacent cycles, and the checker **false-positives**:
+
+```
+BankedStore.sv: SBC shadow: sourceC touched the wrong row: set=1 way=2
+  stored=(tag=80009 set=1) believed=(tag=80008 set=1) ... writtenAt=27140 now=27141
+```
+
+This is a **FALSE POSITIVE**, not a data bug: under the real DRAMSim2 timing the refill and victim-read
+are separated in time and it never fires, and the same test passes on `…NoSbcConfig` (checker not
+elaborated) with correct golden data. **Do not conclude "data corruption" or "GATE not green" from a
+bare-invocation abort at cycle 27141.**
+
+If you must drive the sim directly, replicate make's plusargs — most importantly `+dramsim`:
+
+```bash
+$SIM +permissive +dramsim \
+     +dramsim_ini_dir=$CY/generators/testchipip/src/main/resources/dramsim2_ini \
+     +max-cycles=N +permissive-off <bin>.riscv
+```
+
+**Cost of ignoring this (2026-09-02):** a bare-`$SIM` "repro" that omitted `+dramsim` produced the
+27141 abort, which was mistaken for a real corruption and led to a false "GATE 4 was never green"
+conclusion plus hours of wrong commit-bisection. The actual difference was one missing flag. Verify a
+suspected sim failure through `make run-binary` / `run_sbc.sh` before trusting it.
+
 Configs that wire in this cache live in
 `chipyard/generators/chipyard/src/main/scala/config/RocketConfigs.scala` via
 `WithInclusiveCache(nWays=…, capacityKB=…)`. FPGA/VCU118 bitstreams are built under `chipyard/fpga/`.
