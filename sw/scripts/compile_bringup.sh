@@ -30,7 +30,7 @@ riscv64-unknown-elf-gcc \
   -mcmodel=medany -static -std=gnu99 -O2 \
   -fno-common -fno-builtin -fno-builtin-printf \
   -DTARGET_SPIKE \
-  -I "$BB/common" -I "$BB/target" -I "$COMMON" -I "$ENV" \
+  -I "$SW" -I "$BB/common" -I "$BB/target" -I "$COMMON" -I "$ENV" \
   -o "$OUT/bringup_${BENCH}.riscv" \
   "$TMP"/*.c \
   "$BB"/common/libmin_*.c \

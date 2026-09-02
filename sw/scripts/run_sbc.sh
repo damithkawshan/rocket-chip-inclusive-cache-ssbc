@@ -5,13 +5,18 @@ set -euo pipefail
 
 # ----------------------- edit this block -----------------------
 CHIPYARD=/home/damith/Research/repos/chipyard_performance_eval/chipyard
-CONFIGS=(VerilatorRocket8KL116KL2Config)  # add VerilatorRocket8KL116KL2SipTestConfig for serve_in_place_test
-TESTS=(migration_stress_test)  # add serve_in_place_test alongside the SIP config
-LABEL="phase2-verification-test"                  # optional suffix on the output dir name (e.g. "no_bug_003")
-MAX_CYCLES=100000000  # sim iteration cap (+max-cycles)
-THREADS=19            # VERILATOR_THREADS
-JOBS=20               # make -j
-CLEAN=1               # 1 = make clean + rebuild RTL (needed after RTL edits); 0 = reuse build
+# Every value below can be overridden from the environment (SBC_*), which is how
+# run_bringup_campaign.sh drives this script without editing it. Edit here for manual runs.
+CONFIGS=(${SBC_CONFIGS:-VerilatorRocket8KL116KL2Config VerilatorRocket8KL116KL2NoSbcConfig})
+TESTS=(${SBC_TESTS:-migration_stress_test})
+LABEL="${SBC_LABEL:-l2-hitrate-counters-004}"
+MAX_CYCLES=${SBC_MAX_CYCLES:-100000000}  # sim iteration cap (+max-cycles)
+THREADS=${SBC_THREADS:-19}               # VERILATOR_THREADS
+JOBS=${SBC_JOBS:-20}                     # make -j
+CLEAN=${SBC_CLEAN:-1}                    # 1 = make clean + rebuild RTL (needed after RTL edits); 0 = reuse
+# Set SBC_SKIP_BUILD=1 when the caller has already built $test.riscv itself
+# (run_bringup_campaign.sh builds via compile_bringup.sh, which compile_app.sh cannot do).
+SKIP_BUILD=${SBC_SKIP_BUILD:-0}
 # ---------------------------------------------------------------
 
 SW="$CHIPYARD/generators/rocket-chip-inclusive-cache/sw"
@@ -24,8 +29,12 @@ if [ "$CLEAN" = 1 ]; then make clean && rm -rf output/*; fi
 
 for cfg in "${CONFIGS[@]}"; do
   for test in "${TESTS[@]}"; do
-    echo "==== build $test ===="
-    "$SW/scripts/compile_app.sh" "$test"
+    if [ "$SKIP_BUILD" = 1 ]; then
+      echo "==== build $test (skipped, caller supplied the binary) ===="
+    else
+      echo "==== build $test ===="
+      "$SW/scripts/compile_app.sh" "$test"
+    fi
 
     echo "==== run $test on $cfg ===="
     make -j"$JOBS" run-binary-debug \
