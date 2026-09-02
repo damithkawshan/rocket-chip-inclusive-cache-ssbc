@@ -13,11 +13,18 @@
 #include <stdint.h>
 #include "sbc_mmio.h"
 
+/* Overridable from the command line (-DMATRIX_DIM=N) for size sweeps. */
+#ifndef MATRIX_DIM
 #define MATRIX_DIM 32
+#endif
 #define MOD_SIZE 255
 #define ITERATIONS 1
 
 typedef float matrix_t[MATRIX_DIM][MATRIX_DIM];
+
+static inline uint64_t rd_cycle(void) {
+    uint64_t c; asm volatile("rdcycle %0" : "=r"(c)); return c;
+}
 
 static int Seed;
 static matrix_t ArrayA;
@@ -109,6 +116,7 @@ int main(void)
 {
     int iter;
     uint32_t checksum;
+    uint64_t c0, c1;
 
     printf("\n");
     printf("==========================================\n");
@@ -124,10 +132,13 @@ int main(void)
     Initialize();
 
     printf("Running benchmark...\n");
+    c0 = rd_cycle();
     for (iter = 0; iter < ITERATIONS; iter++) {
         printf("Iteration %d\n", iter);
         MultiplyCacheStress(ArrayA, ArrayB, ResultArray);
     }
+    c1 = rd_cycle();
+    printf("[CYCLES] multiply=%lu\n", (unsigned long)(c1 - c0));
 
     checksum = MatrixChecksum(ResultArray);
 
