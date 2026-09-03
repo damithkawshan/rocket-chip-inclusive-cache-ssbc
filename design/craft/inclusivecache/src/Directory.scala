@@ -180,16 +180,26 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // a precise test).
   val invalidWayOH   = Cat(ways.map(_.state === INVALID).reverse)
   val nonDisplacedOH = Cat(ways.map(!_.displaced).reverse)
-  // SBC Phase 3: displaced ways compete for the LFSR victim like any other way. They used to be
-  // masked out (`& nonDisplacedOH`), which quarantined them: unable to hit AND unable to be evicted,
-  // so a partner set clogged and teardown could never fire. See TASK 001 Amendment 1 A3.
+  // SBC: a parked line is LAST PRIORITY for eviction - masked out of the random-victim tier, so it is
+  // only taken when no native way is available (tier 5 below).
+  //
+  // This mask was removed once before because it QUARANTINED displaced lines - unable to hit AND
+  // unable to be evicted, so a partner set clogged. Both halves of that are gone: serve-in-place lets
+  // a parked line hit (003 Stage 9a), and tiers 4-5 below reclaim one whenever no native way is free.
+  // So this protects them without making them immortal.
+  //
+  // Why: measured 2026-09-03, 15,073 of 15,074 parked lines were evicted before being reused - 0.44
+  // hits per park, against a break-even near 1.0. Paper section 2.2 inserts a displaced line as MRU
+  // for the same reason: it comes from a stressed set, so it needs MORE priority than the destination's
+  // own lines, not equal.
   val lfsrVictimOH   = victimWayOHLFSR
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
   // writeback), no clients (no probe), not displaced. The migration source read prefers one.
   val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
-  // SBC: displaced-reclaim backstop. The LFSR tier above is always one-hot, so these last two Mux
-  // arms are unreachable today; they stay as the guarantee that victimWayOH can never be zero and
-  // trip the PopCount assert below.
+  // SBC: displaced-reclaim backstop. These two arms are now LIVE, not dead: the random tier is masked
+  // to native ways, so it yields nothing whenever the LFSR lands on a parked way or the row is all
+  // parked. Tier 4 then takes a native way, and tier 5 reclaims a parked one only when there is no
+  // native way left. That last arm is what keeps "least priority" from becoming "immortal".
   // SBC (003 Stage 9b): this used to add "safe either way: a displaced entry is clean + client-free by
   // construction, so the MSHR drops it silently". BOTH HALVES ARE NOW FALSE. A displaced victim is
   // probed and released like any other line (armEviction's displaced branch); picking one here is
@@ -204,7 +214,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val freeWays = ~busyWays
   val victimWayOH = Mux(preferInvalid && (invalidWayOH & freeWays).orR, PriorityEncoderOH(invalidWayOH & freeWays),
                     Mux(preferEvictable && (evictableOH & freeWays).orR, PriorityEncoderOH(evictableOH & freeWays),
-                    Mux((lfsrVictimOH & freeWays).orR, lfsrVictimOH & freeWays,
+                    Mux((lfsrVictimOH & nonDisplacedOH & freeWays).orR, lfsrVictimOH & nonDisplacedOH & freeWays,
                     Mux((nonDisplacedOH & freeWays).orR, PriorityEncoderOH(nonDisplacedOH & freeWays),
                     Mux((displacedOH & freeWays).orR, PriorityEncoderOH(displacedOH & freeWays),
                     // Last resort: no free way at all. Unreachable - at most two ways in a row are
