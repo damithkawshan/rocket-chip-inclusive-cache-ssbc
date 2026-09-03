@@ -81,6 +81,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
       val paired       = Bool()
       val isDest       = Bool()
       val assocSet     = UInt(params.setBits.W)
+      // Paper section 2.3, the "sc" bit: my partner currently holds at least one line of mine.
+      val mayHold      = Bool()
     })
     // SBC Phase 3 (002 C3): assert-only second read of the AT. Lets the check ask "is this set a
     // paired source" from the live table instead of from the MSHR's latch, which is what it polices.
@@ -105,6 +107,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // SBC (003 §10.5): serve-in-place and displaced-eviction pulses (OR-reduced across MSHRs).
     val secWrite    = Input(Bool())
     val secProbe    = Input(Bool())
+    val dispHome    = Input(UInt(params.setBits.W))  // which set the reclaimed parked line came from
     val dispRelease = Input(Bool())
     val dispDrop    = Input(Bool())
     val secC        = Input(Bool())
@@ -228,6 +231,13 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // Saturates at 0 so an underflow cannot print as a huge number.
   val nParked   = RegInit(0.U(32.W))
   val parkErase = io.dispRelease || io.dispDrop
+  // Paper section 2.3 "sc" bit, as a per-source-set count of lines currently parked in the partner.
+  // A count rather than a bare bit because we have no cheap "OR of the d bits" read of the partner
+  // row; under strict 1:1 pinning every line parked out of s sits in exactly one partner, so this is
+  // the same predicate. Saturating both ends: every drift mode leaves it too HIGH, which only costs a
+  // wasted search. Too LOW would skip a search for a line that is really there, refetch it from DRAM
+  // and leave two copies - so the arithmetic below never decrements below zero.
+  val parkCount = RegInit(VecInit(Seq.fill(sets)(0.U((log2Ceil(params.cache.ways + 1)).W))))
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
   val migrateCommit = io.commit.valid && io.commit.bits.kind === SBCCommitKind.MIGRATE
@@ -255,6 +265,23 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   }
   when (migrateCommit && !parkErase)                        { nParked := nParked + 1.U }
   .elsewhen (!migrateCommit && parkErase && nParked =/= 0.U) { nParked := nParked - 1.U }
+
+  // Per-set version. Commit and erase can name DIFFERENT sets in one cycle, so these are two
+  // independent updates, not an if/else - unless they name the same set, where they cancel.
+  val parkInc = migrateCommit
+  val parkDec = parkErase
+  val incSet  = io.commit.bits.src
+  val decSet  = io.dispHome
+  when (parkInc && !(parkDec && decSet === incSet)) {
+    when (parkCount(incSet) =/= params.cache.ways.U) { parkCount(incSet) := parkCount(incSet) + 1.U }
+  }
+  when (parkDec && !(parkInc && incSet === decSet)) {
+    when (parkCount(decSet) =/= 0.U) { parkCount(decSet) := parkCount(decSet) - 1.U }
+  }
+  assert (!parkInc || parkCount(incSet) <= params.cache.ways.U,
+          "SBC: more lines parked out of one set than the partner has ways")
+  // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
+  io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
 
   // SBC reset: a write to MMIO SBC_Reset zeroes every piece of SBC observation state in one cycle.
   // Placed after all update logic above so a same-cycle dirTap update / commit loses to the clear.

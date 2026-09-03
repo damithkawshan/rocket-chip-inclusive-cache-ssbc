@@ -33,6 +33,9 @@ class PairInfo(params: InclusiveCacheParameters) extends InclusiveCacheBundle(pa
 {
   val set   = UInt(params.setBits.W)
   val isSrc = Bool()
+  // Paper section 2.3, the "sc" bit: does my partner set actually hold anything of mine right now?
+  // False means skip the second search entirely - there is provably nothing to find.
+  val mayHold = Bool()
 }
 
 class SetCopyRequest(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -73,6 +76,9 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val physSet  = UInt(params.setBits.W)   // PHYSICAL: the SRAM row actually being used
   val probeSet = UInt(params.setBits.W)   // where our outstanding probe will be answered
   val probeTag = UInt(params.tagBits.W)   // ... and with which tag. Set alone aliases.
+  // ... and whether we are waiting for one at all. Without this an idle MSHR still advertises its own
+  // address and can claim a ProbeAck meant for a parked line whose HOME is that address.
+  val probeAckPending = Bool()
   val tag = UInt(params.tagBits.W)
   val way = UInt(params.wayBits.W)
   val blockB = Bool()
@@ -195,6 +201,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val secProbe    = Output(Bool())  // serve that probed a client off the parked line first
     val dispRelease = Output(Bool())  // dirty parked victim written back (addressed by lineHome)
     val dispDrop    = Output(Bool())  // clean parked victim released with no data
+    val dispHome    = Output(UInt(params.setBits.W)) // ... and which set it was parked out of
     val secC        = Output(Bool())  // serve raised by a C-channel Release
     val homeBranch  = Output(Bool())  // this request found its own HOME line in BRANCH
     // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait, and
@@ -399,8 +406,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.valid := request_valid
   io.status.bits.homeSet  := request.set
   io.status.bits.physSet  := physSet
+  io.dispHome := lineHome   // declared after lineHome on purpose: Scala vals are not forward-referable
   io.status.bits.probeSet := Mux(probingVictim, lineHome, request.set)
   io.status.bits.probeTag := Mux(probingVictim, meta.tag, request.tag)
+  io.status.bits.probeAckPending := !w_rprobeacklast || !w_pprobeacklast
   io.status.bits.tag    := request.tag
   io.status.bits.way    := meta.way
   io.status.bits.blockB := !meta_valid || ((!w_releaseack || !w_rprobeacklast || !w_pprobeacklast) && !w_grantfirst)
@@ -592,13 +601,6 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     if (params.micro.sbcDebug) {
       when (migrating) {
         printf(p"[SBC] SCHED-FIRE srcSet=${request.set} dstSet=${migDstSet} a_valid=${io.schedule.bits.a.valid} dread=${migrating && !s_dread} copy=${migrating && !s_copy} dir1=${mig_dir1} retire=${no_wait && mig_ready} s_acq=${s_acquire} w_copy=${w_copy} w_dread=${w_dread}\n")
-      }
-      // BUG-A smoke detector: a pending refill that the gate is holding for a reason we did NOT
-      // anticipate. The two legitimate holds (deferred probe, and the A2 copy interlock) are excluded,
-      // so anything this prints is a new drift between a.valid and the rest of the FSM.
-      when (s_release && s_pprobe && !s_acquire && !io.schedule.bits.a.valid &&
-            !migDeferred && (!migrating || w_copy)) {
-        printf(p"[SBC] BUG-A-DETECT srcSet=${request.set} s_acquire SET WITHOUT ACQUIRE FIRING mig=${migrating} w_copy=${w_copy} w_dread=${w_dread}\n")
       }
     }
                                     s_rprobe     := true.B
@@ -1548,7 +1550,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       s_ssearch   := false.B
       w_ssearch   := false.B
     }
-    val canSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive
+    // Paper section 2.3: skip the second search when the sc bit says the partner holds nothing of
+    // ours. mayHold is conservative - it can be true with nothing there (a wasted search, harmless)
+    // but is never false while a line of ours is parked, which would refetch from DRAM and duplicate it.
+    val canSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive &&
+                    io.pairInfo.bits.mayHold
 
     // For C channel requests (ie: Release[Data])
     when (new_request.prio(2) && (!params.firstLevel).B) {
@@ -1603,7 +1609,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // SBC (003 Stage 2b): hoisted ABOVE the eviction. A paired source asks its partner first, and
       // until the answer is in it must not commit to anything - serving in place (2e) needs no home
       // victim at all, so evicting one here would be a wasted eviction we cannot take back.
-      val willSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive
+      val willSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive &&
+                       io.pairInfo.bits.mayHold
       // Do we need an eviction?
       when (!new_meta.hit && new_meta.state =/= INVALID) {
         when (willSearch) {

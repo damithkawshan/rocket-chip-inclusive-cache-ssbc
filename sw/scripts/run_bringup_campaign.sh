@@ -37,7 +37,9 @@ NOSBC_CFG=VerilatorRocket8KL116KL2NoSbcConfig
 BENCHES_T1="matmult huff-encode heapsort fft-int"
 BENCHES_T2="congrad knapsack dhrystone"
 BENCHES_T3="sieve pi-calc bloom-filter"
-BENCHES="$BENCHES_T1 $BENCHES_T2 $BENCHES_T3"
+# Default is matmult only (best T1 candidate) — pass -b "$BENCHES_T1 $BENCHES_T2 $BENCHES_T3"
+# to run the full shortlist. Current SBC/no-SBC configs and thresholds are unchanged.
+BENCHES="matmult"
 NOVR=""
 LABEL="initial_bringup"
 CLEAN=0

@@ -328,7 +328,7 @@ def render(run_dir, d, verdict, cases, crashes, counters, checksum, cycles):
     sec_tot  = sec_hit + sec_miss
 
     w("---- hit / miss summary ----")
-    w("  TOTAL L2 (every primary directory lookup)")
+    w("  PRIMARY (every home-set directory lookup)")
     if acc is not None:
         w(f"    accesses  : {acc}")
         w(f"    hits      : {hit}   ({100.0*hit/acc:.2f}%)" if acc else f"    hits      : {hit}")
@@ -354,14 +354,22 @@ def render(run_dir, d, verdict, cases, crashes, counters, checksum, cycles):
         w(f"    hits      : {sec_hit}")
         w(f"    misses    : {sec_miss}")
     w("")
-    if acc is not None and miss:
-        # The research number: of everything that missed at home, how much did SBC rescue?
-        w("  WHAT SBC RECOVERED")
-        w(f"    secondary hits as a share of all misses : {sec_hit}/{miss} = "
-          f"{100.0*sec_hit/miss:.2f}%")
-        eff = hit + sec_hit
-        w(f"    effective hit rate with SBC             : ({hit}+{sec_hit})/{acc} = "
-          f"{100.0*eff/acc:.2f}%   (baseline {100.0*hit/acc:.2f}%)")
+    if acc is not None:
+        # A request served by the partner set is counted ONCE in accesses, as a primary MISS
+        # (secondary searches are internalRead, hit forced false at Directory.scala:230). So the two
+        # hit counters are disjoint and total hits = primary + secondary.
+        tot_hit = hit + sec_hit
+        w("  TOTAL (primary + secondary) — what the L2 served without going to DRAM")
+        w(f"    total hits: {tot_hit}   (primary {hit} + secondary {sec_hit})")
+        if tot_hit:
+            w(f"    secondary share of total hits : {sec_hit}/{tot_hit} = "
+              f"{100.0*sec_hit/tot_hit:.2f}%")
+        if acc:
+            w(f"    total hit rate                : {tot_hit}/{acc} = {100.0*tot_hit/acc:.2f}%"
+              f"   (primary alone {100.0*hit/acc:.2f}%)")
+        if miss:
+            w(f"    secondary share of primary misses : {sec_hit}/{miss} = "
+              f"{100.0*sec_hit/miss:.2f}%")
         w("")
 
     w("---- migration summary ----")

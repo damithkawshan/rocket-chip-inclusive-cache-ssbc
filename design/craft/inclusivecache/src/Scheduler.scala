@@ -233,6 +233,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 3 (003): which side of the pairing the asking set is on. The search only runs on the
   // source side; the destination side needs the partner to recover a parked line's home set.
   val pairInfoIsSrc = WireInit(false.B)
+  val pairInfoMayHold = WireInit(false.B)   // paper section 2.3 sc bit
   // SBC Phase 2 (dst-collision fix): fence a live migration's destination set. A request whose set is
   // a migrant's dstSet must neither be consumed (request.ready) NOR allocate an MSHR / read the
   // directory for one — it is held at the sink until the migration retires and dstValid clears.
@@ -244,13 +245,6 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC Phase 3: the partner set of a live search/repatriate is fenced the same way. Without it the
   // way holding the parked copy can be refilled between the search and the erase, and the erase then
   // destroys whatever took its place.
-  // SBC (003 Stage 2c): the partner-set term is GONE. It existed so the way holding the parked copy
-  // could not be refilled between the search and the erase - and the way-lock now protects that way
-  // directly, which is strictly better: it steers one victim Mux instead of fencing a whole set, and
-  // it cannot block a request at all. Removing it is also the clean close for bug P1: a client Release
-  // addressed to a partner set no longer stalls the head of the C channel, so the deadlock has no
-  // first step. The `prio(2)` exemption at request.ready stays as defence in depth for the dstSet term.
-  //
   // The dstSet terms STAY. They do a different job the way-lock does not: keeping a second requester
   // from allocating into a row mid-migration at all, which is what closed the dst-collision
   // illegal-inner-D bug (phase-2.md). Victim protection is now the way-lock's; occupancy is still this.
@@ -258,7 +252,16 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     (m.io.status.valid && m.io.status.bits.dstValid && m.io.status.bits.dstSet === request.bits.set) ||
     (m.io.dstClaim.valid && m.io.dstClaim.bits === request.bits.set)
   }.reduce(_ || _)
-  val allocReady = alloc && !dstSetConflict
+  // SBC (003 Stage 2c) deleted the partner-set fence, betting the way-lock covered it. It does not:
+  // the lock cannot arm until the search returns secWay, so the whole search window is unprotected and
+  // a second MSHR can allocate into the partner row and probe-evict the very line being searched for.
+  // Both then advertise the same (probeSet, probeTag) and the sinkC CAM matches two MSHRs.
+  // Restored on allocReady ONLY - request.ready is untouched, so bug P1 (C-channel head-of-line)
+  // cannot return; secValid covers exactly the window the way-lock cannot.
+  val secSetConflict = mshrs.map { m =>
+    m.io.status.valid && m.io.status.bits.secValid && m.io.status.bits.secSet === request.bits.set
+  }.reduce(_ || _)
+  val allocReady = alloc && !dstSetConflict && !secSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
   // destination reservation (dstValid).
   // SBC Phase 2.5: the token must also cover the deferred-probe window. A migrant that is waiting on
@@ -351,6 +354,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.pairInfo.valid      := pairInfoValid
     m.io.pairInfo.bits.set   := pairInfoSet
     m.io.pairInfo.bits.isSrc := pairInfoIsSrc
+    m.io.pairInfo.bits.mayHold := pairInfoMayHold
     // Does any OTHER live MSHR own this MSHR's partner set?
     m.io.partnerBusy     := mshrs.zipWithIndex.map { case (o, j) =>
       (j != i).B && o.io.status.valid && o.io.status.bits.physSet === m.io.status.bits.secSet
@@ -506,10 +510,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // SBC (003): the CAM key is (probeSet, probeTag). It returns the way AND the row that way sits in -
   // a ProbeAckData for a displaced line must be written to the partner row, not to the row its own
   // address maps to. Deriving the row from the address here is the bug this split exists to remove.
-  val sinkC_bcMatch  = bc_mshr.io.status.valid &&
+  // This CAM routes ProbeAcks ONLY - SinkC gates bs_adr on `resp`, and a voluntary Release takes the
+  // io.req path with its own MSHR. So an MSHR with no probe outstanding must never match: it is not
+  // the addressee. Without that term a plain demand on set S claims the ProbeAck for a parked line
+  // whose home is S, two MSHRs match, and the way Mux1H returns a way belonging to neither.
+  val sinkC_bcMatch  = bc_mshr.io.status.valid && bc_mshr.io.status.bits.probeAckPending &&
                        bc_mshr.io.status.bits.probeSet === sinkC.io.homeSet &&
                        bc_mshr.io.status.bits.probeTag === sinkC.io.probeTag
-  val sinkC_abcMatch = abc_mshrs.map(m => m.io.status.valid &&
+  val sinkC_abcMatch = abc_mshrs.map(m => m.io.status.valid && m.io.status.bits.probeAckPending &&
                                           m.io.status.bits.probeSet === sinkC.io.homeSet &&
                                           m.io.status.bits.probeTag === sinkC.io.probeTag)
   sinkC.io.way :=
@@ -680,6 +688,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.secProbe    := mshrs.map(_.io.secProbe).reduce(_ || _)
     sbu.io.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
     sbu.io.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
+    // Which set the reclaimed parked line came from, so the sc counter decrements the right entry.
+    val dispOH = VecInit(mshrs.map(m => m.io.dispRelease || m.io.dispDrop)).asUInt
+    sbu.io.dispHome := Mux1H(dispOH, mshrs.map(_.io.dispHome))
+    assert (PopCount(dispOH) <= 1.U, "SBC: two MSHRs reclaimed a parked line in one cycle")
     sbu.io.secC        := mshrs.map(_.io.secC).reduce(_ || _)
     sbu.io.homeBranch  := mshrs.map(_.io.homeBranch).reduce(_ || _)
     sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
@@ -699,6 +711,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     pairInfoValid := sbu.io.assocQuery.valid && sbu.io.assocResp.paired
     pairInfoSet   := sbu.io.assocResp.assocSet
     pairInfoIsSrc := !sbu.io.assocResp.isDest
+    pairInfoMayHold := sbu.io.assocResp.mayHold
     // commit{MIGRATE} when a migration retires successfully (src=home set, dst=migDstSet).
     val migCommit = mshrs.map(_.io.migCommit)
     sbu.io.commit.valid     := migCommit.reduce(_ || _)
