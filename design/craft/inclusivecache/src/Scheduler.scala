@@ -45,6 +45,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val sbcBalanceSet = Flipped(Valid(UInt(params.setBits.W)))
     // SBC MMIO: SW reset pulse in (a write to SBC_Reset)
     val sbcReset      = Input(Bool())
+    // SBC MMIO: SW counter-only reset pulse in (a write to SBC_StatsReset)
+    val sbcStatsReset = Input(Bool())
   })
 
   val sourceA = Module(new SourceA(params))
@@ -607,6 +609,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
     sbu.io.clear      := io.sbcReset
+    sbu.io.clearStats := io.sbcStatsReset
     // SBC Phase 2: migration counter pulses (OR across MSHRs; the token keeps ≤1 in flight)
     sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
     sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)
@@ -735,6 +738,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // (which zeroes io.sbcStats when SBC is off) so they stay non-zero on VerilatorRocket8KL116KL2NoSbcConfig.
   io.l2Accesses := directory.io.l2Accesses
   io.l2Hits     := directory.io.l2Hits
+  // SBC: counter-only reset reaches the L2 totals too, ungated, so the SBC-off baseline resets identically.
+  directory.io.clearStats := io.sbcStatsReset
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

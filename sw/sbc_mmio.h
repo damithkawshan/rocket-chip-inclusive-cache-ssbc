@@ -38,6 +38,7 @@
 /* 004 total L2 hit-rate counters — free-running, always active (NOT SBC-gated), NOT reset by SBC_Reset */
 #define SBC_L2_ACCESSES  (L2_CTRL_BASE + 0x3A8)  /* R   total primary directory lookups (hit+miss)     */
 #define SBC_L2_HITS      (L2_CTRL_BASE + 0x3B0)  /* R   total primary hits                             */
+#define SBC_STATSRESET   (L2_CTRL_BASE + 0x3B8)  /* W   zero ONLY event/hit counters — flow untouched  */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;

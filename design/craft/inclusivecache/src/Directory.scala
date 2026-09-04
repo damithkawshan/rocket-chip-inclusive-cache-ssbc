@@ -102,6 +102,8 @@ class Directory(params: InclusiveCacheParameters) extends Module
     // SBC 004: free-running L2 hit-rate counters (always active, NOT gated by enableSetBalancing)
     val l2Accesses = UInt(64.W)
     val l2Hits     = UInt(64.W)
+    // SBC: counter-only reset from MMIO SBC_StatsReset — zeroes just the L2 totals.
+    val clearStats = Input(Bool())
   })
 
   val codeBits = new DirectoryEntry(params).getWidth
@@ -325,6 +327,8 @@ class Directory(params: InclusiveCacheParameters) extends Module
     l2AccCount := l2AccCount + 1.U
     when (io.result.bits.hit) { l2HitCount := l2HitCount + 1.U }
   }
+  // SBC counter-only reset. After the increment so a same-cycle clear wins (drops one event, harmless).
+  when (io.clearStats) { l2AccCount := 0.U; l2HitCount := 0.U }
   io.l2Accesses := l2AccCount
   io.l2Hits     := l2HitCount
 

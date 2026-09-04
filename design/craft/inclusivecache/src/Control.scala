@@ -50,6 +50,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
       // SBC: SW reset pulse out (a write to SBC_Reset → 1-cycle high; zeroes all SBC observation state)
       val sbc_reset = Output(Bool())
+      // SBC: SW counter-only reset pulse out (a write to SBC_StatsReset). Zeroes ONLY the event/hit
+      // counters, never sat/AT/DSS/parkCount/nParked, so the SBC flow is untouched.
+      val sbc_stats_reset = Output(Bool())
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -108,6 +111,10 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     // SBC: reset pulse — a write to SBC_Reset emits a 1-cycle high downstream.
     val sbcResetPulse = WireInit(false.B)
     io.sbc_reset := sbcResetPulse
+
+    // SBC: counter-only reset pulse — a write to SBC_StatsReset emits a 1-cycle high downstream.
+    val sbcStatsResetPulse = WireInit(false.B)
+    io.sbc_stats_reset := sbcStatsResetPulse
 
     val sbcSetSelField = RegField(sbcSetBits, sbcSetSel,
       RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back"))
@@ -169,6 +176,13 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       (true.B, true.B)  // fire-and-forget: ovalid must not track ivalid, or the D beat never fires on real fabric (hangs on FPGA, not sim).
     }), RegFieldDesc("SBC_Reset", "Write any value to zero all SBC saturation counters, AT, DSS and event counters"))
 
+    // SBC: zero ONLY the event/hit counters (write-only). Leaves sat/AT/DSS/parkCount/nParked intact,
+    // so the SBC flow is unaffected — for clean measurement windows via a single read.
+    val sbcStatsResetField = RegField.w(32, RegWriteFn((ivalid, oready, data) => {
+      when (ivalid) { sbcStatsResetPulse := true.B }
+      (true.B, true.B)  // fire-and-forget, same as SBC_Reset (or the D beat hangs on real fabric)
+    }), RegFieldDesc("SBC_StatsReset", "Write any value to zero ONLY the SBC event/hit counters"))
+
     val regmap = ctrlnode.regmap(
       0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
@@ -195,7 +209,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x398 -> Seq(sbcAtAssocField),
       0x3A0 -> Seq(sbcParkedField),
       0x3A8 -> Seq(l2AccessesField),
-      0x3B0 -> Seq(l2HitsField)
+      0x3B0 -> Seq(l2HitsField),
+      0x3B8 -> RegFieldGroup("SBC_StatsReset", Some("Zero only the SBC event/hit counters"), Seq(sbcStatsResetField))
     )
   }
 }

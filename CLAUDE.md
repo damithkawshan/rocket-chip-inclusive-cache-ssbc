@@ -203,6 +203,7 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state |
 | `0x3A8` | `L2_Accesses` | R — total primary directory lookups (hit+miss), free-running, always active (SBC on or off), **not** reset by SBC_Reset |
 | `0x3B0` | `L2_Hits` | R — total primary hits, free-running (misses = accesses − hits) |
+| `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits`). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |
 
 **If you change any register offset in Control.scala, update the SW-side header in the same change.**
 

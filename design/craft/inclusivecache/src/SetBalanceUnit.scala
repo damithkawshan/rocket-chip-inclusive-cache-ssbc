@@ -117,6 +117,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
     // SBC reset: SW pulse from MMIO SBC_Reset — zeroes all counters, saturation, AT and the DSS.
     val clear = Input(Bool())
+    // SBC counter-only reset: SW pulse from MMIO SBC_StatsReset — zeroes ONLY the event counters,
+    // never sat/armed/AT/DSS/parkCount/nParked, so the migration flow is untouched.
+    val clearStats = Input(Bool())
     // MMIO
     val satReadSet = Input(UInt(params.setBits.W))
     val stats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
@@ -305,6 +308,15 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     nHomeBranch  := 0.U
     // nParked deliberately NOT cleared here: clearing the AT while lines are still parked orphans
     // them (§10.9, deferred). Nothing writes SBC_Reset today; this keeps the occupancy honest.
+  }
+
+  // SBC counter-only reset: zero the observability counters for a fresh measurement window WITHOUT
+  // touching sat/armed/AT/DSS/parkCount/nParked (the live flow state). After the increments so clear wins.
+  when (io.clearStats) {
+    nAttempt := 0.U; nAbort := 0.U; nCommit := 0.U
+    nSecHit := 0.U; nSecMiss := 0.U; nSecPerm := 0.U
+    nSecWrite := 0.U; nSecProbe := 0.U
+    nDispRelease := 0.U; nDispDrop := 0.U; nSecC := 0.U; nHomeBranch := 0.U
   }
 
   // Read-only stats for MMIO.
