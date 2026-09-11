@@ -39,6 +39,14 @@
 #define SBC_L2_ACCESSES  (L2_CTRL_BASE + 0x3A8)  /* R   total primary directory lookups (hit+miss)     */
 #define SBC_L2_HITS      (L2_CTRL_BASE + 0x3B0)  /* R   total primary hits                             */
 #define SBC_STATSRESET   (L2_CTRL_BASE + 0x3B8)  /* W   zero ONLY event/hit counters — flow untouched  */
+/* 006: migration on/off switch + main-memory traffic counters */
+#define SBC_MIGRATEENABLE (L2_CTRL_BASE + 0x3C0) /* R/W master switch: gates only the START of a new
+                                                     migration. 0=off (default)                       */
+#define SBC_L2_MEMREADS   (L2_CTRL_BASE + 0x3C8) /* R   outer AcquireBlock — blocks read from memory   */
+#define SBC_L2_MEMWRITES  (L2_CTRL_BASE + 0x3D0) /* R   outer ReleaseData — dirty blocks written       */
+#define SBC_L2_MEMUPGRADES (L2_CTRL_BASE + 0x3D8)/* R   outer AcquirePerm — permission only, no bytes  */
+#define SBC_L2_MEMRELCLEAN (L2_CTRL_BASE + 0x3E0)/* R   outer Release, no data — clean eviction        */
+#define SBC_L2_CYCLES      (L2_CTRL_BASE + 0x3E8)/* R   free-running L2 clock, reset by SBC_StatsReset */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;

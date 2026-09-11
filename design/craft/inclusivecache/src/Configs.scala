@@ -66,7 +66,11 @@ class WithInclusiveCache(
   migrationClearThreshold: Int = -1, // -1 = auto-derive: nWays (T_lo)
   // SBC debug repro knobs (off by default; zero hardware when off)
   sbcForceDstSet: Int = -1,
-  sbcGateStallCycles: Int = 0
+  sbcGateStallCycles: Int = 0,
+  // 006: main-memory traffic counters. On by default in BOTH SBC and NoSbc builds - they are the
+  // measurement, so they must count identically on both sides of an A/B. Set false only to
+  // characterise their area/timing cost.
+  enablePerfCounters: Boolean = true
 ) extends Config((site, here, up) => {
   case InclusiveCacheKey => InclusiveCacheParams(
       sets = (capacityKB * 1024)/(site(CacheBlockBytes) * nWays * up(SubsystemBankedCoherenceKey, site).nBanks),
@@ -125,7 +129,8 @@ class WithInclusiveCache(
         migrationThreshold = if (migrationThreshold < 0) (2 * nWays - 1) else migrationThreshold,
         migrationClearThreshold = if (migrationClearThreshold < 0) nWays else migrationClearThreshold,
         sbcForceDstSet = sbcForceDstSet,
-        sbcGateStallCycles = sbcGateStallCycles),
+        sbcGateStallCycles = sbcGateStallCycles,
+        enablePerfCounters = enablePerfCounters),
       l2Ctrl))
 
     def skipMMIO(x: TLClientParameters) = {

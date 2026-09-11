@@ -145,6 +145,7 @@ class InclusiveCache(
       scheduler.io.req.valid := false.B
       scheduler.io.req.bits.address := 0.U
       scheduler.io.resp.ready := true.B
+      scheduler.io.migrateEnable := false.B // SBC: default OFF; overridden below when a control port exists
       scheduler.io.sbcSatReadSet := 0.U // SBC: default; overridden below when a control port exists
       scheduler.io.sbcBalanceSet.valid := false.B // SBC: default; overridden below when a control port exists
       scheduler.io.sbcBalanceSet.bits  := 0.U
@@ -190,10 +191,12 @@ class InclusiveCache(
       ctrl.module.io.sbc_stats := mods(bank).io.sbcStats
       ctrl.module.io.l2Accesses := mods(bank).io.l2Accesses  // SBC 004: free-running, both configs
       ctrl.module.io.l2Hits     := mods(bank).io.l2Hits
+      ctrl.module.io.perfStats  := mods(bank).io.perfStats   // SBC 006: memory traffic + cycles
     }
     mods.zipWithIndex.foreach { case (sched, i) =>
       val ctrlOpt = if (ctrls.size > 1) ctrls.lift(i) else ctrls.headOption
       ctrlOpt.foreach { ctrl =>
+        sched.io.migrateEnable := ctrl.module.io.sbc_migrate_enable
         sched.io.sbcSatReadSet := ctrl.module.io.sbc_satReadSet
         sched.io.sbcBalanceSet := ctrl.module.io.sbc_balanceSet
         sched.io.sbcReset      := ctrl.module.io.sbc_reset

@@ -40,12 +40,16 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val flush_match = Input(Bool())
       val flush_req = Decoupled(UInt(64.W))
       val flush_resp = Input(Bool())
+      // SBC: master switch (SBC_MigrateEnable) out — gates only the start of a new migration
+      val sbc_migrate_enable = Output(Bool())
       // SBC: SW-selected set index out, read-only stats in
       val sbc_satReadSet = Output(UInt(log2Ceil(outer.cache.sets).W))
       val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
       // SBC 004: free-running L2 hit-rate counters (NOT part of SBCStats -> not gated by enableSetBalancing)
       val l2Accesses = Input(UInt(64.W))
       val l2Hits     = Input(UInt(64.W))
+      // SBC 006: main-memory traffic + cycles (same rule: not gated by enableSetBalancing)
+      val perfStats  = Input(new PerfCounterStats)
       // SBC: SW arm pulse out (a write to SBC_BalanceSet → 1-cycle valid+set)
       val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
       // SBC: SW reset pulse out (a write to SBC_Reset → 1-cycle high; zeroes all SBC observation state)
@@ -102,6 +106,11 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcSetSel  = RegInit(0.U(sbcSetBits.W))
     io.sbc_satReadSet := sbcSetSel
 
+    // SBC: master switch. R/W, level (not a pulse), default OFF. Gates only the START of a new
+    // migration — every already-parked line is served/written-back/evicted the same either way.
+    val sbcMigrateEnable = RegInit(false.B)
+    io.sbc_migrate_enable := sbcMigrateEnable
+
     // SBC: arm pulse — a write to SBC_BalanceSet emits a 1-cycle valid+set downstream.
     val sbcArmPulse = WireInit(false.B)
     val sbcArmSet   = WireInit(0.U(sbcSetBits.W))
@@ -155,6 +164,21 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcParkedField = RegField.r(32, io.sbc_stats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
+    val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
+      RegFieldDesc("SBC_MigrateEnable", "Master switch: gates only the START of a new migration. 0=off (default)"))
+    // SBC 006: main-memory traffic. reads+writes is the headline; report the two SEPARATELY in every
+    // result table - SBC can trade one for the other (a parked dirty line that would have been
+    // dropped now gets written back) and a combined figure would hide exactly that.
+    val l2MemReadsField = RegField.r(64, io.perfStats.memReads,
+      RegFieldDesc("L2_MemReads", "Outer AcquireBlock: blocks read from main memory", volatile=true))
+    val l2MemWritesField = RegField.r(64, io.perfStats.memWrites,
+      RegFieldDesc("L2_MemWrites", "Outer ReleaseData: dirty blocks written to main memory", volatile=true))
+    val l2MemUpgradesField = RegField.r(64, io.perfStats.memUpgrades,
+      RegFieldDesc("L2_MemUpgrades", "Outer AcquirePerm: permission round trip, no bytes moved", volatile=true))
+    val l2MemRelCleanField = RegField.r(64, io.perfStats.memRelClean,
+      RegFieldDesc("L2_MemRelClean", "Outer Release without data: clean eviction, no bytes moved", volatile=true))
+    val l2CyclesField = RegField.r(64, io.perfStats.cycles,
+      RegFieldDesc("L2_Cycles", "Free-running L2 clock; reset by SBC_StatsReset", volatile=true))
     val l2AccessesField = RegField.r(64, io.l2Accesses,
       RegFieldDesc("L2_Accesses", "Total primary directory lookups (hit+miss), free-running", volatile=true))
     val l2HitsField = RegField.r(64, io.l2Hits,
@@ -210,7 +234,14 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x3A0 -> Seq(sbcParkedField),
       0x3A8 -> Seq(l2AccessesField),
       0x3B0 -> Seq(l2HitsField),
-      0x3B8 -> RegFieldGroup("SBC_StatsReset", Some("Zero only the SBC event/hit counters"), Seq(sbcStatsResetField))
+      0x3B8 -> RegFieldGroup("SBC_StatsReset", Some("Zero only the SBC event/hit counters"), Seq(sbcStatsResetField)),
+      0x3C0 -> Seq(sbcMigrateEnableField),
+      0x3C8 -> RegFieldGroup("L2_MemTraffic", Some("Main-memory traffic seen at the outer port"),
+                             Seq(l2MemReadsField)),
+      0x3D0 -> Seq(l2MemWritesField),
+      0x3D8 -> Seq(l2MemUpgradesField),
+      0x3E0 -> Seq(l2MemRelCleanField),
+      0x3E8 -> Seq(l2CyclesField)
     )
   }
 }

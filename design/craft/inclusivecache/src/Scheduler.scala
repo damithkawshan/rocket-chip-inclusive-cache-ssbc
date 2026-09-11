@@ -41,6 +41,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC 004: free-running L2 hit-rate counters (baseline stat, NOT gated by enableSetBalancing)
     val l2Accesses    = Output(UInt(64.W))
     val l2Hits        = Output(UInt(64.W))
+    // SBC 006: main-memory traffic + cycle counters (also NOT gated by enableSetBalancing)
+    val perfStats     = Output(new PerfCounterStats)
+    // SBC MMIO: master switch (SBC_MigrateEnable). Gates only the start of a NEW migration.
+    val migrateEnable = Input(Bool())
     // SBC MMIO: SW arm pulse in (a write to SBC_BalanceSet)
     val sbcBalanceSet = Flipped(Valid(UInt(params.setBits.W)))
     // SBC MMIO: SW reset pulse in (a write to SBC_Reset)
@@ -606,6 +610,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val brR = params.outer.manager.managers.exists(!_.alwaysGrantsT)
     println(s"[SBC][elab] BRANCH reachability: p=$brP m=$brM r=$brR b=${brR || brP} (b false => secPerm=0 is correct)")
     sbu.io.dirTap     := directory.io.tap
+    sbu.io.migrateEnable := io.migrateEnable
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
     sbu.io.clear      := io.sbcReset
@@ -740,6 +745,35 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   io.l2Hits     := directory.io.l2Hits
   // SBC: counter-only reset reaches the L2 totals too, ungated, so the SBC-off baseline resets identically.
   directory.io.clearStats := io.sbcStatsReset
+
+  // SBC 006: main-memory traffic counters. Outside the enableSetBalancing gate on purpose - an
+  // SBC-on vs SBC-off comparison needs them counting identically in both builds.
+  if (params.micro.enablePerfCounters) {
+    val perf = Module(new PerfCounters(params))
+    perf.io.aFire      := io.out.a.fire
+    perf.io.aOpcode    := io.out.a.bits.opcode
+    perf.io.cFire      := sourceC.io.req.fire
+    perf.io.cDirty     := sourceC.io.req.bits.dirty
+    perf.io.clearStats := io.sbcStatsReset
+    io.perfStats       := perf.io.stats
+
+    // One io.req.fire per outer release, so the beats must reconcile. Only the UPPER bound is
+    // assertable continuously: the beats of a release stream out over later cycles, so equality
+    // holds only at quiescence, but "more beats than the requests authorised" is always a bug.
+    // Scala-gated: with one beat per block the bound is trivially true and elaborates nothing.
+    val beatsPerBlock = params.cache.blockBytes / params.outer.manager.beatBytes
+    if (beatsPerBlock > 1) {
+      val memWriteBeats = RegInit(0.U(64.W))
+      val cData = io.out.c.bits.opcode === TLMessages.ReleaseData ||
+                  io.out.c.bits.opcode === TLMessages.ProbeAckData
+      when (io.out.c.fire && cData) { memWriteBeats := memWriteBeats + 1.U }
+      when (io.sbcStatsReset)       { memWriteBeats := 0.U }
+      assert (memWriteBeats <= perf.io.stats.memWrites * beatsPerBlock.U,
+              "SBC 006: outer C sent more data beats than SourceC requests authorised")
+    }
+  } else {
+    io.perfStats := 0.U.asTypeOf(new PerfCounterStats)
+  }
 
   private def afmt(x: AddressSet) = s"""{"base":${x.base},"mask":${x.mask}}"""
   private def addresses = params.inner.manager.managers.flatMap(_.address).map(afmt _).mkString(",")

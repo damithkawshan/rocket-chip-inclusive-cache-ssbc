@@ -115,6 +115,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
+    // SBC: MMIO master switch (SBC_MigrateEnable). Gates only the START of a new migration; every
+    // already-parked line keeps being searched, served, written back and evicted exactly as before.
+    val migrateEnable = Input(Bool())
     // SBC reset: SW pulse from MMIO SBC_Reset — zeroes all counters, saturation, AT and the DSS.
     val clear = Input(Bool())
     // SBC counter-only reset: SW pulse from MMIO SBC_StatsReset — zeroes ONLY the event counters,
@@ -182,7 +185,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   val dssPick   = dss.io.coldestSet
   // A fresh pairing may only consume a set that is genuinely cold AND in no pairing (strict 1:1).
   val dssOK     = dss.io.coldestValid && (dss.io.coldestLevel < tLo) && !at(dssPick).valid
-  val hotOK     = (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi)
+  val hotOK     = io.migrateEnable && (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi)
   io.migrateResp.migrate := hotOK && !(qEntry.valid && qEntry.sd) &&
                             Mux(qEntry.valid && !qEntry.sd, true.B, dssOK)
 
@@ -285,6 +288,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
           "SBC: more lines parked out of one set than the partner has ways")
   // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
   io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
+
+  // SBC_Reset while lines are parked orphans them - the AT is their only home-set record.
+  assert (!io.clear || nParked === 0.U, "SBC_Reset issued while lines are still parked")
 
   // SBC reset: a write to MMIO SBC_Reset zeroes every piece of SBC observation state in one cycle.
   // Placed after all update logic above so a same-cycle dirTap update / commit loses to the clear.
