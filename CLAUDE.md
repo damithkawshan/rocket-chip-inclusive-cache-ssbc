@@ -203,7 +203,25 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state |
 | `0x3A8` | `L2_Accesses` | R — total primary directory lookups (hit+miss), free-running, always active (SBC on or off), **not** reset by SBC_Reset |
 | `0x3B0` | `L2_Hits` | R — total primary hits, free-running (misses = accesses − hits) |
-| `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits`). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |
+| `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits` + the five 006 counters below). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |
+| `0x3C0` | `SBC_MigrateEnable` | R/W, 1 bit, **default 0 (OFF)** — gates only the START of a new migration. Everything about an already-parked line (secondary search, serve-in-place, `dispRelease`/`dispDrop`, AT teardown) is unaffected, so flipping it off mid-run strands nothing. Saturation counters and the DSS keep running while off |
+| `0x3C8` | `L2_MemReads` | R, 64 — outer `AcquireBlock`: blocks read from main memory |
+| `0x3D0` | `L2_MemWrites` | R, 64 — outer `ReleaseData`: dirty blocks written to main memory |
+| `0x3D8` | `L2_MemUpgrades` | R, 64 — outer `AcquirePerm`: permission round trip, moves no bytes |
+| `0x3E0` | `L2_MemRelClean` | R, 64 — outer `Release` without data: clean eviction, moves no bytes |
+| `0x3E8` | `L2_Cycles` | R, 64 — free-running L2/uncore clock. In the `SBC_StatsReset` list, so `sbc_read --zero -- cmd` yields exactly the cycles the child ran for |
+
+**The headline metric is `L2_MemReads + L2_MemWrites`** — measured at the outer port, so it does not
+depend on anyone's definition of "an access". Report reads and writes **separately** in every table:
+SBC can trade one for the other (a parked dirty line that would have been dropped now gets written
+back) and a combined figure hides exactly that. Bytes moved = `(reads + writes) × blockBytes`.
+
+⚠️ **The metric is only valid when both runs do the SAME WORK.** Fewer memory accesses over a fixed
+*time* window can simply mean the machine did less. Measured on the board 2026-09-11: a 600 s window
+gave 853 M L2 accesses with migration off against 682 M with it on — the SBC half got ~20% less of
+the program done. Use a benchmark input that **runs to completion** (`sbc_read --zero -- <cmd>`), not
+`run_sbc_window.sh`'s fixed duration. `rdinstret` and `perf_event_open` are both unavailable on this
+board, so `L2_Cycles` is the only work/time normaliser there is.
 
 **If you change any register offset in Control.scala, update the SW-side header in the same change.**
 
