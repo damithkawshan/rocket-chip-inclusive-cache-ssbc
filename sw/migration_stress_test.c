@@ -49,6 +49,11 @@ static void sbc_summary(void) {
            (unsigned long)sbc_rd(SBC_ABORTED),    (unsigned long)sbc_rd(SBC_SECHITS),
            (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECPERM),
            (unsigned long)sbc_rd(SBC_L2_ACCESSES),(unsigned long)sbc_rd(SBC_L2_HITS));
+    /* 006 gate G5: memReads must equal the [SBC] OUTER-A AcquireBlock tally in the same run. */
+    printf("[SBC-MEM] memReads=%lu memWrites=%lu memUpgrades=%lu memRelClean=%lu cycles=%lu\n",
+           (unsigned long)sbc_rd(SBC_L2_MEMREADS),   (unsigned long)sbc_rd(SBC_L2_MEMWRITES),
+           (unsigned long)sbc_rd(SBC_L2_MEMUPGRADES),(unsigned long)sbc_rd(SBC_L2_MEMRELCLEAN),
+           (unsigned long)sbc_rd(SBC_L2_CYCLES));
 }
 
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.
@@ -241,6 +246,12 @@ static int case_bankstore_saturation(int cold_set) {
 
 int main(void) {
     printf("==== SBC migration stress test (HOT_SET=%d, ways=%d) ====\n", HOT_SET, L2_WAYS);
+
+#ifndef SBC_MIGRATE_OFF
+    /* SBC_MigrateEnable defaults OFF in hardware (006) — arm it so sbcAutoMigrate can fire.
+     * Build with -DSBC_MIGRATE_OFF to get the G3 control run (switch stays off). */
+    sbc_wr(SBC_MIGRATEENABLE, 1);
+#endif
 
     int ok = 1;
     ok &= case_free_dst(0);         /* 2a: free destination way             */
