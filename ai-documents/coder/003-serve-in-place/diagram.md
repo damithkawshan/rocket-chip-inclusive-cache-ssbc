@@ -1,7 +1,8 @@
 # SBC Phase 3R — serve-in-place + first-class displaced lines (visual)
 
-**Status: PLANNED.** Companion to [TASK.md](TASK.md) and [../../phase-3.md](../../phase-3.md).
-Supersedes Part B of [../../diagram.md](../../diagram.md), which draws the full swap — that was
+**Status: BUILT** (was PLANNED when drawn) — GATE 4 green 2026-08-30. For the as-built transactions
+with real values see [diagram_after_migration_v1.md](diagram_after_migration_v1.md). Companion to [TASK.md](TASK.md) and [../../tasks/phase-3.md](../../tasks/phase-3.md).
+Supersedes Part B of [../../design/diagram.md](../../design/diagram.md), which draws the full swap — that was
 superseded first by repatriation, and now by serve-in-place.
 
 **Colour key:** 🟢 green = built and working today · 🟡 yellow = changes in this task ·

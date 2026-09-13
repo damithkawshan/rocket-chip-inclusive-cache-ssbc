@@ -1,7 +1,12 @@
 # Workplan — why SBC is losing, and how we find out
 
-**Opened 2026-09-11.** Replaces the P0 part of [weekly-plan-2026-09-08.md](weekly-plan-2026-09-08.md).
+**Opened 2026-09-11.** Replaces the P0 part of [weekly-plan-2026-09-08.md](../weekly-report/2026-09-14.md).
 Full technical detail: [omnetpp-differential-2026-09-10.md](omnetpp-differential-2026-09-10.md).
+
+> **Progress (2026-09-14):** Step 1.1 and 1.2 are **done**. Fixed-work A/B runs finished on the board,
+> and `L2_Cycles` gives the speed: SBC is **+32% to +51% slower** and makes **2.5× to 7× more memory
+> accesses** ([fpga-ab-baseline-2026-09-11.md](fpga-ab-baseline-2026-09-11.md) §4). So "SBC is losing"
+> holds with equal work. Step 1.4 (3 repeats) is not done. Steps 2 and 3 have not started.
 
 **Wording used here:** a **guest line** is a line that was moved out of its own set and now lives in a
 partner set. (The code calls it *displaced* or *parked*.) A **home line** is a line sitting in the set

@@ -89,14 +89,14 @@ which zeroes only the event/hit counters in hardware and never touches `sat`/AT/
 ./sbc_read                    # print counters now (free-running since power-on — includes boot)
 ./sbc_read --zero             # pulse SBC_StatsReset, then print the now-zeroed counters
 ./sbc_read --zero -- <cmd>    # zero, run <cmd>, print ABSOLUTE counts = the exact window, one read
-./sbc_read -- <cmd>           # no reset: snapshot, run <cmd>, print the 32-bit-wrap-safe DELTA
+./sbc_read -- <cmd>           # no reset: snapshot, run <cmd>, print the DELTA
 ```
 
 **Do NOT use `SBC_Reset` (0x358) to zero counters** — it wipes the Association Table while lines are
 still parked, orphaning them. `SBC_StatsReset` is the safe per-window reset.
 
 Register offsets and semantics: [`devmem-register-map.md`](devmem-register-map.md) and
-[`../sw/sbc_mmio.h`](../sw/sbc_mmio.h) (single source of truth, mirrors `Control.scala`).
+[`../../sw/sbc_mmio.h`](../../sw/sbc_mmio.h) (single source of truth, mirrors `Control.scala`).
 
 ## Verified on hardware (2026-09-04)
 

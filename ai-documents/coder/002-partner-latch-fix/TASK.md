@@ -254,7 +254,7 @@ pairing, so an MSHR **skips a search it should have done**. You called it a lost
 
 ### The rule the design depends on
 
-`ai-documents/diagram.md:204` states the Phase-3 safety invariant:
+`ai-documents/design/diagram.md:204` states the Phase-3 safety invariant:
 
 > *Stale twins impossible: a refill only ever happens after d was searched and found empty of L.*
 
@@ -638,7 +638,7 @@ into a live home set — and **task 003 deletes that copy entirely**. Instrument
 build+run cycle on code we are removing.
 
 **Before that code goes, its evidence must not.** Task 003 Stage 0 requires both leads to be appended
-to `ai-documents/bug-fix-log.md` with their file:line evidence first.
+to `ai-documents/bugs/bug-fix-log.md` with their file:line evidence first.
 
 **The corruption question is not dropped, it is re-aimed.** Task 003 Stage 4 is the experiment: if
 `case_reaccess_migrated` passes once the repatriation copy is gone, the bug was there. If it still

@@ -1,5 +1,10 @@
 # After-Break Work Plan — Phase 3 restart
 
+> 📘 **History (checked 2026-09-14).** The Phase-3 restart plan from 18 Aug. Every step is done or
+> replaced: probe-then-migrate is built, the swap design was replaced by serve-in-place, and the cleanup
+> list lives in [code-cleanup-suggestions.md](code-cleanup-suggestions.md). Live status:
+> [README.md](../README.md).
+
 **Written:** 2026-08-18 (filename kept as the user named it)
 **Branch:** `set_migration_refactored`
 **Status of prior work:** Phase 2 COMPLETE and signed off on correctness (2026-08-17).
@@ -67,7 +72,7 @@ whole payoff is `p · (M − C)`, so at that rate there is nothing in the pool t
 
 ### It was already instrumented — we just never tallied it
 
-[MSHR.scala:787](../design/craft/inclusivecache/src/MSHR.scala#L787) already prints `dirty=`,
+[MSHR.scala:787](../../design/craft/inclusivecache/src/MSHR.scala#L787) already prints `dirty=`,
 `clients=` and `displaced=` on **every** `EVICT-ASSESS`. The sign-off log is still on disk. So the
 question needed **no RTL and no re-run** — only a tally of the existing log.
 
@@ -107,7 +112,7 @@ client-free. Not a wiring bug (Bug A is still fixed); the directory was telling 
 the bits say.
 
 > **Root cause:** SBC's eligibility test `!dirty && !clients.orR && !displaced`
-> ([MSHR.scala:785](../design/craft/inclusivecache/src/MSHR.scala#L785)) reads a **stale**
+> ([MSHR.scala:785](../../design/craft/inclusivecache/src/MSHR.scala#L785)) reads a **stale**
 > `clients` bit. It is not testing "is this line in L1." It is testing "did L2 ever grant this line
 > to L1, and has it heard about a release since." In a workload that reuses addresses, that is
 > almost always yes — so the gate rejects nearly everything.
@@ -270,8 +275,8 @@ hardware**. Baseline stays bit-exact either way.
 - **Probe-then-migrate design (the unblocker, step 2 above): [phase-2.5-probe-then-migrate.md](phase-2.5-probe-then-migrate.md)**
 - Phase 3 design, in full: [phase-3.md](phase-3.md)
 - Phase 2 single source of truth: [phase-2.md](phase-2.md)
-- Every bug, fixed and open: [bug-fix-log.md](bug-fix-log.md)
-- Pinned-association spec, written but unimplemented: [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md)
-- Arbitration and priority orders: [priority-orders.md](priority-orders.md)
+- Every bug, fixed and open: [bug-fix-log.md](../bugs/bug-fix-log.md)
+- Pinned-association spec, written but unimplemented: [spec-sbc-phase3-prereqs.md](../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md)
+- Arbitration and priority orders: [priority-orders.md](../guides/priority-orders.md)
 - Log analysed for step 0:
   `sw/verilator_logs/migration_stress_test_VerilatorRocket8KL116KL2Config_phase2-verification-test/sbc.log`

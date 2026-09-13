@@ -1,11 +1,15 @@
 # 520.omnetpp_r differential, SBC on vs off — VCU118 / Linux, 2026-09-10
 
-**Status: MEASURED. This is the SSOT for the omnetpp A/B.** It closes the 🔴 open item in
-[daily-summary/2026-09-10.md](daily-summary/2026-09-10.md) §7 ("run 520.omnetpp_r on NoSBC").
+> ⚠️ **Update 2026-09-14:** this doc used a fixed *time* window. The valid fixed-*work* A/B results
+> are in [fpga-ab-baseline-2026-09-11.md](fpga-ab-baseline-2026-09-11.md) §4 — use those for any speed
+> or memory-traffic claim. The parked-line analysis below still stands.
+
+**Status: MEASURED (fixed-time window).** It closes the 🔴 open item in
+[../daily-summary/2026-09-10.md](../daily-summary/2026-09-10.md) §7 ("run 520.omnetpp_r on NoSBC").
 
 **Platform:** VCU118, 50 MHz, 1 Rocket core, 8 KB L1I + 8 KB L1D, 256 KB 16-way L2 (256 sets,
 4,096 lines), Linux from SD. Configs verified identical apart from `enableSetBalancing`
-([RocketConfigs.scala:183-199](../../../generators/chipyard/src/main/scala/config/RocketConfigs.scala#L183-L199)):
+([RocketConfigs.scala:183-199](../../../chipyard/src/main/scala/config/RocketConfigs.scala#L183-L199)):
 thresholds auto-derive to `satCounterBits=5, T_hi=31, T_lo=16`, which is the paper's rule.
 
 **Workload:** `520.omnetpp_r -c General -r 0`, ref input, pinned to cpu 0, 60 s warm-up + 600 s
@@ -58,8 +62,8 @@ Asked directly, because it looks high. **Yes as a counter readout — but it is 
 so is SBC's, by the same amount.**
 
 `L2_Accesses` / `L2_Hits` increment on `io.result.valid && !internalRead`
-([Directory.scala:326-331](../design/craft/inclusivecache/src/Directory.scala#L326-L331)). Four known
-biases, all already documented in [coder/005-hit-accounting-and-sampling/TASK.md](coder/005-hit-accounting-and-sampling/TASK.md):
+([Directory.scala:326-331](../../design/craft/inclusivecache/src/Directory.scala#L326-L331)). Four known
+biases, all already documented in [../coder/005-hit-accounting-and-sampling/TASK.md](../coder/005-hit-accounting-and-sampling/TASK.md):
 
 | Bias | Direction |
 |---|---|
@@ -74,7 +78,7 @@ guaranteed hit — 0.02 % of lookups, far too small to matter here.
 
 **Two things confirm the denominators are comparable.** Secondary searches and migration
 destination reads are marked `internalRead` and excluded
-([Scheduler.scala:431](../design/craft/inclusivecache/src/Scheduler.scala#L431)), so SBC is not
+([Scheduler.scala:431](../../design/craft/inclusivecache/src/Scheduler.scala#L431)), so SBC is not
 double-counting its own extra work. And the counters are 64-bit, so at these rates nothing wraps.
 
 ---
@@ -116,7 +120,7 @@ line.** And that gap is widening: in the earlier read it was 5.5×.
 ## 4. Root cause: the eviction policy, not the SBC concept
 
 `322494a` masked displaced ways out of the random-victim tier
-([Directory.scala:219](../design/craft/inclusivecache/src/Directory.scala#L219)). The victim mux is
+([Directory.scala:219](../../design/craft/inclusivecache/src/Directory.scala#L219)). The victim mux is
 now five tiers, and a parked line is only taken by **tier 5** — i.e. only when its row has **zero
 native ways left**. Combined with serve-in-place (no repatriation), a line that gets parked
 essentially never leaves.
@@ -206,10 +210,10 @@ Everything found while auditing this dataset, including the items that came back
 | **D4** | **Tier-4 fallback collapses replacement** to the lowest-indexed native way on ~44 % of evictions (§4). Independent of D3's fix. | 🔴 defect |
 | **D5** | **Second-search success 93.15 % → 53.63 %**; 3.13 % of all lookups now pay a wasted extra directory read (§5). | 🟡 finding |
 | **D6** | **Migration abort rate 53.1 % → 75.9 %**, attempts up 4.4× against accesses up 1.4×. Thrashing rises as the cache degrades. | 🟡 finding |
-| **D7** | **`aborted + migrations > attempted` in both reads** (+2,060 and +286). `migAttempt` pulses at two sites ([MSHR.scala:1073](../design/craft/inclusivecache/src/MSHR.scala#L1073), [:1146](../design/craft/inclusivecache/src/MSHR.scala#L1146)), `migAbort` at three ([:1133](../design/craft/inclusivecache/src/MSHR.scala#L1133), [:1161](../design/craft/inclusivecache/src/MSHR.scala#L1161) — deliberately conditional, "count declines apart from dirty rejects" — and [:1482](../design/craft/inclusivecache/src/MSHR.scala#L1482)). **`attempted` is not a valid denominator for an abort rate.** Fix or document. | 🟡 accounting |
-| **D8** | **All SBC event counters are OR-reduced across MSHRs** ([Scheduler.scala:686-699](../design/craft/inclusivecache/src/Scheduler.scala#L686-L699)) — simultaneous events in one cycle count once. At ≤1.6e-3 events/cycle the loss is ~1e-6, **numerically negligible here**. But `nParked`'s decrement uses the OR-reduced `parkErase` while its increment is token-limited ([SetBalanceUnit.scala:269-270](../design/craft/inclusivecache/src/SetBalanceUnit.scala#L269-L270)), so any drift is **one-directional (upward)**. Since the 44 % figure carries the whole analysis, cross-check it: `assert(nParked === sum(parkCount))` is free. | 🟢 note |
-| **D9** | **`homeBranch=0` and `secPerm=0` are correct by construction, not dead counters.** The elaboration print in [Scheduler.scala](../design/craft/inclusivecache/src/Scheduler.scala) computes BRANCH reachability; with a last-level L2 and an outer manager that always grants T, BRANCH is unreachable. `secProbe` was 21 in the free-running read, so that counter is alive too. Three exact zeros look alarming; they are fine. | ✅ cleared |
-| **D10** | **`dispRelease`=32 against `secC`=157,635.** 157,635 C-channel writebacks landed on parked lines, yet only 32 parked victims were dirty at eviction vs 73,734 clean drops. Most likely benign — written parked lines are the hot ones, and hot lines are exactly the ones tier-5 protection keeps resident, so the evicted population is the cold never-written one. But the failure mode if it is wrong (dirty bit not set on the parked entry) is **silent data loss on FPGA, where asserts do not report**. The RTL branch itself is correct: `when (m.dirty) { dispRelease } .otherwise { dispDrop }` ([MSHR.scala:1109](../design/craft/inclusivecache/src/MSHR.scala#L1109)). Worth one directed check. | 🟡 verify |
+| **D7** | **`aborted + migrations > attempted` in both reads** (+2,060 and +286). `migAttempt` pulses at two sites ([MSHR.scala:1073](../../design/craft/inclusivecache/src/MSHR.scala#L1073), [:1146](../../design/craft/inclusivecache/src/MSHR.scala#L1146)), `migAbort` at three ([:1133](../../design/craft/inclusivecache/src/MSHR.scala#L1133), [:1161](../../design/craft/inclusivecache/src/MSHR.scala#L1161) — deliberately conditional, "count declines apart from dirty rejects" — and [:1482](../../design/craft/inclusivecache/src/MSHR.scala#L1482)). **`attempted` is not a valid denominator for an abort rate.** Fix or document. | 🟡 accounting |
+| **D8** | **All SBC event counters are OR-reduced across MSHRs** ([Scheduler.scala:686-699](../../design/craft/inclusivecache/src/Scheduler.scala#L686-L699)) — simultaneous events in one cycle count once. At ≤1.6e-3 events/cycle the loss is ~1e-6, **numerically negligible here**. But `nParked`'s decrement uses the OR-reduced `parkErase` while its increment is token-limited ([SetBalanceUnit.scala:269-270](../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L269-L270)), so any drift is **one-directional (upward)**. Since the 44 % figure carries the whole analysis, cross-check it: `assert(nParked === sum(parkCount))` is free. | 🟢 note |
+| **D9** | **`homeBranch=0` and `secPerm=0` are correct by construction, not dead counters.** The elaboration print in [Scheduler.scala](../../design/craft/inclusivecache/src/Scheduler.scala) computes BRANCH reachability; with a last-level L2 and an outer manager that always grants T, BRANCH is unreachable. `secProbe` was 21 in the free-running read, so that counter is alive too. Three exact zeros look alarming; they are fine. | ✅ cleared |
+| **D10** | **`dispRelease`=32 against `secC`=157,635.** 157,635 C-channel writebacks landed on parked lines, yet only 32 parked victims were dirty at eviction vs 73,734 clean drops. Most likely benign — written parked lines are the hot ones, and hot lines are exactly the ones tier-5 protection keeps resident, so the evicted population is the cold never-written one. But the failure mode if it is wrong (dirty bit not set on the parked entry) is **silent data loss on FPGA, where asserts do not report**. The RTL branch itself is correct: `when (m.dirty) { dispRelease } .otherwise { dispDrop }` ([MSHR.scala:1109](../../design/craft/inclusivecache/src/MSHR.scala#L1109)). Worth one directed check. | 🟡 verify |
 | **D11** | **No cycles or instructions were captured.** There is no performance number in this dataset — only counter ratios. Compounding it: at 50 MHz against fast DDR4 a miss costs only a handful of core cycles, so **this platform understates both the harm and the benefit** of any L2 change. Paper §5.2 is explicit that hit/miss rate is the wrong characterisation for SBC. | 🔴 method |
 | **D12** | **SBC state carried into the window.** `--zero` deliberately preserves `sat`/AT/DSS/`parkCount`/`nParked`, so the SBC window opened with 825 lines already parked while NoSBC started clean. Comparable only if the degraded state is the steady state — and D3 says it is not, because it is still climbing. | 🟡 method |
 

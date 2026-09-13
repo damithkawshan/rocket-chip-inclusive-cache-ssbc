@@ -7,14 +7,14 @@
 so at `p ≈ 0.0002` there is nothing to build on. This is the bridge that raises `p`.
 
 Companion docs: [July18AfterBreakWorkplan.md](July18AfterBreakWorkplan.md) (how we got here),
-[phase-3.md](phase-3.md) (what comes after), [bug-fix-log.md](bug-fix-log.md).
+[phase-3.md](phase-3.md) (what comes after), [bug-fix-log.md](../bugs/bug-fix-log.md).
 
 ---
 
 ## 1. The problem in one paragraph
 
 A migration only happens if the victim passes `!dirty && !clients.orR && !displaced`
-([MSHR.scala:785](../design/craft/inclusivecache/src/MSHR.scala#L785)). Measured over 129,488
+([MSHR.scala:785](../../design/craft/inclusivecache/src/MSHR.scala#L785)). Measured over 129,488
 evictions, `clients` blocked **82%** and `dirty` blocked **16%**. But the `clients` bit is
 **conservative, not true**: rocket's L1 D$ runs with `silentDrop = true` (the default —
 `acquireBeforeRelease = false` in `HellaCache.scala:42`, and `DCache.scala:810/820` gate the
@@ -31,7 +31,7 @@ misread as "add a probe to the migration path."
 
 Today, when the victim is client-held, SBC takes the `.otherwise` branch: a **normal eviction**,
 which sets `s_rprobe := false` and probes the client to invalidate it
-([MSHR.scala:816-819](../design/craft/inclusivecache/src/MSHR.scala#L816)). That probe **already
+([MSHR.scala:816-819](../../design/craft/inclusivecache/src/MSHR.scala#L816)). That probe **already
 happens, on every one of those 82% of evictions.** The answer we need is already coming back — we
 throw the eviction away before looking at it.
 
@@ -52,14 +52,14 @@ Verified by reading the RTL, 2026-08-18. Anyone implementing this should re-chec
 
 | Fact | Where | Why it matters |
 |---|---|---|
-| Eviction rprobe always asks `toN` | `b.bits.param := Mux(!s_rprobe, toN, ...)` [MSHR.scala:410](../design/craft/inclusivecache/src/MSHR.scala#L410) | After the probe, every client is at N — clients really is 0 |
-| `ProbeAckData` sets `meta.dirty := true` | [MSHR.scala:607](../design/craft/inclusivecache/src/MSHR.scala#L607) | The post-probe dirty re-check needs no new logic — just read `meta.dirty` |
-| `probes_toN` accumulates invalidated clients | [MSHR.scala:595](../design/craft/inclusivecache/src/MSHR.scala#L595) | Post-probe client set is `meta.clients & ~probes_toN` |
-| `excluded_client` is 0 on an eviction | [MSHR.scala:396](../design/craft/inclusivecache/src/MSHR.scala#L396) (`meta.hit` is false) | The rprobe covers **all** clients, none skipped |
-| Release waits for the probe | `c.valid := (!s_release && w_rprobeackfirst)` [MSHR.scala:~254](../design/craft/inclusivecache/src/MSHR.scala#L254) | Falling back to a release after the probe is already legal |
-| `c.bits.opcode := Mux(meta.dirty, ReleaseData, Release)` | [MSHR.scala:414](../design/craft/inclusivecache/src/MSHR.scala#L414) | The dirty fallback writes back the probed data automatically |
-| Acquire gate | `a.valid := !s_acquire && s_release && s_pprobe && (!migrating \|\| w_copy)` [MSHR.scala:253](../design/craft/inclusivecache/src/MSHR.scala#L253) | **This is the hazard.** See R1 |
-| `displacedEntry.clients := meta.clients` | [MSHR.scala:381](../design/craft/inclusivecache/src/MSHR.scala#L381) | **Must change.** See R2 |
+| Eviction rprobe always asks `toN` | `b.bits.param := Mux(!s_rprobe, toN, ...)` [MSHR.scala:410](../../design/craft/inclusivecache/src/MSHR.scala#L410) | After the probe, every client is at N — clients really is 0 |
+| `ProbeAckData` sets `meta.dirty := true` | [MSHR.scala:607](../../design/craft/inclusivecache/src/MSHR.scala#L607) | The post-probe dirty re-check needs no new logic — just read `meta.dirty` |
+| `probes_toN` accumulates invalidated clients | [MSHR.scala:595](../../design/craft/inclusivecache/src/MSHR.scala#L595) | Post-probe client set is `meta.clients & ~probes_toN` |
+| `excluded_client` is 0 on an eviction | [MSHR.scala:396](../../design/craft/inclusivecache/src/MSHR.scala#L396) (`meta.hit` is false) | The rprobe covers **all** clients, none skipped |
+| Release waits for the probe | `c.valid := (!s_release && w_rprobeackfirst)` [MSHR.scala:~254](../../design/craft/inclusivecache/src/MSHR.scala#L254) | Falling back to a release after the probe is already legal |
+| `c.bits.opcode := Mux(meta.dirty, ReleaseData, Release)` | [MSHR.scala:414](../../design/craft/inclusivecache/src/MSHR.scala#L414) | The dirty fallback writes back the probed data automatically |
+| Acquire gate | `a.valid := !s_acquire && s_release && s_pprobe && (!migrating \|\| w_copy)` [MSHR.scala:253](../../design/craft/inclusivecache/src/MSHR.scala#L253) | **This is the hazard.** See R1 |
+| `displacedEntry.clients := meta.clients` | [MSHR.scala:381](../../design/craft/inclusivecache/src/MSHR.scala#L381) | **Must change.** See R2 |
 
 ## 4. The design
 
@@ -122,7 +122,7 @@ when (migDeferred && w_rprobeacklast) {
 ```
 
 Re-reading the **live** `meta.dirty` register (not a value latched at assess) is deliberate — it
-also picks up `nestedwb.c_set_dirty` ([MSHR.scala:204](../design/craft/inclusivecache/src/MSHR.scala#L204))
+also picks up `nestedwb.c_set_dirty` ([MSHR.scala:204](../../design/craft/inclusivecache/src/MSHR.scala#L204))
 if a nested writeback dirtied the line while we waited.
 
 The victim way must be latched at assess into `migSrcWay` (or a shadow register), because
@@ -161,7 +161,7 @@ This deserves its own treatment, because the intuition "adding a gate risks dead
 here. The gate is not a new constraint we are inventing — it re-establishes an invariant the RTL
 already relies on and already documents.
 
-**The existing rule.** [MSHR.scala:187-190](../design/craft/inclusivecache/src/MSHR.scala#L187):
+**The existing rule.** [MSHR.scala:187-190](../../design/craft/inclusivecache/src/MSHR.scala#L187):
 
 ```
 // [1]: We cannot issue outer Acquire while holding blockB (=> outA can stall)
@@ -176,7 +176,7 @@ Two facts make this bite:
   valid fires together. You cannot fire the probe but hold back the acquire.
 - **`blockB` is high during our window.**
   `blockB := !meta_valid || ((!w_releaseack || !w_rprobeacklast || !w_pprobeacklast) && !w_grantfirst)`
-  ([MSHR.scala:214](../design/craft/inclusivecache/src/MSHR.scala#L214)). While the rprobe is
+  ([MSHR.scala:214](../../design/craft/inclusivecache/src/MSHR.scala#L214)). While the rprobe is
   outstanding, `!w_rprobeacklast` is true and `!w_grantfirst` is true, so **`blockB` is true.**
 
 **The deadlock, if we do NOT gate:**
@@ -261,7 +261,7 @@ simply never finishes, the hardest failure to debug — into a named assert with
 ### R2 — 🔴 CRITICAL: the displaced entry would claim clients it no longer has
 
 **What breaks.** `displacedEntry.clients := meta.clients`
-([MSHR.scala:381](../design/craft/inclusivecache/src/MSHR.scala#L381)) copies the **pre-probe**
+([MSHR.scala:381](../../design/craft/inclusivecache/src/MSHR.scala#L381)) copies the **pre-probe**
 client mask. `meta.clients` is written at allocate and is *not* updated by probes — the post-probe
 value lives in `meta.clients & ~probes_toN`. So a probe-then-migrate would install a displaced entry
 marked as client-held.
@@ -272,7 +272,7 @@ release. If the entry claims clients, reclaim would drop a line while a client b
 a coherence violation, and the reclaim tier is exactly the mechanism whose evidence is already
 synthetic.
 
-The assert at [MSHR.scala:384](../design/craft/inclusivecache/src/MSHR.scala#L384) would fire first,
+The assert at [MSHR.scala:384](../../design/craft/inclusivecache/src/MSHR.scala#L384) would fire first,
 which is good, but only in sim with asserts on.
 
 **Mitigation.**
@@ -287,7 +287,7 @@ Both edits are one line each. Missing either is a silent correctness hole.
 
 ### R3 — 🟠 The already-open `[born → gate]` window gets much wider
 
-**What breaks.** [bug-fix-log.md](bug-fix-log.md) lists one still-open bug: the migrant reserves
+**What breaks.** [bug-fix-log.md](../bugs/bug-fix-log.md) lists one still-open bug: the migrant reserves
 `dstSet` only at its *gate* (`dstValid`), a few cycles after the MSHR is born, so a request
 allocating inside that window could slip past the destination fence. It has never been observed, and
 we deliberately chose not to pre-build a fix.
@@ -309,7 +309,7 @@ testing. This change widens it for real.
 ### R4 — 🟠 The migration token is now held across a probe
 
 **What breaks.** `adviceMigrate` requires `!anyMigrating && !migTokenPending`
-([Scheduler.scala:468](../design/craft/inclusivecache/src/Scheduler.scala#L468)) — one migration in
+([Scheduler.scala:468](../../design/craft/inclusivecache/src/Scheduler.scala#L468)) — one migration in
 flight, globally. Two sub-problems:
 
 - If `anyMigrating` does **not** include `migDeferred`, a second MSHR can start its own migration
@@ -327,7 +327,7 @@ in flight" work already reclassified as Phase-3 design (item E1 in
 ### R5 — 🟡 Victim selection still steers away from the newly-eligible lines
 
 **What breaks.** `evictableOH` requires `!clients.orR`
-([Directory.scala:150](../design/craft/inclusivecache/src/Directory.scala#L150)). Under
+([Directory.scala:150](../../design/craft/inclusivecache/src/Directory.scala#L150)). Under
 probe-then-migrate a clean-but-client-held way is now migratable, but the directory does not know
 that. When every way looks held, `evictableOH` is 0 and selection falls through to **LFSR**, which
 picks a dirty way ~16% of the time — throwing away an opportunity while 7 clean ways sat there.
@@ -480,7 +480,7 @@ MIG-PROBE-DIRTY       8   probe returned data -> genuinely dirty         (0.014%
 
 Side benefit: `EVICT-DISPLACED-RECLAIM` fired 84 times. That tier had **never** fired on the stock
 config before (its evidence was synthetic, forced-config only — see
-[bug-fix-log.md](bug-fix-log.md)). It is now exercised naturally.
+[bug-fix-log.md](../bugs/bug-fix-log.md)). It is now exercised naturally.
 
 ### Two bugs found and fixed during bring-up
 
@@ -494,12 +494,12 @@ config before (its evidence was synthetic, forced-config only — see
    for. Baseline-identical.
 2. **🔴 Displaced entry installed as `TRUNK` with zero clients (assert).** `TRUNK` means "one client
    owns this exclusively", and the directory asserts `TRUNK => clients =/= 0`
-   ([MSHR.scala:139](../design/craft/inclusivecache/src/MSHR.scala#L139)). Probe-then-migrate can
+   ([MSHR.scala:139](../../design/craft/inclusivecache/src/MSHR.scala#L139)). Probe-then-migrate can
    migrate a victim that *was* `TRUNK`, and R2 zeroes its client mask — installing an impossible
    entry that trips the assert when the way is next read. **Fixed** by collapsing `TRUNK -> TIP` on
    the displaced entry (the client relinquished the line and returned no data, so the L2 copy is
    current and unshared) — the same rule the ordinary path uses at
-   [MSHR.scala:357](../design/craft/inclusivecache/src/MSHR.scala#L357). Guarded by a new assert.
+   [MSHR.scala:357](../../design/craft/inclusivecache/src/MSHR.scala#L357). Guarded by a new assert.
 
 Neither was predicted in §5. Both are the same *class* as R1/R2 — invariants that held only because
 the old eligibility rule never let a client-held victim reach the migrate path.
@@ -513,14 +513,14 @@ case_dirty_victims      PASS      case_bankstore_saturation FAILED (assert)
 case_full_dirty_dst     PASS
 ```
 
-🔴 **OPEN — `assert (new_meta.hit)` at [MSHR.scala:848](../design/craft/inclusivecache/src/MSHR.scala#L848).**
+🔴 **OPEN — `assert (new_meta.hit)` at [MSHR.scala:848](../../design/craft/inclusivecache/src/MSHR.scala#L848).**
 An inner `Release` (prio 2) from the L1 looked up the directory and **missed** — the client returned a
 line the L2 has no record of. Fires late, only in the bank-store saturation case, after ~144k
 evictions. Last events before it were a `MIG-PROBE-CLEAR -> MIG-START -> ABORT-DST` sequence.
 
 **Leading hypothesis — this is R3 materialising, as predicted.** The destination set is fenced only
 from `dstValid`, which now rises a *full probe round trip* after the MSHR is born instead of a few
-cycles. `migTokenPending` covers just 8 cycles ([Scheduler.scala:491](../design/craft/inclusivecache/src/Scheduler.scala#L491)),
+cycles. `migTokenPending` covers just 8 cycles ([Scheduler.scala:491](../../design/craft/inclusivecache/src/Scheduler.scala#L491)),
 so it expires mid-probe. During that widened window an independent demand can allocate on the
 destination set, and dir-write #1 then tramples its entry — the Phase-2 destination-collision failure
 mode, reopened by the longer window. §5 R3 called this out and said to expect it.
@@ -541,7 +541,7 @@ MIG-COMMIT      63
 ```
 
 `dstEvictable` requires `!dirty && !clients.orR && !displaced`
-([MSHR.scala:~712](../design/craft/inclusivecache/src/MSHR.scala#L712)) — **the same stale `clients`
+([MSHR.scala:~712](../../design/craft/inclusivecache/src/MSHR.scala#L712)) — **the same stale `clients`
 bit, now on the destination.** This is R3's sibling and was listed as cause 3 in the workplan. Fixing
 the source side simply exposed it: commits rose only 10× while starts rose 7,200×.
 

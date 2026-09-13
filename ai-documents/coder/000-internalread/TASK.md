@@ -4,15 +4,15 @@
 > the `coder/` exchange convention existed. Moved here for consistency; content unchanged.
 
 
-**Spec:** [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md) — that document is the contract.
+**Spec:** [spec-sbc-phase3-prereqs.md](../../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md) — that document is the contract.
 This one is the working order: what to do first, what to verify at each stop, and the traps that have
 already cost time in this code.
 
 **Read before you write anything:**
 
-1. [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md) — the whole thing, including the appendix
-2. [diagram-stale-destination-query.md](diagram-stale-destination-query.md) — why Part 1a exists at all
-3. [phase-3.md](phase-3.md) §"Decision — decline-and-skip" — the policy you are implementing
+1. [spec-sbc-phase3-prereqs.md](../../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md) — the whole thing, including the appendix
+2. `diagram-stale-destination-query.md` (deleted in `d8671cf`, still in git history) — why Part 1a exists at all
+3. [phase-3.md](../../tasks/phase-3.md) §"Decision — decline-and-skip" — the policy you are implementing
 
 Do **not** start from the July version of the spec. It was rewritten 2026-08-24 and the old Part 1 is
 kept in the appendix only as a warning.
@@ -80,10 +80,10 @@ bearing, which is worth knowing before anything else is built.
 
 One question: **why do destination probes fail?**
 
-The information is already in the log. [MSHR.scala:868](../design/craft/inclusivecache/src/MSHR.scala#L868)
+The information is already in the log. [MSHR.scala:868](../../../design/craft/inclusivecache/src/MSHR.scala#L868)
 prints `DREAD-RESULT` with `state`, `dirty`, `clients` and `displaced` on every probe.
 `sw/scripts/sbc_stats.py` counts `ABORT-DST` but does not break it down by cause
-([sbc_stats.py:26](../sw/scripts/sbc_stats.py)).
+([sbc_stats.py:26](../../../sw/scripts/sbc_stats.py)).
 
 Add a parser rule for `DREAD-RESULT` and report the reject split:
 
@@ -140,7 +140,7 @@ the 1f assert), so **compile-only verification is acceptable.**
 Two things not to skip:
 
 - The `false.B` defaults on every path, so SBC-off stays bit-exact
-- The note at [MSHR.scala:332](../design/craft/inclusivecache/src/MSHR.scala#L332) about `dread.bits.tag`
+- The note at [MSHR.scala:332](../../../design/craft/inclusivecache/src/MSHR.scala#L332) about `dread.bits.tag`
   being 0. The swap spec depends on someone seeing it.
 
 ---
@@ -154,12 +154,12 @@ These are recorded because each one cost real time.
 read `io.allocate.valid` or `io.allocate.bits.*`. Spell conditions out from `io.directory.bits` and
 `request` instead of `new_meta` / `new_request`. Same discipline applies to `migrantSet` in 1a — build
 it from registered status bits only. See the note at
-[Scheduler.scala:505](../design/craft/inclusivecache/src/Scheduler.scala#L505).
+[Scheduler.scala:505](../../../design/craft/inclusivecache/src/Scheduler.scala#L505).
 
 **2. Mask "another migration in flight" per MSHR, never globally.**
 A deferred migrant raises `migPending` itself. A global mask takes the offer away from exactly the
 MSHR that needs it, and every deferred migration declines silently. The existing fanout at
-[Scheduler.scala:297](../design/craft/inclusivecache/src/Scheduler.scala#L297) already does this
+[Scheduler.scala:297](../../../design/craft/inclusivecache/src/Scheduler.scala#L297) already does this
 correctly — preserve it when you rename `migBusy` to `migrantOH`.
 
 **3. When you add a gate to a condition, grep every sibling of that condition.**

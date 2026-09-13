@@ -1,5 +1,8 @@
 # SBC Phase 2 — Migrate-on-Eviction (single source of truth)
 
+> 📘 **Record.** Phase 2 is closed. This is the source of truth for Phase 2 only — for the current
+> status see [README.md](../README.md).
+
 **Branch:** `set_migration_refactored`
 **Created:** 2026-06-24 · **Consolidated:** 2026-06-30 · **Signed off:** 2026-08-17
 **Status: COMPLETE — SIGNED OFF ON CORRECTNESS.** Datapath built, all known bugs fixed, and the
@@ -9,8 +12,8 @@ disabled) and **migration fires far too rarely to pay off** (§7).
 
 This is the **one** Phase-2 document. It absorbs the former `phase-2-2b-handoff.md` and
 `phase-2-dst-collision.md` (now retired to `obsolete_files_do_not_refer/`). For the blow-by-blow bug
-record see [bug-fix-log.md](bug-fix-log.md); for every arbitration/priority order see
-[priority-orders.md](priority-orders.md); for the visual flow see [diagram.md](diagram.md).
+record see [bug-fix-log.md](../bugs/bug-fix-log.md); for every arbitration/priority order see
+[priority-orders.md](../guides/priority-orders.md); for the visual flow see [diagram.md](../design/diagram.md).
 
 ---
 
@@ -111,7 +114,7 @@ Gate fails → normal eviction (bit-identical to baseline). Gate holds → migra
   victim first.
 - **Copy ports are lowest priority in BankedStore.** Real protocol traffic always wins; the copy
   engine cannot perturb protocol deadlock-freedom. (This is *load-bearing* — see
-  [priority-orders.md](priority-orders.md) **F**.)
+  [priority-orders.md](../guides/priority-orders.md), order 7.)
 - **Baseline-exact when SBC is off.** Gated by `enableSetBalancing`; with it off, no entry is ever
   `displaced`, so every SBC branch is unreachable and the RTL is bit-identical to upstream. No printf
   elaborates when `sbcDebug=false`.
@@ -133,7 +136,7 @@ raised `dstValid` — slipping past the fence and becoming a second owner → **
 the check to the allocation step (the step that actually creates the second owner) closes that hole.
 This is just the cache's existing one-owner-per-set rule applied to migration: the late demand waits
 in the queue until the migration retires. Bounded, acyclic, deadlock-free. (Full record:
-[bug-fix-log.md](bug-fix-log.md) → "Dst-set collision".)
+[bug-fix-log.md](../bugs/bug-fix-log.md) → "Dst-set collision".)
 
 ---
 
@@ -183,7 +186,7 @@ passes.
 | Displaced reclaim | did **not** fire (expected: 6 migrations over 3 sets never fills a set) |
 
 This retires the last outstanding Phase-2 verification item. **Two defects were found on the way to
-it** and both are recorded in [bug-fix-log.md](bug-fix-log.md): the Bug-B `s_wsafe` fix had been
+it** and both are recorded in [bug-fix-log.md](../bugs/bug-fix-log.md): the Bug-B `s_wsafe` fix had been
 silently deleted by an uncommitted debug cleanup, and six of the seven test cases in
 `migration_stress_test.c` had been left commented out (so every prior "PASS" was 1/7 coverage).
 
@@ -203,7 +206,7 @@ MIG-START          9     actually migrated   → ~1 in 5500 advised evictions
 ```
 
 The hot-set advice fires constantly; the **victim eligibility test** (`!dirty && !clients && !displaced`,
-[MSHR.scala:785](../design/craft/inclusivecache/src/MSHR.scala#L785)) kills essentially all of it. In the
+[MSHR.scala:785](../../design/craft/inclusivecache/src/MSHR.scala#L785)) kills essentially all of it. In the
 Phase-3 payoff model (`saving = p·(M−C)`, [phase-3.md](phase-3.md)) this is **risk #1 — low `p`** — and the
 measured `p` here is ~0.0002. Phase 3 makes parked copies reusable, but at this rate there would be almost
 nothing parked to reuse.
@@ -230,7 +233,7 @@ architectural data with no assert to catch it (§8).
 - **Dirty / client-held destination eviction** — needs a 2nd address + writeback/probe in one MSHR
   (BUG-2-class risk). Phase 4. Clean-only is the 80/20.
 - **Residual `[born→gate]` sub-window** — a theoretical slip before `dstValid` rises; not reproduced,
-  do **not** pre-build (see [bug-fix-log.md](bug-fix-log.md) open section).
+  do **not** pre-build (see [bug-fix-log.md](../bugs/bug-fix-log.md) open section).
 
 ---
 

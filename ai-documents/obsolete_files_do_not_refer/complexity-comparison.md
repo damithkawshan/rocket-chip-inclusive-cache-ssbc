@@ -78,7 +78,7 @@ be fenced against other requests touching the same sets. Every **blue** box is w
 counted. The **grey** side-notes are the pipeline realities hiding inside those boxes.
 
 Every unit below is a real, separate piece of hardware in our design (same names as
-[diagram.md](diagram.md)). The paper's diagram needed 3 boxes. Ours needs 9 — because a pipelined,
+[diagram.md](../design/diagram.md)). The paper's diagram needed 3 boxes. Ours needs 9 — because a pipelined,
 coherent cache splits the work across a request channel, one MSHR, a shared directory, the
 association table, a copy engine, a shared data array, and the grant channel, instead of one
 lookup table.
@@ -212,5 +212,5 @@ address.
 > Same performance idea. The extra engineering exists entirely because a real, inclusive L2 must be
 > able to find every line by its address — so a moved line has to come home before it can be used.
 
-*(More detail: [phase-3.md](phase-3.md) for the plan, [diagram.md](diagram.md) for the full built and
+*(More detail: [phase-3.md](../tasks/phase-3.md) for the plan, [diagram.md](../design/diagram.md) for the full built and
 planned flow, [spec-sbc-phase3-prereqs.md](spec-sbc-phase3-prereqs.md) for the coder edits.)*

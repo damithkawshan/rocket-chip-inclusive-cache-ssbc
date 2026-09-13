@@ -1,0 +1,640 @@
+<title>The Equal-Work Board Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper:      #F6F8FA;
+    --surface:    #EBEEF3;
+    --surface-2:  #E1E6ED;
+    --ink:        #16202B;
+    --ink-soft:   #4A5765;
+    --ink-mute:   #798796;
+    --rule:       #D2D8E1;
+    --rule-soft:  #E2E6EC;
+    --accent:     #A65423;
+    --accent-bg:  #F2E5DA;
+    --good:       #2C6B4B;
+    --good-bg:    #DEEBE3;
+    --bad:        #9E362B;
+    --bad-bg:     #F1DEDB;
+
+    --bleed: 0px;
+
+    --f-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+    --f-body:    "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --f-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:     #11171E;
+      --surface:   #1A222B;
+      --surface-2: #212B35;
+      --ink:       #E3E8EE;
+      --ink-soft:  #AAB6C2;
+      --ink-mute:  #7E8B99;
+      --rule:      #2C3742;
+      --rule-soft: #222B35;
+      --accent:    #D8894E;
+      --accent-bg: #2E2118;
+      --good:      #6FBE90;
+      --good-bg:   #16281F;
+      --bad:       #E08575;
+      --bad-bg:    #2C1A17;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:     #11171E;
+    --surface:   #1A222B;
+    --surface-2: #212B35;
+    --ink:       #E3E8EE;
+    --ink-soft:  #AAB6C2;
+    --ink-mute:  #7E8B99;
+    --rule:      #2C3742;
+    --rule-soft: #222B35;
+    --accent:    #D8894E;
+    --accent-bg: #2E2118;
+    --good:      #6FBE90;
+    --good-bg:   #16281F;
+    --bad:       #E08575;
+    --bad-bg:    #2C1A17;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 17px;
+    line-height: 1.65;
+    overflow-x: clip;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 74ch;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.25rem;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 1rem; }
+
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-weight: 500;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  h1 {
+    font-family: var(--f-display);
+    font-weight: 600;
+    font-size: clamp(2.1rem, 6vw, 3.1rem);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .lede {
+    font-size: 1.14rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    margin: 0;
+    max-width: 62ch;
+  }
+
+  .stamp {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem 1.1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--f-mono);
+    font-size: 0.78rem;
+    color: var(--ink-mute);
+  }
+  .stamp b { color: var(--ink-soft); font-weight: 500; }
+
+  /* ---- headline result: this week it is a loss ---- */
+  .verdict {
+    background: var(--bad-bg);
+    border-left: 3px solid var(--bad);
+    padding: 1.4rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .verdict .big {
+    font-family: var(--f-display);
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 1.2;
+    color: var(--bad);
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  .verdict p { margin: 0; color: var(--ink-soft); font-size: 0.98rem; }
+
+  /* ---- sections ---- */
+  section { display: flex; flex-direction: column; gap: 1rem; }
+
+  h2 {
+    font-family: var(--f-display);
+    font-size: 1.42rem;
+    font-weight: 600;
+    letter-spacing: -0.012em;
+    line-height: 1.25;
+    margin: 0;
+    text-wrap: balance;
+    padding-bottom: 0.65rem;
+    border-bottom: 1px solid var(--rule);
+  }
+
+  p { margin: 0; max-width: 66ch; }
+  .muted { color: var(--ink-soft); }
+
+  /* ---- dated log of the week ---- */
+  .fix {
+    display: grid;
+    grid-template-columns: 3.6rem 1fr;
+    gap: 0 1.15rem;
+    padding: 1.4rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .fix:last-of-type { border-bottom: 0; }
+
+  .fix .num {
+    font-family: var(--f-mono);
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: 0.3rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .fix .body { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+  .fix h3 {
+    font-family: var(--f-display);
+    font-size: 1.13rem;
+    font-weight: 600;
+    margin: 0;
+    line-height: 1.3;
+  }
+  .fix p { font-size: 0.99rem; }
+
+  .outcome {
+    align-self: flex-start;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-family: var(--f-mono);
+    font-size: 0.79rem;
+    font-weight: 500;
+    padding: 0.34rem 0.7rem;
+  }
+
+  /* ---- figure ---- */
+  @media (min-width: 74rem) { :root { --bleed: 5rem; } }
+
+  figure {
+    margin: 0;
+    margin-inline: calc(-1 * var(--bleed));
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+  .plate {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 1.6rem 1.4rem;
+    overflow-x: auto;
+  }
+  .plate svg { display: block; width: 100%; height: auto; min-width: 33rem; }
+  figcaption {
+    font-size: 0.9rem;
+    color: var(--ink-mute);
+    line-height: 1.6;
+    max-width: 72ch;
+  }
+  figcaption b { color: var(--ink-soft); font-weight: 500; }
+
+  /* chart tokens */
+  .c-grid { stroke: var(--rule); stroke-width: 1; }
+  .c-ref  { stroke: var(--ink-mute); stroke-width: 1.3; stroke-dasharray: 5 4; }
+  .c-off  { fill: var(--surface-2); stroke: var(--ink-mute); stroke-width: 1; }
+  .c-on   { fill: var(--bad); }
+  .c-lab  { font-family: var(--f-display); font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .c-sub  { font-family: var(--f-mono); font-size: 10px; fill: var(--ink-mute); letter-spacing: 0.04em; }
+  .c-val  { font-family: var(--f-mono); font-size: 12px; font-weight: 600; fill: var(--bad); }
+  .c-tick { font-family: var(--f-mono); font-size: 10px; fill: var(--ink-mute); }
+  .c-key  { font-family: var(--f-body); font-size: 12px; fill: var(--ink-soft); }
+
+  /* ---- table ---- */
+  .scroll { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.93rem;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 0.62rem 0.9rem 0.62rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    white-space: nowrap;
+  }
+  th {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    border-bottom: 1px solid var(--rule);
+  }
+  td:first-child, th:first-child { white-space: normal; min-width: 14ch; }
+  td.wrap-cell { white-space: normal; }
+  td.n, th.n { text-align: right; font-family: var(--f-mono); }
+  .now  { color: var(--good); font-weight: 600; }
+  .then { color: var(--ink-mute); }
+  .fail { color: var(--bad); font-weight: 600; }
+
+  /* ---- lists ---- */
+  ul, ol { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  li { max-width: 64ch; padding-left: 0.15rem; }
+  li::marker { color: var(--accent); }
+
+  code {
+    font-family: var(--f-mono);
+    font-size: 0.87em;
+    background: var(--surface);
+    padding: 0.1em 0.36em;
+    color: var(--ink);
+  }
+
+  .note {
+    background: var(--surface);
+    padding: 1.35rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+  .note h2 { border: 0; padding: 0; font-size: 1.13rem; }
+
+  .caution {
+    background: var(--bad-bg);
+    border-left: 3px solid var(--bad);
+    padding: 1.2rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .caution h3 {
+    font-family: var(--f-display);
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin: 0;
+    color: var(--bad);
+  }
+  .caution p, .caution li { font-size: 0.95rem; color: var(--ink-soft); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    color: var(--ink-mute);
+    line-height: 1.7;
+  }
+
+  @media (max-width: 34rem) {
+    body { font-size: 16px; }
+    .wrap { padding: 2.5rem 1.15rem 4rem; gap: 2.5rem; }
+    .fix { grid-template-columns: 1fr; gap: 0.4rem; }
+    .fix .num { padding-top: 0; }
+    .plate { padding: 1rem 0.8rem; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <p class="eyebrow">Research progress · Set-Balancing Cache</p>
+    <h1>First fair test on real hardware: the cache is slower with set balancing on</h1>
+    <p class="lede">
+      For the first time the design ran on the FPGA board, under Linux, on a SPEC CPU2017 benchmark,
+      with set balancing on and off doing exactly the same work. The data stays correct &mdash; but
+      the run takes longer and goes to main memory far more often.
+    </p>
+    <div class="stamp">
+      <span><b>Platform</b> VCU118 FPGA · Linux · one Rocket core</span>
+      <span><b>Benchmark</b> SPEC CPU2017 520.omnetpp_r</span>
+      <span><b>Date</b> 14 Sep 2026</span>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <div class="big">32&ndash;51% more time · 2.5&ndash;7&times; more trips to main memory</div>
+    <p>Three separate tests on two cache sizes agree on the direction. Each test ran once, so the
+    exact size of the loss is not final. Covers 1&ndash;14 September.</p>
+  </div>
+
+  <section>
+    <h2>Where the 31 August report left off</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Next step (31 Aug)</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Allow moved lines to be dirty</td>
+            <td class="wrap-cell"><span class="fail">Not started.</span> Still the biggest limit on how often a line can move.</td>
+          </tr>
+          <tr>
+            <td>A bigger, more realistic configuration</td>
+            <td class="wrap-cell"><span class="now">Done.</span> Moved to the FPGA board: 256&nbsp;KB, 16 ways, 256 sets &mdash; plus a 64&nbsp;KB version.</td>
+          </tr>
+          <tr>
+            <td>Directed tests for the two unexercised paths</td>
+            <td class="wrap-cell">Half done. &ldquo;Write to a moved line&rdquo; ran 1.5&nbsp;million times on the board. &ldquo;Needs write permission&rdquo; needs two CPU cores and is moved to the final phase.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>This week&rsquo;s plan and what happened</h2>
+    <p class="muted">Goal of the week: the first measured benefit number. We got a number &mdash; it is a loss, not a benefit.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Planned (8 Sep)</th><th>Outcome</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Choose a workload with real reuse</td><td class="wrap-cell">SPEC CPU2017 omnetpp, a network simulator</td></tr>
+          <tr><td>Run it with set balancing on and off</td><td class="wrap-cell"><span class="now">Done</span> &mdash; first with a fixed 10-minute window, then with equal work</td></tr>
+          <tr><td>Interpret the result</td><td class="wrap-cell"><span class="now">Done</span> &mdash; slower; reasons below</td></tr>
+          <tr><td>Specify migration of dirty lines</td><td class="wrap-cell then">Not started</td></tr>
+          <tr><td>Remove dead copy logic from the feature-off build</td><td class="wrap-cell then">Not started (240 LUT / 529 FF)</td></tr>
+          <tr><td>Decide what the &ldquo;arm a set&rdquo; register is for</td><td class="wrap-cell then">Written down only</td></tr>
+          <tr><td>Test the shared-copy-plus-write path</td><td class="wrap-cell then">Not started (needs two cores)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>The results</h2>
+
+    <figure>
+      <div class="plate">
+        <svg viewBox="0 0 720 312" role="img" aria-labelledby="ctitle cdesc">
+          <title id="ctitle">Run time with set balancing on, relative to off</title>
+          <desc id="cdesc">Three tests. With set balancing off each run is 1.00. With it on, test A takes 1.32 times as long, test B 1.46 times, test C 1.51 times.</desc>
+
+          <!-- key -->
+          <rect class="c-off" x="130" y="6" width="16" height="12" />
+          <text class="c-key" x="152" y="16">set balancing off (= 1.00)</text>
+          <rect class="c-on" x="340" y="6" width="16" height="12" />
+          <text class="c-key" x="362" y="16">set balancing on</text>
+
+          <!-- grid: x = 130 + value * 340 -->
+          <line class="c-grid" x1="130" y1="34" x2="130" y2="270" />
+          <line class="c-grid" x1="300" y1="34" x2="300" y2="270" />
+          <line class="c-grid" x1="640" y1="34" x2="640" y2="270" />
+          <line class="c-ref"  x1="470" y1="34" x2="470" y2="270" />
+
+          <!-- test A -->
+          <text class="c-lab" x="0" y="62">Test A</text>
+          <text class="c-sub" x="0" y="78">256 KB · 0.001 s</text>
+          <rect class="c-off" x="130" y="46" width="340" height="18" />
+          <rect class="c-on"  x="130" y="68" width="448.5" height="18" />
+          <text class="c-val" x="586" y="82">+32%</text>
+
+          <!-- test B -->
+          <text class="c-lab" x="0" y="140">Test B</text>
+          <text class="c-sub" x="0" y="156">256 KB · 0.1 s</text>
+          <rect class="c-off" x="130" y="124" width="340" height="18" />
+          <rect class="c-on"  x="130" y="146" width="496.4" height="18" />
+          <text class="c-val" x="634" y="160">+46%</text>
+
+          <!-- test C -->
+          <text class="c-lab" x="0" y="218">Test C</text>
+          <text class="c-sub" x="0" y="234">64 KB · 0.02 s</text>
+          <rect class="c-off" x="130" y="202" width="340" height="18" />
+          <rect class="c-on"  x="130" y="224" width="514.1" height="18" />
+          <text class="c-val" x="652" y="238">+51%</text>
+
+          <!-- ticks -->
+          <text class="c-tick" x="130" y="290" text-anchor="middle">0</text>
+          <text class="c-tick" x="300" y="290" text-anchor="middle">0.5</text>
+          <text class="c-tick" x="470" y="290" text-anchor="middle">1.0</text>
+          <text class="c-tick" x="640" y="290" text-anchor="middle">1.5</text>
+          <text class="c-tick" x="385" y="308" text-anchor="middle">run time, relative to set balancing off</text>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Same work in both halves.</b> Each test runs the benchmark to a fixed simulated time and
+        stops when it ends; both halves reached the same number of simulation events. Both halves use
+        the same chip image, with the feature switched on or off at run time.
+      </figcaption>
+    </figure>
+
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Test</th><th>L2 cache</th><th>Simulated time</th><th class="n">Work (events)</th><th class="n">Time, on vs off</th><th class="n">Memory trips, on vs off</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A</td><td>256 KB</td><td>0.001 s</td><td class="n">28,270</td><td class="n fail">+32%</td><td class="n fail">7.0&times;</td></tr>
+          <tr><td>B</td><td>256 KB</td><td>0.1 s</td><td class="n">35,128,553</td><td class="n fail">+46%</td><td class="n fail">3.6&times;</td></tr>
+          <tr><td>C</td><td>64 KB</td><td>0.02 s</td><td class="n">9,347,248</td><td class="n fail">+51%</td><td class="n fail">2.5&times;</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="muted">Test B in more detail &mdash; the real geometry, and the longest run.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Test B</th><th class="n">Off</th><th class="n">On</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Blocks read from main memory</td><td class="n">2.32 billion</td><td class="n fail">8.98 billion (3.9&times;)</td></tr>
+          <tr><td>Blocks written to main memory</td><td class="n">0.78 billion</td><td class="n fail">2.04 billion (2.6&times;)</td></tr>
+          <tr><td>Wall-clock time</td><td class="n">~3.4 h</td><td class="n fail">~4.9 h</td></tr>
+          <tr><td>Lines moved to another set</td><td class="n then">0</td><td class="n">8.3 million</td></tr>
+          <tr><td>Moved lines served from where they sit</td><td class="n then">0</td><td class="n">996 million</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>What we did</h2>
+
+    <div class="fix">
+      <div class="num">8 Sep</div>
+      <div class="body">
+        <h3>Measured the hardware cost</h3>
+        <p>The L2 cache grows by 157% in logic, but the whole design goes only from 5.2% to 6.1% of
+        the FPGA. The timing cost is 0.47&nbsp;ns of a 20&nbsp;ns clock, about 2.5%.</p>
+        <p class="outcome">Area is not a concern at this size</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">10 Sep</div>
+      <div class="body">
+        <h3>Ran the first board test</h3>
+        <p>With a fixed 10-minute window the hit rate was 90.2% off and 66.1% on. While checking it we
+        found that the hit counter also counts traffic that is not a CPU request, so both numbers are
+        inflated.</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">11 Sep</div>
+      <div class="body">
+        <h3>Built tools for a fair test</h3>
+        <ul>
+          <li>A runtime <strong>on/off switch</strong>, so both halves of a test run on the same chip
+          image. Checked: the &ldquo;off&rdquo; half scored 90.19%; a separately built image without
+          the feature scored 90.24%.</li>
+          <li>Counters for <strong>trips to main memory</strong>, and a <strong>cycle counter</strong>
+          inside the cache. The board does not let software read the CPU&rsquo;s own cycle and
+          instruction counters, so the cache counts time itself.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">11 Sep</div>
+      <div class="body">
+        <h3>Found that a fixed time window gives the wrong answer</h3>
+        <p>In the same 10 minutes the &ldquo;on&rdquo; half got through about 20% less of the
+        program. Fewer memory trips then looked like a win, when the machine had simply done less.
+        We switched to <strong>fixed work</strong>: run the benchmark to a set simulated time, and
+        measure until it ends.</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">13 Sep</div>
+      <div class="body">
+        <h3>Ran the fixed-work tests</h3>
+        <p>Three finished (11&ndash;13 Sep). Five longer attempts did not finish within a board
+        session &mdash; omnetpp first builds a large simulated network, and at 50&nbsp;MHz that alone
+        takes hours.</p>
+      </div>
+    </div>
+
+    <div class="fix">
+      <div class="num">14 Sep</div>
+      <div class="body">
+        <h3>Tidied the research documents</h3>
+        <p>Grouped them into folders, and added a task status tracker, a list of what the build
+        phases left behind, and a guide to the cache&rsquo;s &ldquo;who goes first&rdquo; rules.</p>
+      </div>
+    </div>
+
+    <p class="muted">
+      Also since the last report (1&ndash;4 Sep): total hit and miss counters; the paper&rsquo;s
+      &ldquo;partner may hold my line&rdquo; bit, which skips useless searches; moved lines placed last
+      in line for eviction; a counter-only reset register; and the guide for running the design on the
+      board under Linux.
+    </p>
+  </section>
+
+  <section>
+    <h2>Why it is slower &mdash; what we believe, not yet proven</h2>
+    <ul>
+      <li><strong>Moved lines pile up and crowd out ordinary lines.</strong> In one session they grew
+      from 825 to 1,804 of the cache&rsquo;s 4,096 slots, and the hit rate fell from 79% to 62.5% as
+      they grew.</li>
+      <li><strong>Moved lines are used, but far less than ordinary lines.</strong> Each moved line is
+      reused about 120 to 290 times before it leaves &mdash; well above break-even &mdash; yet per slot
+      it does about 13 times less work than an ordinary line.</li>
+      <li><strong>Two eviction rules make it worse.</strong> Moved lines are always evicted last, so
+      they rarely leave. And when the random pick lands on a moved line, the cache falls back to the
+      first ordinary slot every time &mdash; about 44% of evictions stop being random.</li>
+      <li><strong>Our cache evicts at random; the paper&rsquo;s evicts the least recently used
+      line.</strong> Under that rule a moved line&rsquo;s head start fades on its own. Under ours it
+      becomes permanent.</li>
+      <li><strong>Found this week while checking the design against the code:</strong> nothing ever
+      ends a pairing between two sets, and a line served from its partner set counts as a
+      <em>miss</em> for the home set&rsquo;s &ldquo;heat&rdquo; &mdash; so a set that is being helped
+      still looks like it needs help.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="caution">
+      <h3>Reported plainly</h3>
+      <ul>
+        <li>Every number is from <strong>one run</strong>. Repeats come next.</li>
+        <li>The cycle counter is the cache&rsquo;s own clock; whether it is the CPU&rsquo;s clock is
+        not confirmed. The on/off comparison is fair either way.</li>
+        <li>Hit rates still count some traffic that is not the program&rsquo;s, so we quote time and
+        memory trips instead.</li>
+        <li>The event counters are 32 bits and would overflow on longer runs. Widening them to 64 bits
+        is in progress.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Next steps</h2>
+    <ol>
+      <li><strong>Finish the 64-bit counters</strong>, then merge the testing branch into the main
+      branch.</li>
+      <li><strong>Repeat each test three times.</strong></li>
+      <li><strong>Watch moved lines pile up</strong> over one hour, reading the counters every
+      minute.</li>
+      <li><strong>Test the two eviction fixes</strong> &mdash; stop over-protecting moved lines, and
+      fix the &ldquo;first slot&rdquo; fallback &mdash; in four builds. The pass/fail rule is written
+      down before the runs, so the result cannot be argued into a nicer answer afterwards.</li>
+    </ol>
+    <p class="muted">Moved to the final phase, to run before any final claim: the two-core serve tests,
+    and a self-check that each copied line landed correctly.</p>
+  </section>
+
+  <div class="note">
+    <h2>A note on method</h2>
+    <p class="muted">
+      <strong>A test that looks fair can flip the sign of the answer.</strong> The fixed 10-minute
+      window compared two runs that did different amounts of work, and on memory trips it would have
+      shown set balancing as a win. The rule now: compare only runs that did the same work, and check
+      the work count before reading any other number.
+    </p>
+    <p class="muted">
+      A second lesson: the three finished tests were recovered from board session logs that no
+      document had recorded. Write up every board session the same day.
+    </p>
+  </div>
+
+  <footer>
+    Board results: VCU118 FPGA at 50&nbsp;MHz, Linux, one Rocket core, 8&nbsp;KB L1 caches,
+    SPEC CPU2017 520.omnetpp_r (ref input, shortened simulated time).<br>
+    &ldquo;Time&rdquo; is the cache&rsquo;s own cycle counter; &ldquo;memory trips&rdquo; are blocks
+    read from plus written to main memory.<br>
+    Correctness: Verilator stress suite 7/7 with the switch on.
+  </footer>
+
+</div>

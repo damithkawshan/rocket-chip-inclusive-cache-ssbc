@@ -1,8 +1,8 @@
 # Destination-side blocker — why 98% of migrations abort, and what to do about it
 
 **Date:** 2026-08-24 · **Status:** analysis complete, decision recorded · **Owner:** thinker
-Companions: [phase-3.md](phase-3.md) (always-use SSOT) · [phase-2.md](phase-2.md) ·
-[bug-fix-log.md](bug-fix-log.md) · [diagram.md](diagram.md) (STEP 4→5 is the code path here)
+Companions: [phase-3.md](../tasks/phase-3.md) (⚠️ superseded — the current design is serve-in-place, [coder/003](../coder/003-serve-in-place)) · [phase-2.md](../tasks/phase-2.md) ·
+[bug-fix-log.md](../bugs/bug-fix-log.md) · [diagram.md](../design/diagram.md) (STEP 4→5 is the code path here)
 
 ---
 
@@ -51,7 +51,7 @@ offered → nothing is refused → the clear never fires → migration off forev
 landed in `sat`, which also drives HOT/source selection — that is why set 0 produced 19,251 fake HOT
 events and became a migration *source*. Keep them separate.
 
-**Why the previously-specified fix would not have worked:** [spec 1e](spec-sbc-phase3-prereqs.md) fires
+**Why the previously-specified fix would not have worked:** [spec 1e](../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md) fires
 the DSS `remove` port on **commit**. Rotation that only fires on success cannot rescue a set that never
 succeeds (14 commits vs 45,882 rejects). Easy trap to re-enter — do not.
 
@@ -102,7 +102,7 @@ The population fraction has never been measured directly — worth a counter if 
 | `def silentDrop: Boolean = !acquireBeforeRelease` | `rocket/HellaCache.scala:54` |
 | With `silentDrop`, the D$ **never enters `s_voluntary_release`** — no Release on clean eviction | `rocket/DCache.scala:810, 820` |
 | `require(silentDrop \|\| acquireBeforeRelease)` — **a tautology**, since `silentDrop == !acquireBeforeRelease`. There is one knob, not two; this require can never fire | `rocket/DCache.scala:106` |
-| **Our L2 already handles voluntary Release correctly** and clears the client bit on `toN` | [MSHR.scala:401-404](../design/craft/inclusivecache/src/MSHR.scala#L401-L404) |
+| **Our L2 already handles voluntary Release correctly** and clears the client bit on `toN` | [MSHR.scala:401-404](../../design/craft/inclusivecache/src/MSHR.scala#L401-L404) |
 
 The L1 drops clean lines and never tells L2. The `clients` bit records *"did L2 ever grant this to L1"*,
 not *"is L1 holding it now"*. Rocket has a switch for this and **it is off by default**.
@@ -140,7 +140,7 @@ does nothing for the I$ (which, per above, never held a client bit anyway).
 
 ### Option B (only for the residual): destination-side probe-then-migrate
 
-The same move `cbb3837` made on the source side, applied at [diagram.md](diagram.md) STEP 5: when the
+The same move `cbb3837` made on the source side, applied at [diagram.md](../design/diagram.md) STEP 5: when the
 best destination way is clean-but-flagged-held, **probe that line out of L1, then re-decide**. Nothing
 returned → the way is genuinely free → proceed. Data returned → it really was dirty → abort as today.
 

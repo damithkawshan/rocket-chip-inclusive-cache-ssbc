@@ -205,7 +205,7 @@ It is the obvious way to get exclusivity and it deadlocks — see §7.
 ## 5. Build order — four stages, gated
 
 **Before you touch anything:** tag `b6156d4` as a fallback, and append both surviving SCU corruption
-leads from `002/REPORT.md` §A5 into `ai-documents/bug-fix-log.md` with their file:line evidence. The
+leads from `002/REPORT.md` §A5 into `ai-documents/bugs/bug-fix-log.md` with their file:line evidence. The
 code they point at is deleted in Stage 4; do not let the evidence go with it.
 
 ### Stage 1 — safety nets, then the mechanical split (zero behaviour change)
@@ -1584,7 +1584,7 @@ argument as clean migration — which is why this is favourable where dirty-dest
 
 **The blocker, and it is a real one.**
 
-> `ai-documents/bug-fix-log.md` / memory `sbc-copy-without-commit`: **50-78% of completed copies never
+> `ai-documents/bugs/bug-fix-log.md` / memory `sbc-copy-without-commit`: **50-78% of completed copies never
 > commit** — the data is written into the destination way and then overwritten with no directory write.
 
 For a **clean** line that is waste, not damage: DRAM still holds the truth. For a **dirty** line it is
@@ -1697,3 +1697,26 @@ it — stop and report.
 firing decoded per 11.5, and a one-line verdict per 11.4. If every run is green **and**
 `dispRelease > 0`, the serve-in-place datapath is corruption-clean on a real workload for the first
 time — state that plainly.
+
+---
+
+## Amendment 12 — REPORT refresh only. No RTL. (2026-09-14)
+
+**Why:** the REPORT has fallen behind the work, and the project status tracker
+(`ai-documents/README.md`) cannot tell from it what is done. Nothing new to build.
+
+1. **Header and Verdict.** The header still says "Stage 1 landed; stopped at GATE 1" and the Verdict
+   says "held until GATE 1 returns". Replace both with the real state: GATE 4 green (`97c282b`,
+   2026-08-30), Amendment 11 real-workload clean (2026-08-31), GATE 5 not signed off.
+2. **Empty template sections.** "Stage 2 — dirty-capable displaced lines", "Stage 3" and "Stage 4" and
+   their GATE tables are still blank templates from the original plan. Amendment 1 re-ordered the
+   work, so mark each one "replaced by Stage 2a–2e / 9 above" or "not done".
+3. **Findings register.** P5 ("fix known, not applied") and P7 ("fix pending") are out of date — P5
+   closed by deletion in 2a, P7 fixed in Stage 9 (`bug-fix-log.md` already says so). **P4** (`inPlace`
+   survives a `repeat` reload) still says "not started" — say whether Stage 2e/9 handled it or it is open.
+4. **Dirty-source migration (§10.10).** Only clean victims migrate today (`MSHR.scala:1058`,
+   `migClean = !m.dirty && !m.displaced`). Confirm in one line that it was not built.
+5. **GATE 5 — do not work on it.** Write where it stopped (S5/S6/S11 harness; dual-core S3/S4 not run).
+   The thinker and Damith will decide whether to finish or close it.
+
+**Deliverable:** an updated REPORT. No source changes.

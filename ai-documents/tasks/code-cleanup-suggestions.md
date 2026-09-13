@@ -12,6 +12,17 @@ a misleading comment, or `sbcDebug`/param-gated scaffolding. Baseline (SBC-off) 
 
 ---
 
+## Re-check — 2026-09-14
+
+- **A1 ✅ done** — `MSHR.scala.original` is gone.
+- **A2 🔴 still owed** — the commented DUMP block is still in `SetBalanceUnit.scala`, now at ~L380.
+- **B 🔴 still owed** — the deleted injection path is still described at `Scheduler.scala:602` and
+  `SetBalanceUnit.scala:170`. A grep for `inject` / `migrateReq` finds only these two. The line
+  numbers in the sections below are old.
+- **C, D, E** — unchanged.
+- **Related, not in any batch:** `SetCopyUnit` is instantiated unguarded (`Scheduler.scala:90`), so the
+  SBC-off build carries dead copy logic. Tracked as T5 in [weekly-plan-2026-09-08.md](../weekly-report/2026-09-14.md).
+
 ## Audit result — 2026-08-18
 
 **Only Batch C shipped.** Batches A and B are still owed. Batches D and E were re-examined after the
@@ -30,7 +41,7 @@ has not been made yet.
 **Why B is the priority despite being cosmetic:** three comments actively describe hardware that no
 longer exists. That is precisely the failure mode that let the `s_wsafe` fix be deleted during the
 last cleanup pass — code whose stated reason is wrong or missing reads as cruft to the next person
-tidying up. See [bug-fix-log.md](bug-fix-log.md) → Bug B → "REGRESSED AND RESTORED".
+tidying up. See [bug-fix-log.md](../bugs/bug-fix-log.md) → Bug B → "REGRESSED AND RESTORED".
 
 ---
 
@@ -123,7 +134,7 @@ actual code and other nearby comments.
 
 > **The original call was wrong.** It reasoned "the bug these knobs reproduced is closed, so retire
 > them." But the bug is not entirely closed — its **residual `[born → gate]` sub-window is still on
-> the open list** ([bug-fix-log.md](bug-fix-log.md) → Open bugs), and D1 is the only instrument that
+> the open list** ([bug-fix-log.md](../bugs/bug-fix-log.md) → Open bugs), and D1 is the only instrument that
 > can widen it. Both knobs are compile-time Scala `if`s that elaborate **zero hardware** at their
 > defaults, so keeping them costs nothing but a branch of clutter.
 >
@@ -183,7 +194,7 @@ actual code and other nearby comments.
   All `sbcDebug`-gated → zero hardware.
 - **Rejected 2026-08-18, with evidence.** The low-`p` blocker — the single thing gating Phase 3 — was
   diagnosed **with no RTL change and no re-run**, purely by tallying an existing log. That was
-  possible only because [MSHR.scala:787](../design/craft/inclusivecache/src/MSHR.scala#L787) already
+  possible only because [MSHR.scala:787](../../design/craft/inclusivecache/src/MSHR.scala#L787) already
   prints `eligible` / `dirty` / `clients` / `displaced` on every `EVICT-ASSESS`. These printfs just
   paid for themselves outright.
 - Step 1 of the current plan **adds** one (`ProbeAck` vs `ProbeAckData`). The verbosity is the asset.

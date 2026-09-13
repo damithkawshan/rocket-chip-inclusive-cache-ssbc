@@ -1,9 +1,13 @@
 # SBC — Migration + Always-Use reuse flow (visual)
 
+> **⚠️ PART B IS SUPERSEDED (re-checked 2026-09-14).** Part B (swap the line home) was never built.
+> The design moved to repatriation and then to **serve-in-place**, which is built — see
+> [../coder/003-serve-in-place/diagram.md](../coder/003-serve-in-place/diagram.md). **Part A (migration) is still right.**
+
 **Part A (migration / spill): COMPLETE & verified** (forced torture config: 20000 iters, PASS, 0
 asserts, 10 migrations committed, data correct). **Part B (always-use reuse): PLANNED** — the current
-Phase-3 architecture, not built yet. Companion to [phase-3.md](phase-3.md) (the words, always-use SSOT),
-[phase-2.md](phase-2.md), and [bug-fix-log.md](bug-fix-log.md) (the bugs).
+Phase-3 architecture, not built yet. Companion to [phase-3.md](../tasks/phase-3.md) (the words, always-use SSOT),
+[phase-2.md](../tasks/phase-2.md), and [bug-fix-log.md](../bugs/bug-fix-log.md) (the bugs).
 
 **Colour key:** 🟢 green = built & verified · 🟡 yellow = fallback / rare · 🔵 blue = Phase-3 planned.
 
@@ -226,7 +230,7 @@ sequenceDiagram
   its partner and ignores the DSS.
 - **Part-A migration is unchanged and still verified** — the destination-collision and set-bricking
   bugs remain FIXED; `s_verify` is still OFF (re-enable rises in priority now that Part B *serves*
-  parked copies to the CPU). See [bug-fix-log.md](bug-fix-log.md).
+  parked copies to the CPU). See [bug-fix-log.md](../bugs/bug-fix-log.md).
 
 ---
 

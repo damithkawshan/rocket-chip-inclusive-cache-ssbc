@@ -32,12 +32,15 @@ coder/
 
 ## Index
 
+For every task across the project — phases, leftovers, hygiene — see the status tracker in
+[../README.md](../README.md). Keep both in step.
+
 | # | Task | Status |
 |---|---|---|
 | 000 | internalRead + DSS rotation (pre-convention; filed retroactively) | closed |
 | 001 | Phase 3 — close the reuse loop (pin → search → serve → teardown) | **closed** (2026-08-28) — commits 1-3 landed; commit 4 handed to 002 |
 | 002 | Fix the partner-set latch, then land commit 4 | **closed** (2026-08-28) — C1+C3 landed (`0f5a7ac`); both hypotheses killed by gates; instrumentation pass withdrawn |
-| 003 | Serve in place, and let displaced lines be first-class (dirty + client-held) | **in progress** — Stage 1 landed; shadow model caught the long-open corruption (P5) on its first run; Amendment 1 re-ordered to serve-in-place next |
+| 003 | Serve in place, and let displaced lines be first-class (dirty + client-held) | **correctness done, not formally closed** (re-checked 2026-09-14) — GATE 4 green 2026-08-30 (7/7, 0 asserts); real-workload clean 2026-08-31 (Amendment 11); P1/P2/P5/P6/P7 closed. **GATE 5 moved to the last phase** (decided 2026-09-14). REPORT refreshed (Amendment 12, 2026-09-14) |
 | 004 | Total L2 hit-rate counters (Accesses/Hits, always-on, independent of SBC) | **closed** (2026-09-02) — both counters landed; Amendment 1 removed `internalRead` probes from the denominator (42.77% was an artifact; corrected 58.49% vs 62.10%) |
 | 005 | Honest A-channel hit accounting + interval sampling of the SBC counters | **parked** — filed 2026-09-09, never started. De-prioritised by 006: the headline metric moved from hit rate to main-memory traffic, so 005 is no longer blocking a result. Re-open after 006 |
-| 006 | Migration on/off switch (`SBC_MigrateEnable`, default OFF) + main-memory traffic counters | **in progress** — Parts A/B/D/E landed, C partial; switch + traffic counters + `L2_Cycles` all built and tested. First one-bitstream board A/B run 2026-09-11: switch-off half scored 90.19% vs 90.24% for a separately built NoSbc bitstream, so the one-bitstream method holds. **Blocked on a fixed-WORK window** — the 600 s fixed-time window had the two halves doing different amounts of work, which would flip the sign of the headline metric |
+| 006 | Migration on/off switch (`SBC_MigrateEnable`, default OFF) + main-memory traffic counters | **half done** — Parts A/B/D/E landed, C partial; switch + traffic counters + `L2_Cycles` all built and tested. First one-bitstream board A/B run 2026-09-11: switch-off half scored 90.19% vs 90.24% for a separately built NoSbc bitstream, so the one-bitstream method holds. **Update 2026-09-14: fixed-work A/B done on the board** — 3 pairs finished (2026-09-11 → 09-13) with smaller `--sim-time-limit` values: SBC +32% to +51% cycles, 2.5× to 7× memory accesses ([fpga-ab-baseline-2026-09-11.md](../performance/fpga-ab-baseline-2026-09-11.md) §4). REPORT updated (Amendment 3). **Still owed — must do (Amendment 4):** tests + commit of the 64-bit counters, then a bitstream rebuild |

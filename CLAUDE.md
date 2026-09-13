@@ -10,21 +10,105 @@ It is vendored as a Chipyard generator at
 `chipyard/generators/rocket-chip-inclusive-cache` and depends on `rocket-chip` (see
 `wit-manifest.json`).
 
-The active development branch (`set_migration_refactored`) implements the **Set-Balancing Cache
-(SBC)** — a PhD research project. Phase 0 (observation) and Phase 1 (migration primitives) are
-**complete**; **Phase 2 (migrate-on-eviction) is active**. The design docs live in `ai-documents/`;
+This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
+live in `ai-documents/`.
+
+## Current status (updated 2026-09-14)
+
+**Start here: [ai-documents/README.md](ai-documents/README.md)** — every doc grouped and labelled
+(live / record / superseded), with the same status in point form. Keep the two in step.
+
+- **Main branch: `sbc-paper-aligned`** (tracks `origin/sbc-paper-aligned`) — treat it as the project's main line.
+- **Testing branch: `sbc-sampling`** — local only, cut from `sbc-paper-aligned` at `d8671cf`.
+  **Plan: merge `sbc-sampling` back into `sbc-paper-aligned`** (not done yet).
+- **Built and correct:** Phases 0–2, probe-then-migrate, and Phase 3R serve-in-place (GATE 4 green
+  2026-08-30, real-workload clean 2026-08-31). GATE 5 in coder/003 moved to the last phase (2026-09-14).
+- **Phase: measurement and optimization on the FPGA** (VCU118 + Linux). All build phases are done;
+  leftovers are in the status tracker in `ai-documents/README.md`.
+- **Result (fixed work, 2026-09-11 → 09-13):** SBC is **slower** on omnetpp — **+32% to +51% cycles**
+  and **2.5× to 7× more main-memory accesses** in 3 A/B pairs (256 KB and 64 KB L2). One run each, no
+  repeats yet. Data: [fpga-ab-baseline-2026-09-11.md](ai-documents/performance/fpga-ab-baseline-2026-09-11.md) §4.
+- **Active task:** [coder/006](ai-documents/coder/006-migrate-switch-and-memory-traffic) — results are
+  in the REPORT. **Must do: 64-bit SBC counters.** RTL, `sbc_read.c` and the docs are changed but not
+  committed; tests + commit are owed (TASK Amendment 4), then a bitstream rebuild.
+- **Before debugging or tuning anything, read "Build-phase leftovers" below.**
+- **Active plan:** [ai-documents/performance/workplan-parked-occupancy-2026-09-11.md](ai-documents/performance/workplan-parked-occupancy-2026-09-11.md).
+- **Parked:** coder/005 (honest hit counting).
+- The Phase 1 / Phase 2 sections further down are **history** — right for their phase, not the current status.
 
 ### Remote
 
 Both `origin` and `myfork` point to the same GitHub fork:
-`git@github.com:damithkawshan/rocket-chip-inclusive-cache-ssbc.git`. `set_migration_refactored` is
-pushed there and tracks `origin/set_migration_refactored` (pushed 2026-08-17; previously tracked a
-now-deleted `origin/rc-bump` with no remote counterpart — that stale tracking has been replaced).
-Other remote branches (`main`, `perf_counter`, `coherency_aware_replacement`,
-`TL_signal_analysis`) are separate lines of work, not ancestors of this branch.
+`git@github.com:damithkawshan/rocket-chip-inclusive-cache-ssbc.git`.
 
+- `sbc-paper-aligned` — **main branch** for SBC work; tracks `origin/sbc-paper-aligned`.
+- `sbc-sampling` — testing branch, local only, cut from `sbc-paper-aligned`; to be merged back into it.
+- `set_migration_refactored` — older SBC branch (to 2026-08-26), an ancestor of the active branch.
+- `main`, `perf_counter`, `coherency_aware_replacement`, `TL_signal_analysis` — separate lines of work.
 
-[ai-documents/phase-2.md](ai-documents/phase-2.md) is the current single source of truth.
+## ⚠️ Build-phase leftovers — check these first
+
+**Updated 2026-09-14.** The build phases are done, but they left unfinished or unproven pieces behind.
+**These are the first suspects when SBC shows a bug or loses speed.** Their status lives in the tracker
+(`ai-documents/README.md` §1d, same IDs). Who-goes-first rules: `ai-documents/guides/priority-orders.md`.
+
+### Unfinished or unproven pieces
+
+| # | Leftover | Why it matters | Where |
+|---|---|---|---|
+| L1 | The copy self-check (`s_verify`) was removed and never rebuilt | **Bug risk:** on the FPGA nothing checks that a migration copy landed correctly; only the sim shadow checker does. **Moved to the last phase** (2026-09-14) | `SetCopyUnit.scala` |
+| L2 | Last-resort eviction of parked lines was proven only in a forced test | **Bug risk:** untested on real traffic | `Directory.scala:221` |
+| L3 | One latent timing window (`[born→gate]`) | **Bug risk:** never reproduced; `sbcGateStallCycles` exists to hunt it | `bug-fix-log.md` |
+| L4 | Task 003 GATE 5 never signed off | **Bug risk:** 6 of its 12 cases never proved their event; the two-core cases never ran. **Moved to the last phase** (2026-09-14) | `coder/003` |
+| L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
+| L6 | No adaptive yield throttle | **Speed gap:** a set keeps migrating even when its parked lines are never reused | not built |
+| L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
+| L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful | `Directory.scala` computes `displacedOther`, but nothing reads it |
+
+### Known causes of the speed gap
+
+| # | Cause | Effect | Where |
+|---|---|---|---|
+| G1 | Parked lines are the last choice for eviction | They pile up (825 → 1,804 in one board session) and crowd out home lines | `Directory.scala:219-221` (workplan Problem A) |
+| G2 | When the random pick lands on a parked line, eviction takes the **first** home line | Eviction stops being random on ~44% of evictions | `Directory.scala:220` (workplan Problem B) |
+| G3 | A parked line is found only by a second look, and only from its own home set | ~13× fewer hits per slot than a home line | design limit |
+| G4 | One migration at a time | Throughput ceiling at millions of migrations | `Scheduler.scala:271-282` |
+| G5 | ~70–80% of migration attempts abort on the board | Wasted probes and directory reads | stale `clients` bit; `acquireBeforeRelease = true` never tried |
+| G6 | Random (LFSR) replacement, not LRU as in the paper; small 8 KB L1 | The paper's "a moved line gets a head start" became "a moved line is never evicted" | `Directory.scala` |
+| G7 | SBU logic is 60 levels deep; its per-set tables are flip-flops | Timing and area cost | `SetBalanceUnit.scala`, `DSS.scala` |
+| G8 | A secondary hit counts as a **miss** for heat — the home lookup misses, and the partner search is not counted (found 2026-09-14) | A set served well from its partner still looks hot, so it keeps migrating | `Directory.scala:313-315` |
+
+### Bug patterns that keep coming back (details: `ai-documents/bugs/bug-fix-log.md`)
+
+- **Reading a register in the same cycle it is written** gives the old value (002 C1, P6, P7). Check
+  every new signal gated on `io.directory.valid`.
+- **A guard added in one place but missed in its twin** (`707445c`, P5, P6). Diff against the pre-SBC
+  file before instrumenting.
+- **"Harmless by reading"** is only harmless while nearby code masks it. Re-check it when that code is deleted (P6).
+- **Comments that describe deleted hardware** led to the `s_wsafe` fix being deleted.
+- **Simulating without `+dramsim`** gives a false shadow-checker alarm (cycle 27141).
+- **32-bit counters wrap** on long board runs — fixed by the 64-bit change (task 006).
+
+### Can be removed in the optimization phase (area)
+
+Debug and measurement hardware we need now but may cut for the final area number. **Remove only after
+the last measurement, and report area both with and without it.**
+
+| Item | Costs FPGA area today? | Note |
+|---|---|---|
+| 12 SBC event counters + parked count (64-bit after task 006) | yes, ~830 FF | measurement only |
+| Memory-traffic counters + `L2_Cycles` (`enablePerfCounters`) | yes, in **both** builds | measurement only; the flag already exists |
+| `L2_Accesses` / `L2_Hits` (task 004) | yes, in both builds | always on; no flag yet |
+| Read-back registers: `SBC_SetSel`/`SetSat`, `ColdestSet`/`Level`, `AtAssoc`, `Status` | yes — `SetSat` and `AtAssoc` are 256-way selects | debug view only |
+| `SBC_BalanceSet` register + per-set `armed[]` | `armed[]` is already removed by synthesis when `sbcAutoMigrate = true`; the register write still exists | remove together with `sbcAutoMigrate` |
+| `SetCopyUnit` in the SBC-off build | yes, 240 LUT / 529 FF (measured) | guard it (tracker H1) — makes the baseline fair |
+| `sbcShadow` shadow checkers | no — FPGA configs set it `false` (would be ~123k FF) | sim only; keep for Verilator |
+| `sbcDebug` printfs | no — FPGA configs set it `false` | sim only |
+| `sbcForceDstSet`, `sbcGateStallCycles` | no hardware at defaults | test knobs; keep until L2 and L3 are closed |
+| `SBC_MigrateEnable` switch | 1 FF | **keep** — needed for the one-bitstream A/B |
+
+Not a removal but the biggest area lever: move the per-set tables (`sat`, `at`, `parkCount`, ~5,120 FF)
+from flip-flops to LUTRAM (`ai-documents/daily-summary/2026-09-08.md`).
 
 ## Build, simulate, test
 
@@ -91,7 +175,10 @@ Configs that wire in this cache live in
 `WithInclusiveCache(nWays=…, capacityKB=…)`. FPGA/VCU118 bitstreams are built under `chipyard/fpga/`.
 
 There are no Scala unit tests. Verification is: (a) elaboration/build succeeding, (b) Chisel
-`assert`s firing in sim, and (c) the bare-metal microbenchmark at `sw/misshit_generator.c`.
+`assert`s and the sim-only shadow checkers staying quiet, and (c) bare-metal tests in `sw/` —
+mainly `migration_stress_test.c` (7 cases) and `sbc_migrate_switch_test.c` (the 006 switch).
+Performance is measured on the FPGA, not in Verilator — see
+[ai-documents/guides/fpga-linux-run.md](ai-documents/guides/fpga-linux-run.md).
 
 ## Architecture
 
@@ -127,9 +214,23 @@ knobs and the SBC enable flags:
 | `migrationClearThreshold` | `2` | T\_lo: hysteresis lower bound |
 | `dssEntries` | `8` | Candidate slots in the Destination Set Selector |
 | `sbcDebug` | `false` | Sim-only SBC debug printfs (no hardware elaborated when off) |
+| `sbcAutoMigrate` | `false` | Migrate without a SW arm (ignores `armed[]`, so `SBC_BalanceSet` does nothing) |
+| `sbcForceDstSet` | `-1` | Debug: force every migration to this set (the only way to fill a set with parked lines) |
+| `sbcGateStallCycles` | `0` | Debug: widen the dst-fence window to reproduce the open `[born→gate]` bug |
+| `enablePerfCounters` | `true` | Outer-port memory-traffic counters (task 006). **Not** gated by `enableSetBalancing` |
+| `sbcShadow` | `true` in `WithInclusiveCache` | Sim-only shadow checkers that catch data corruption; forced off when SBC is off |
 
-When `enableSetBalancing = false`, `SetBalanceUnit` is not instantiated and only the tie-down
-defaults are elaborated — the RTL is bit-exact with upstream.
+Several of these exist only for debugging or measurement and may be removed in the optimization phase —
+see "Can be removed in the optimization phase" under Build-phase leftovers.
+
+⚠️ **Thresholds:** `WithInclusiveCache` defaults `satCounterBits`, `migrationThreshold` and
+`migrationClearThreshold` to `-1`, which auto-derives the paper's rule: T\_hi = 2·nWays−1, T\_lo = nWays
+— `Configs.scala:64-66, 128-130`. The
+`3 / 4 / 2` values above are coverage values only; never use them for performance numbers.
+
+When `enableSetBalancing = false`, `SetBalanceUnit` is not instantiated. The build is still **not**
+bit-exact with upstream: `SetCopyUnit` is instantiated unguarded (`Scheduler.scala:90`), and the
+always-on counters and MMIO registers (tasks 004/006) exist in every build.
 
 ### SBC instrumentation (this fork's additions)
 
@@ -144,14 +245,12 @@ This prevents a line that has been migrated out from being returned as a false h
 
 #### `SetBalanceUnit` ([SetBalanceUnit.scala](design/craft/inclusivecache/src/SetBalanceUnit.scala))
 
-Phase 0 module. Owns:
+Advisory and bookkeeping only — it has no data or SRAM ports. Owns:
 - Per-set saturation counters (`+1` on miss, `−1` on hit, clamped to `[0, satMax]`)
-- Association Table (AT) — tracks source↔destination set pairings; inert in Phase 0
-- Read-only `SBCStats` output plumbed to the MMIO regmap
+- Association Table (AT) — source↔destination set pairing, written on migration commit (strict 1:1)
+- The DSS, the SBC event counters, the live parked-line count, and the read-only `SBCStats` for the MMIO regmap
 
 Receives directory events via the `DirectoryTap` from `directory.io.tap` (wired in Scheduler).
-Migration is always `false` in Phase 0; `assert(!io.commit.valid)` guards against accidental
-commit calls.
 
 #### `DSS` ([DSS.scala](design/craft/inclusivecache/src/DSS.scala))
 
@@ -161,7 +260,7 @@ current coldest candidate set via `coldestSet / coldestLevel`.
 
 #### `SetCopyUnit` ([SetCopyUnit.scala](design/craft/inclusivecache/src/SetCopyUnit.scala))
 
-Phase 1 data mover (implemented but **not yet connected** to BankedStore/SourceD). FSM:
+Migration data mover, wired in [Scheduler.scala:90](design/craft/inclusivecache/src/Scheduler.scala#L90). FSM:
 `IDLE → READ → WRITE → DONE`. Reads a full block beat-by-beat from `(srcSet, srcWay)` into an
 internal buffer, then writes to `(dstSet, dstWay)`. Exposes hazard IO (`copy_req/copy_safe` for
 RaW, `copy_wreq/copy_wsafe` for WaR) for SourceD interlocking.
@@ -194,13 +293,22 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x310` | `SBC_ColdestSet` | R — DSS coldest candidate set |
 | `0x318` | `SBC_ColdestLevel` | R — saturation of coldest candidate |
 | `0x320` | `SBC_Status` | R — bit0=SBC enabled, bit1=coldestValid, bit2=AT[sel].valid |
-| `0x328` | `SBC_Migrations` | R — migrations committed |
-| `0x330` | `SBC_SecHits` | R — secondary hits (0 in Phase 0) |
-| `0x338` | `SBC_SecMiss` | R — secondary misses (0 in Phase 0) |
+| `0x328` | `SBC_Migrations` | R, 64 — migrations committed |
+| `0x330` | `SBC_SecHits` | R, 64 — secondary hits (parked line found and served from the partner set) |
+| `0x338` | `SBC_SecMiss` | R, 64 — secondary misses (partner set searched, line not there) |
 | `0x340` | `SBC_BalanceSet` | W — arm migration for the written source-set index |
-| `0x348` | `SBC_Attempted` | R — migrations attempted (setup reached) |
-| `0x350` | `SBC_Aborted` | R — migrations aborted (ineligible src/dst) |
-| `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state |
+| `0x348` | `SBC_Attempted` | R, 64 — migrations attempted (setup reached) |
+| `0x350` | `SBC_Aborted` | R, 64 — migrations aborted (ineligible src/dst) |
+| `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state. **Unsafe while lines are parked** (wipes the AT); `sbc_read --reset-all` refuses |
+| `0x360` | `SBC_SecPerm` | R, 64 — secondary hits that had to acquire permission (subset of SecHits) |
+| `0x368` | `SBC_SecWrite` | R, 64 — serves where the requester needed T |
+| `0x370` | `SBC_SecProbe` | R, 64 — serves that probed a client off the parked line first |
+| `0x378` | `SBC_DispRelease` | R, 64 — dirty parked lines written back |
+| `0x380` | `SBC_DispDrop` | R, 64 — clean parked lines released with no data |
+| `0x388` | `SBC_SecC` | R, 64 — serves raised by a C-channel Release |
+| `0x390` | `SBC_HomeBranch` | R, 64 — requests that found their own HOME line in BRANCH |
+| `0x398` | `SBC_AtAssoc` | R — AT[sel]: bits[7:0]=assocSet, bit8=sd |
+| `0x3A0` | `SBC_Parked` | R, 64 — live parked (displaced) lines currently resident |
 | `0x3A8` | `L2_Accesses` | R — total primary directory lookups (hit+miss), free-running, always active (SBC on or off), **not** reset by SBC_Reset |
 | `0x3B0` | `L2_Hits` | R — total primary hits, free-running (misses = accesses − hits) |
 | `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits` + the five 006 counters below). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |
@@ -240,7 +348,7 @@ things did **not** ship and moved forward:
   **⚠️ Invariant gap confirmed (2026-06-26):** "removed by construction" covers only the migration
   *source*. An independent demand to the migration **destination** set *is* a real second requester —
   this re-surfaced as the destination-collision illegal-inner-D bug below (now **FIXED**). See
-  [ai-documents/bug-fix-log.md](ai-documents/bug-fix-log.md).
+  [ai-documents/bugs/bug-fix-log.md](ai-documents/bugs/bug-fix-log.md).
 
 ### SBC Phase 2 — COMPLETE & SIGNED OFF (migrate-on-eviction)
 
@@ -249,7 +357,7 @@ with all seven corner cases enabled — **7/7 PASS, 0 asserts, 6 migrations comm
 spread across sets 0/3/7.** This retired the last owed Phase-2 item. Two defects were caught during
 sign-off review: the Bug-B `s_wsafe` fix had been silently deleted by an uncommitted debug cleanup
 (restored in `a2975d6`), and six of the seven test cases in `sw/migration_stress_test.c` had been left
-commented out, so every prior "PASS" was 1/7 coverage. Both recorded in `ai-documents/bug-fix-log.md`.
+commented out, so every prior "PASS" was 1/7 coverage. Both recorded in `ai-documents/bugs/bug-fix-log.md`.
 
 **✅ Phase-3 gate CLEARED (2026-08-21). Stress test 7/7 PASS, exit 0, 0 asserts — first fully green
 SBC run.** Three commits closed it; day log: `ai-documents/daily-summary/2026-08-21.md`.
@@ -264,7 +372,7 @@ SBC run.** Three commits closed it; day log: `ai-documents/daily-summary/2026-08
 `SBC_Migrations` had been undercounting ~2× because the commit pulse was being lost.
 
 **Destination side — analysed and fixed twice on 2026-08-24. SSOT:
-[ai-documents/destination-side-blocker.md](ai-documents/destination-side-blocker.md).**
+[ai-documents/performance/destination-side-blocker.md](ai-documents/performance/destination-side-blocker.md).**
 
 | fix | what it did |
 |---|---|
@@ -296,7 +404,7 @@ eviction) and before the 003 corruption fix. The last verified differential is *
 ### ⚠️ MEASURED 2026-08-25 (STALE): SBC is data-safe but **+42% cycles / 9.29x DRAM traffic**
 
 First differential run (SBC on vs `NoSbcConfig`) on a real third-party benchmark — `matmult` from
-bringup-bench, N=32. SSOT: [ai-documents/matmult-differential-2026-08-25.md](ai-documents/matmult-differential-2026-08-25.md).
+bringup-bench, N=32. SSOT: [ai-documents/performance/matmult-differential-2026-08-25.md](ai-documents/performance/matmult-differential-2026-08-25.md).
 
 | | SBC on | SBC off | |
 |---|---:|---:|---|
@@ -332,7 +440,7 @@ every consumer of the touched signal **before** instrumenting. The `707445c` bug
 added in one place and missed in a sibling — a 30-second diff, found only after several 10-minute
 instrumented sim cycles chasing a wrong theory.
 
-**Authoritative status: [ai-documents/phase-2.md](ai-documents/phase-2.md).** Migration moves inside the
+**Phase-2 record: [ai-documents/tasks/phase-2.md](ai-documents/tasks/phase-2.md)** (history — the current status is at the top of this file). Migration moves inside the
 demand-miss eviction: on a miss to a hot set, the demand MSHR migrates its clean, client-free victim to a
 cold set instead of releasing it, then refills the freed way. The Phase-1 standalone injection path
 (SBU `migrateReq`, SinkX inject, `migInFlight` throttle) is **already gone from the RTL** (verified by
@@ -348,31 +456,29 @@ grep 2026-08-18) — but three **comments** still describe it, which is cleanup 
 | Q3 — copy-port priority starvation | `BankedStore.scala` | ✅ TESTED → REJECTED | Stress test: 0 arbitration stalls in 442 migration attempts. Low priority = bounded delay, not deadlock. **Do NOT reorder BankedStore priorities** (the order is load-bearing for protocol deadlock-freedom). |
 | Dst-set collision — illegal inner-D | `Scheduler.scala` | ✅ FIXED (2026-06-30) | Fixed by the **allocation-side fence**: `allocReady = alloc && !dstSetConflict` gates *both* the alloc dir-read (`:297`) and the MSHR allocate (`:337`), not just acceptance. Forced repro `dst_collision_repro` PASSES (8 migrations, data correct). ✅ **Stock-config regression PASSED 2026-08-17** — 0 asserts, no illegal inner-D, destinations spread 0/3/7. Fully closed. |
 | Displaced-line accumulation | `Directory.scala` / `MSHR.scala` | ✅ FIXED & VERIFIED (2026-06-30) | Was: displaced ways excluded from hits AND all victim tiers → immortal → `Directory.scala:156` assert → bricked. Fix = **last-resort displaced-reclaim victim tier** in `Directory.scala` (`displacedOH = ~nonDisplacedOH`, lowest priority) + `MSHR.scala` **silent-drops** a displaced victim (no Release — wrong address; assert narrowed to release-only). Baseline-exact (no flag). **Forced torture config: 20000 iters PASS, 0 asserts, 10 migrations committed, reclaim fired 3×.** ⚠️ Caveat: a 7/8-displaced set recycles its one native way until Phase-3 spreading. Stock-config run PASSED 2026-08-17, but the **reclaim tier did not fire** there (6 migrations over 3 sets never fills a set) — so reclaim remains verified under forcing only. |
-| Phase 3R — **serve in place** | `MSHR.scala` / `Scheduler.scala` / `Directory.scala` | ✅ **GATE 4 GREEN (2026-08-30) — SSOT is `ai-documents/coder/003-serve-in-place/`** | A parked/displaced line can now be served to the CPU directly from its partner set — no repatriation copy — including as a write target, with the correct probe-back and dirty-writeback path. `migration_stress_test` 7/7 PASS, 0 asserts, both BankedStore/directory shadow models clean. First time a migrated line has served real data without corruption. Performance payoff (`p`, real-workload gain) is still unmeasured — this config's `secHits` is low/flat because the stress test has no reuse to capture, not because the mechanism is broken. |
+| Phase 3R — **serve in place** | `MSHR.scala` / `Scheduler.scala` / `Directory.scala` | ✅ **GATE 4 GREEN (2026-08-30) — SSOT is `ai-documents/coder/003-serve-in-place/`** | A parked/displaced line can now be served to the CPU directly from its partner set — no repatriation copy — including as a write target, with the correct probe-back and dirty-writeback path. `migration_stress_test` 7/7 PASS, 0 asserts, both BankedStore/directory shadow models clean. First time a migrated line has served real data without corruption. Performance is now measured on the FPGA and is currently a **loss** — see Current status at the top. |
 
-Full arbitration/priority map: `ai-documents/priority-orders.md`. Consolidated bug record (fixed +
-open), by phase: `ai-documents/bug-fix-log.md`. Phase-2 single source of truth (absorbs the former
-`phase-2-dst-collision.md` + `phase-2-2b-handoff.md`): `ai-documents/phase-2.md`. Read that, then
-`ai-documents/SBC_integration_plan.md` and `ai-documents/phase-1.md`, before touching the migrate
-datapath.
+Consolidated bug record (fixed + open), by phase: `ai-documents/bugs/bug-fix-log.md`. Phase-2 record
+(absorbs the former `phase-2-dst-collision.md` + `phase-2-2b-handoff.md`): `ai-documents/tasks/phase-2.md`.
+Read that, then `ai-documents/design/SBC_integration_plan.md` and `ai-documents/tasks/phase-1.md`, before touching
+the migrate datapath. Every arbitration / priority order is in `ai-documents/guides/priority-orders.md`
+(written 2026-09-14).
 
-### Code cleanup status (audited 2026-08-18) — only 2 items left, and D/E are closed as "do not do"
+### Code cleanup status (re-checked 2026-09-14) — 2 items left, D/E closed as "do not do". Low priority: do it during the optimization phase
 
-Checklist: `ai-documents/code-cleanup-suggestions.md`. Ordered plan:
-`ai-documents/July18AfterBreakWorkplan.md` §6.
+Checklist: `ai-documents/tasks/code-cleanup-suggestions.md`. Ordered plan:
+`ai-documents/tasks/July18AfterBreakWorkplan.md` §6.
 
 | Batch | What | Verdict |
 |---|---|---|
-| A | Delete `MSHR.scala.original`; delete commented DUMP block (`SetBalanceUnit.scala` ~L204) | 🔴 **DO** — still owed, zero risk |
-| B | Fix 3 comments describing the deleted injection path (`Scheduler.scala` ~L433, `SetBalanceUnit.scala` L8 + ~L111) | 🔴 **DO FIRST** — still owed, zero risk |
+| A | ~~Delete `MSHR.scala.original`~~ (✅ gone); delete commented DUMP block (`SetBalanceUnit.scala` ~L380) | 🔴 **DO** — DUMP block still owed, zero risk |
+| B | Fix comments describing the deleted injection path — still at `Scheduler.scala:602` and `SetBalanceUnit.scala:170` | 🔴 **DO FIRST** — still owed, zero risk |
 | C | Excise dead `s_verify` + stall classifier | ✅ DONE in `a2975d6` |
 | D | Retire `sbcGateStallCycles` / `sbcForceDstSet` | ⛔ **KEEP BOTH** — verdict reversed |
 | E | Guard consolidation / dead `assocQuery` IO / printf trim | ⛔ **DO NONE OF IT** |
 
 - **Batch B is the priority even though it is only comments.** Comments that describe deleted hardware
-  are exactly what let the `s_wsafe` fix be deleted in the last cleanup pass. Delete
-  `MSHR.scala.original` rather than leaving it gitignored — an invisible stale copy of the most-edited
-  file in the repo is the worst of both options.
+  are exactly what let the `s_wsafe` fix be deleted in the last cleanup pass.
 - **`sbcGateStallCycles` stays:** it widens the `[born → gate]` window, which is the one **still-open**
   bug in `bug-fix-log.md`. **`sbcForceDstSet` stays:** it is the only way to fill a set with displaced
   lines, hence the only way to exercise the displaced-reclaim tier (whose evidence is synthetic).

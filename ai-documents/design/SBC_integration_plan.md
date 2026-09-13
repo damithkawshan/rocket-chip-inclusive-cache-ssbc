@@ -1,5 +1,10 @@
 # Set-Balancing Cache (SBC) Integration into the Inclusive L2
 
+> 📘 **History (checked 2026-09-14).** The original plan. What happened to its phases: **0, 1, 2 built.
+> 3** ("swap-home") was replaced by serve-in-place ([coder/003](../coder/003-serve-in-place/)). **4**:
+> eviction of displaced lines was built in task 003; **teardown and the yield throttle were never
+> built**. Live status: [README.md](../README.md).
+
 > Companion: [SetBalanceUnit_design.md](SetBalanceUnit_design.md) holds the SBU IO sketch, the
 > three sub-FSMs (migration / secondary-search / displaced-evict) as state diagrams, and the
 > risk→mechanism→assert table. This file is the **plan**; that one is the **detailed design**.
@@ -40,13 +45,13 @@ the line on-chip. **Migration is a bet that only pays off on reuse** — so it m
 8. **No in-RTL bit-exactness gating.** Add new state unconditionally; keep the RTL simple/readable.
    Verify baseline parity by **diffing a separate pristine branch** (`sbc-baseline`), not by eliding
    hardware when the flag is off. `enableSetBalancing` gates migration *behavior* for A/B runs.
-   *(Update [CLAUDE.md](../../../CLAUDE.md) to relax the "bit-exact baseline" mandate accordingly.)*
+   *(Update [CLAUDE.md](../../CLAUDE.md) to relax the "bit-exact baseline" mandate accordingly.)*
 
 ## The core constraint (why this is invasive)
 
 This cache hard-wires *physical set = address set*. The directory and BankedStore are indexed by the
 address set; `expandAddress(tag, set, offset)`
-([Parameters.scala:226](src/Parameters.scala#L226)) rebuilds the real address from `(tag, physSet)`;
+([Parameters.scala:226](../../design/craft/inclusivecache/src/Parameters.scala#L226)) rebuilds the real address from `(tag, physSet)`;
 client-release matching and probes key off the address set. A line in a *foreign* set breaks address
 reconstruction and coherence matching unless it is self-describing.
 
@@ -63,8 +68,8 @@ client-free, the only sites that must use `homeSet` are: migrate-out, swap-home,
 1. **Saturation counter** — `Vec(sets, UInt(satCounterBits.W))`, fed by a **directory-result tap**
    added to the Scheduler (hit → dec, miss → inc). Update is a **pluggable `satDelta(set)`** so the
    future probe-integration just adds weighted terms:
-   - `probeTap` ← `schedule.b` fire ([MSHR.scala:286](src/MSHR.scala#L286)) — probe pressure (weight 0 in v1),
-   - `relTap` ← `sinkC.io.resp` ([Scheduler.scala:79](src/Scheduler.scala#L79)) — ProbeAck\* vs Release\*, dirty (weight 0 in v1).
+   - `probeTap` ← `schedule.b` fire ([MSHR.scala:286](../../design/craft/inclusivecache/src/MSHR.scala#L286)) — probe pressure (weight 0 in v1),
+   - `relTap` ← `sinkC.io.resp` ([Scheduler.scala:79](../../design/craft/inclusivecache/src/Scheduler.scala#L79)) — ProbeAck\* vs Release\*, dirty (weight 0 in v1).
 2. **Association Table (AT)** — `Vec(sets, {valid, sd /*0=src,1=dst*/, assocSet})`. `AT[s].valid &&
    !AT[s].sd` is the secondary-search-enable bit for `s`. Plus a **per-association displaced count**
    for safe teardown. Registers to start; SRAM fallback if set count makes flop area hurt.
@@ -73,7 +78,7 @@ client-free, the only sites that must use `homeSet` are: migrate-out, swap-home,
 4. **Reuse/yield counters** (per source set or small bank-global) — migrations issued vs secondary
    hits returned, driving the adaptive throttle (Phase 4).
 5. **Directory entry bit** — add `displaced: Bool` to `DirectoryEntry`
-   ([Directory.scala:29](src/Directory.scala#L29)), **unconditionally** (decision 8). Grows
+   ([Directory.scala:29](../../design/craft/inclusivecache/src/Directory.scala#L29)), **unconditionally** (decision 8). Grows
    `codeBits` by 1 (assert stays `<= 256`).
 
 **SBU interface** (see companion doc for the bundle): taps in; `migrateQuery(s)→{migrate,destSet}`;
@@ -81,10 +86,10 @@ client-free, the only sites that must use `homeSet` are: migrate-out, swap-home,
 
 ## Control / MMIO (reuse existing flush-control wiring pattern)
 
-Add to [Control.scala](src/Control.scala): `sbcEnable`, `migrationThreshold` (T_hi),
+Add to [Control.scala](../../design/craft/inclusivecache/src/Control.scala): `sbcEnable`, `migrationThreshold` (T_hi),
 `migrationClearThreshold` (T_lo, hysteresis); `dssEntries` is compile-time. Read-only counters:
 migrations, secondary hits, secondary misses, active associations, **per-source yield** (for the
-throttle). Plumb through [InclusiveCache.scala](src/InclusiveCache.scala) like the existing control
+throttle). Plumb through [InclusiveCache.scala](../../design/craft/inclusivecache/src/InclusiveCache.scala) like the existing control
 block.
 
 ## Datapath changes (phased — sequenced to retire risk before adding value)
@@ -92,30 +97,30 @@ block.
 > **Progress (2026-06-30):** Phase 0 ✅, Phase 1 ✅ CLOSED, **Phase 2 ✅ COMPLETE & verified**. Two
 > mechanisms were added beyond this original plan during Phase 2: the **allocation-side destination
 > fence** (dst-collision fix) and the **last-resort displaced-reclaim victim tier** (anti-brick fix).
-> Authoritative current state: [phase-2.md](phase-2.md) + [bug-fix-log.md](bug-fix-log.md).
+> Authoritative current state: [phase-2.md](../tasks/phase-2.md) + [bug-fix-log.md](../bugs/bug-fix-log.md).
 
 ### Phase 0 — Scaffolding & observation (no migration)  ✅ DONE
 - Add params (decision 8) + `displaced` to `DirectoryEntry`, default `false` at every write site
-  (the `invalid` wire [MSHR.scala:268](src/MSHR.scala#L268), `final_meta_writeback`, refill).
+  (the `invalid` wire [MSHR.scala:268](../../design/craft/inclusivecache/src/MSHR.scala#L268), `final_meta_writeback`, refill).
 - Add the directory-result tap; build `SetBalanceUnit` (sat counter + AT + DSS), migration **off**.
 - Exit: builds; counters track and DSS min is sane in sim; record the baseline-branch diff.
 
 ### Phase 1 — Two-set ownership + copy engine (mechanism, no policy)  ✅ CLOSED
 Build and prove the dangerous primitives **before** any policy can fire them.
-- Extend `MSHRStatus` ([MSHR.scala:42](src/MSHR.scala#L42)) with `migrating`/`dstSet`; fold `dstSet`
-  into the Scheduler set-conflict logic (`setMatches`/`mshr_stall`, [Scheduler.scala:89](src/Scheduler.scala#L89)/[:172](src/Scheduler.scala#L172))
+- Extend `MSHRStatus` ([MSHR.scala:42](../../design/craft/inclusivecache/src/MSHR.scala#L42)) with `migrating`/`dstSet`; fold `dstSet`
+  into the Scheduler set-conflict logic (`setMatches`/`mshr_stall`, [Scheduler.scala:89](../../design/craft/inclusivecache/src/Scheduler.scala#L89)/[:172](../../design/craft/inclusivecache/src/Scheduler.scala#L172))
   so a migration reserves **both** sets. Enforce **one migration per bank** (token).
 - Add a BankedStore set-to-set copy path with a **copy↔refill hazard guard** (refill write to
   `(s,vWay)` waits on copy-read-done), modeled on `evict_safe`/`grant_safe`
-  ([SourceD.scala:375](src/SourceD.scala#L375)).
+  ([SourceD.scala:375](../../design/craft/inclusivecache/src/SourceD.scala#L375)).
 - Exit: directed test forces a copy, asserts identical data + correct serialization of demand
   traffic to `s` and `d`; assert ≤1 owner per set.
 
 ### Phase 2 — Migrate-on-eviction (write-path policy, reuse-gated)  ✅ COMPLETE & VERIFIED
-- At [MSHR.scala:606](src/MSHR.scala#L606), gate `s_migrate` when **all** hold:
+- At [MSHR.scala:606](../../design/craft/inclusivecache/src/MSHR.scala#L606), gate `s_migrate` when **all** hold:
   `enableSetBalancing && sat[s] > T_hi && !meta.dirty && !meta.clients.orR && !meta.displaced &&
   DSS has a dest && token free`. Migrating ⇒ **no** `s_release`.
-- `s_migrate`/`w_migrate*` mirror `s_release` ([MSHR.scala:184-212](src/MSHR.scala#L184)). Two
+- `s_migrate`/`w_migrate*` mirror `s_release` ([MSHR.scala:184-212](../../design/craft/inclusivecache/src/MSHR.scala#L184)). Two
   directory writes (install displaced in `d`; refill rewrites `s`) sequenced so **no
   coherence-visible intermediate state**; nesting blocked on both sets across the window. If `dWay`
   occupied → real release first (nest displaced-evict if that victim is itself displaced).
@@ -124,7 +129,7 @@ Build and prove the dangerous primitives **before** any policy can fire them.
 
 ### Phase 3 — Secondary search + swap-home (read path) — correctness-critical
 - On A-miss in `s` with `assocResp.activeSource`: second directory read of `d = AT[s].assocSet`
-  (serialize at the read arbiter [Scheduler.scala:265](src/Scheduler.scala#L265), strictly below
+  (serialize at the read arbiter [Scheduler.scala:265](../../design/craft/inclusivecache/src/Scheduler.scala#L265), strictly below
   demand reads). Hit detection is **displaced-aware** (native reads require `!displaced`).
 - **Secondary hit ⇒ swap-home (migrate-back):** evict s-victim **V** (V cannot migrate, token busy
   ⇒ swap V into L's just-freed slot in `d` if clean+client-free, else drop/release V); copy
@@ -147,15 +152,15 @@ Build and prove the dangerous primitives **before** any policy can fire them.
 
 | File | Change |
 |------|--------|
-| [Parameters.scala](src/Parameters.scala) | `enableSetBalancing`, `satCounterBits`, T_hi/T_lo, DSS params |
-| [Directory.scala](src/Directory.scala) | `displaced` bit; displaced-aware hit; second read |
+| [Parameters.scala](../../design/craft/inclusivecache/src/Parameters.scala) | `enableSetBalancing`, `satCounterBits`, T_hi/T_lo, DSS params |
+| [Directory.scala](../../design/craft/inclusivecache/src/Directory.scala) | `displaced` bit; displaced-aware hit; second read |
 | `SetBalanceUnit.scala` (new) | fresh sat counter + AT + DSS + yield; queries/commit; **no data ports** |
 | `DSS.scala` (new) | fixed-size coldest-set selector |
-| [MSHR.scala](src/MSHR.scala) | `migrating`/`dstSet`; `s_migrate`/`w_migrate*`; swap-home; homeSet on displaced evict |
-| [Scheduler.scala](src/Scheduler.scala) | dir/probe/release taps; two-set reservation + token; second-read sequencing; SBU wiring |
-| [BankedStore.scala](src/BankedStore.scala) | set-to-set copy path + copy↔refill hazard guard |
-| [Control.scala](src/Control.scala) / [InclusiveCache.scala](src/InclusiveCache.scala) | MMIO regs + plumbing |
-| [CLAUDE.md](../../../CLAUDE.md) | relax bit-exact mandate; record baseline-branch + simplicity-first |
+| [MSHR.scala](../../design/craft/inclusivecache/src/MSHR.scala) | `migrating`/`dstSet`; `s_migrate`/`w_migrate*`; swap-home; homeSet on displaced evict |
+| [Scheduler.scala](../../design/craft/inclusivecache/src/Scheduler.scala) | dir/probe/release taps; two-set reservation + token; second-read sequencing; SBU wiring |
+| [BankedStore.scala](../../design/craft/inclusivecache/src/BankedStore.scala) | set-to-set copy path + copy↔refill hazard guard |
+| [Control.scala](../../design/craft/inclusivecache/src/Control.scala) / [InclusiveCache.scala](../../design/craft/inclusivecache/src/InclusiveCache.scala) | MMIO regs + plumbing |
+| [CLAUDE.md](../../CLAUDE.md) | relax bit-exact mandate; record baseline-branch + simplicity-first |
 
 ## Verification
 
@@ -181,7 +186,7 @@ Build and prove the dangerous primitives **before** any policy can fire them.
 - **False hit on displaced line / duplicate-stale copy (🔴):** displaced-aware directory hit +
   mandatory secondary-search-before-memory. Assert the native/displaced XOR invariant.
 - **Nested txn mid-migration (🔴):** atomic directory transition under nesting blocked on both sets.
-- **`repeat`/reload staleness:** clear the fast-path ([Scheduler.scala:235](src/Scheduler.scala#L235)) on migrate commit.
+- **`repeat`/reload staleness:** clear the fast-path ([Scheduler.scala:235](../../design/craft/inclusivecache/src/Scheduler.scala#L235)) on migrate commit.
 - **Streaming pollution / clean-vs-dead:** adaptive yield throttle (Phase 4) — the reason clean-only
   and the throttle are required *together*.
 - **Swap-home thrash:** bringing L home re-loads the hot set; bounded by random victim + hysteresis.

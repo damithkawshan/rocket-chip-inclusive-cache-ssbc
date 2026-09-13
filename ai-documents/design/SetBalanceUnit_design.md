@@ -1,5 +1,10 @@
 # SetBalanceUnit — design note (SCRATCH / working doc — fold into SBC plan or delete)
 
+> 📘 **History (checked 2026-09-14).** Early design note. **Still true:** the SetBalanceUnit only gives
+> advice and keeps books — it has no data or SRAM ports. **Out of date:** the "secondary search +
+> swap-home" flow. The built design serves the line where it sits — see
+> [task 003](../coder/003-serve-in-place/).
+
 ## Decomposition decision: SBU is **advisory + bookkeeping only**, it owns **no data/SRAM ports**
 
 The dangerous datapath (BankedStore copy, Directory writes, the `s_migrate`/`w_migrate*` flow, two-set
@@ -35,8 +40,8 @@ Scheduler**:
 | Tap | Source in Scheduler | Carries | Use |
 |-----|--------------------|---------|-----|
 | `dirTap` | `directory.io.result` | set, way, hit, state, dirty, clients, displaced | base sat: hit→dec / miss→inc; AT/DSS sampling |
-| `probeTap` | `schedule.b` fire (`io.schedule.bits.b`, [MSHR.scala:286](src/MSHR.scala#L286)) | set, param (toN/toB), clients | probe pressure (future sat term) |
-| `relTap` | `sinkC.io.resp` ([Scheduler.scala:79](src/Scheduler.scala#L79)) | set, opcode (ProbeAck\* vs Release\*), param, dirty | distinguish probe-driven invalidation vs voluntary release; dirty writeback |
+| `probeTap` | `schedule.b` fire (`io.schedule.bits.b`, [MSHR.scala:286](../../design/craft/inclusivecache/src/MSHR.scala#L286)) | set, param (toN/toB), clients | probe pressure (future sat term) |
+| `relTap` | `sinkC.io.resp` ([Scheduler.scala:79](../../design/craft/inclusivecache/src/Scheduler.scala#L79)) | set, opcode (ProbeAck\* vs Release\*), param, dirty | distinguish probe-driven invalidation vs voluntary release; dirty writeback |
 
 Under **principle 4** (displaced lines are clean + client-free), every probe/release event always
 pertains to a **native** line in **its own address set**, so per-set attribution is unambiguous — the
@@ -215,7 +220,7 @@ registers — chosen over more scoreboard bits for readability):
 1. **A2 guard** — the refill write into `(s,vWay)` is gated until the FSM passes its `*_COPY` state.
 2. **A1/D guard** — both `s` and `dSet` block nesting (`blockB`/`blockC`) until `*_COMMIT`.
 
-**Routing** (decided at the A-miss / eviction point, [MSHR.scala:606](src/MSHR.scala#L606)):
+**Routing** (decided at the A-miss / eviction point, [MSHR.scala:606](../../design/craft/inclusivecache/src/MSHR.scala#L606)):
 `assocResp.activeSource` → **secondary search** · else clean+client-free victim & `sat[s]≥T_hi` &
 token free → **migration** · else victim `displaced=1` → **displaced eviction** · else **normal**.
 
@@ -285,7 +290,7 @@ stateDiagram-v2
 
 | state | action |
 |---|---|
-| `DE_HOMESET` | `assocResp.assocSet` → `homeSet`; `addr = expandAddress(tag, homeSet, 0)` ([Parameters.scala:226](src/Parameters.scala#L226)) — **the only edit to the real-writeback address path** |
+| `DE_HOMESET` | `assocResp.assocSet` → `homeSet`; `addr = expandAddress(tag, homeSet, 0)` ([Parameters.scala:226](../../design/craft/inclusivecache/src/Parameters.scala#L226)) — **the only edit to the real-writeback address path** |
 | `DE_RELEASE`| clean ⇒ `Release` (no data) at `addr`; *(future dirty-relax ⇒ `ReleaseData`)*; wait `ReleaseAck` |
 | `DE_INVAL` | invalidate `(d,wDisp)` |
 | `DE_COMMIT` | `commit{DISP_EVICT, homeSet, d}`; `assocCount--`; recycle AT entry only when count hits 0 |

@@ -1,15 +1,16 @@
 # Spec — Phase 3 prerequisite: pinned 1:1 association (+ shared building blocks for the swap)
 
-**Author:** thinker/eval. **Implementer:** coder. **Status:** ready to implement.
-**Working order, traps and how to run:** [coder/000-internalread/TASK.md](coder/000-internalread/TASK.md) — read that first.
+**Author:** thinker/eval. **Implementer:** coder. **Status:** BUILT — landed through coder tasks 000
+and 001 (re-checked 2026-09-14). Kept as a record; the swap parts were later replaced by serve-in-place (coder/003).
+**Working order, traps and how to run:** [coder/000-internalread/TASK.md](../coder/000-internalread/TASK.md) — read that first.
 **Supersedes:** the detect-only "secondary-search detector" spec (deleted) — Phase 3 pivoted to the
-always-use design, see [phase-3.md](phase-3.md).
+always-use design, see [phase-3.md](../tasks/phase-3.md).
 
 **Revision 2026-08-24 — Part 1 rewritten.** The original Part 1 (2026-07-05) was written before late
 destination binding (`f40fbd4`) and probe-then-migrate (`cbb3837`). It assumed the destination is
 selected per source set. It no longer is. Applying it unchanged would have sent most migrations to
 another set's partner. Full picture with diagrams:
-[diagram-stale-destination-query.md](diagram-stale-destination-query.md). The old text is preserved
+`diagram-stale-destination-query.md` (deleted in `d8671cf` — still in git history). The old text is preserved
 in the appendix at the bottom.
 
 **Revision 2026-07-05:** the "flush-sees-partner" fix was **dropped** — this platform never supports /
@@ -42,15 +43,15 @@ Everything is gated by `enableSetBalancing` (baseline bit-exact when off).
 Read this before touching the code; the rest of Part 1 will not make sense otherwise.
 
 - **Phase 2 asks:** "give me any cold set." The answer is a pure DSS output. It never reads the
-  query set — see [SetBalanceUnit.scala:130-133](../design/craft/inclusivecache/src/SetBalanceUnit.scala#L130-L133).
+  query set — see [SetBalanceUnit.scala:130-133](../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L130-L133).
 - **Phase 3 asks:** "give me set S's partner." The answer depends entirely on who asked.
 - **Today the question is asked on behalf of the request at the head of the queue**
-  ([Scheduler.scala:487-488](../design/craft/inclusivecache/src/Scheduler.scala#L487-L488)), and the
+  ([Scheduler.scala:487-488](../../design/craft/inclusivecache/src/Scheduler.scala#L487-L488)), and the
   answer is broadcast on a single offer wire to every MSHR
-  ([Scheduler.scala:297-298](../design/craft/inclusivecache/src/Scheduler.scala#L297-L298)).
+  ([Scheduler.scala:297-298](../../design/craft/inclusivecache/src/Scheduler.scala#L297-L298)).
 - Those were the same set in Phase 2, because a migration decided at allocate.
   **Probe-then-migrate pulled them apart** — the deferred path decides many cycles later
-  ([MSHR.scala:699-700](../design/craft/inclusivecache/src/MSHR.scala#L699-L700)), by which time the
+  ([MSHR.scala:699-700](../../design/craft/inclusivecache/src/MSHR.scala#L699-L700)), by which time the
   head has moved on. That deferred path is now the majority path.
 - Harmless today (the answer ignores the asker). **Fatal the moment Part 1b lands**, because then the
   answer starts reading the asker.
@@ -103,8 +104,8 @@ sbu.io.migrateQuery.bits  := request.bits.set
 #### The destination query — new port, keyed to whoever is deciding
 
 **Note an existing duplication first:** `anyMigrating`
-([:218-219](../design/craft/inclusivecache/src/Scheduler.scala#L218-L219)) and `migBusy`
-([:293-294](../design/craft/inclusivecache/src/Scheduler.scala#L293-L294)) are already the *same*
+([:218-219](../../design/craft/inclusivecache/src/Scheduler.scala#L218-L219)) and `migBusy`
+([:293-294](../../design/craft/inclusivecache/src/Scheduler.scala#L293-L294)) are already the *same*
 per-MSHR expression. Define it once at the `anyMigrating` site:
 
 ```scala
@@ -119,7 +120,7 @@ Delete the local `migBusy` at `:293` and use `migrantOH` in the offer fanout at 
 expression, so this is a rename, not a behaviour change.
 
 Then, **after `directoryFanout` is defined** (it is declared at
-[:398](../design/craft/inclusivecache/src/Scheduler.scala#L398), so place this near the `migrateQuery`
+[:398](../../design/craft/inclusivecache/src/Scheduler.scala#L398), so place this near the `migrateQuery`
 drive at `:487`):
 
 ```scala
@@ -134,8 +135,8 @@ sbu.io.destQuery.bits  := Mux1H(decidingOH, mshrs.map(_.io.status.bits.set))
 
 | Deciding path | Selected by | Why it is the right MSHR |
 |---|---|---|
-| Deferred (post-probe) | `migrantOH` | `migDeferred` sets `status.migPending` ([MSHR.scala:270](../design/craft/inclusivecache/src/MSHR.scala#L270)), so the MSHR is already flagged when it decides |
-| Fast (victim already client-free) | `directoryFanout` | The decision fires on `io.directory.valid` ([MSHR.scala:719](../design/craft/inclusivecache/src/MSHR.scala#L719)), which *is* `directoryFanout(i)` |
+| Deferred (post-probe) | `migrantOH` | `migDeferred` sets `status.migPending` ([MSHR.scala:270](../../design/craft/inclusivecache/src/MSHR.scala#L270)), so the MSHR is already flagged when it decides |
+| Fast (victim already client-free) | `directoryFanout` | The decision fires on `io.directory.valid` ([MSHR.scala:719](../../design/craft/inclusivecache/src/MSHR.scala#L719)), which *is* `directoryFanout(i)` |
 
 The priority order is safe: while a migration is in flight, a second MSHR's offer is already masked
 away per-MSHR at `:297`, so it cannot claim anyway.
@@ -150,15 +151,15 @@ assert ((claimOH & ~decidingOH) === 0.U,
 ```
 
 **Loop freedom:** every term here is a register or register-derived — `status.*` are registers,
-`directoryFanout` is `RegNext` ([:398](../design/craft/inclusivecache/src/Scheduler.scala#L398)).
+`directoryFanout` is `RegNext` ([:398](../../design/craft/inclusivecache/src/Scheduler.scala#L398)).
 Do not fold `io.allocate.bits.*` or `request.ready` into it. See the note at
-[Scheduler.scala:505](../design/craft/inclusivecache/src/Scheduler.scala#L505).
+[Scheduler.scala:505](../../design/craft/inclusivecache/src/Scheduler.scala#L505).
 
 #### `preferEvictable` gets simpler
 
 With the split, `migrate` already answers "could this set migrate somewhere" for the allocating set
 (see 1b), so the 2.5b `&& dstOfferValid` term at
-[:352](../design/craft/inclusivecache/src/Scheduler.scala#L352) becomes wrong — it now refers to some
+[:352](../../design/craft/inclusivecache/src/Scheduler.scala#L352) becomes wrong — it now refers to some
 *other* MSHR's destination. Drop it:
 
 ```scala
@@ -178,10 +179,10 @@ The original 1a claimed: *"no migration in flight → `request.bits.set` is safe
 that can start one is the one allocating right now."* That is false for the **fast path**:
 
 - `status.dstValid` comes from `migrating`, a `RegInit`
-  ([MSHR.scala:194](../design/craft/inclusivecache/src/MSHR.scala#L194)) — it is only high from the
+  ([MSHR.scala:194](../../design/craft/inclusivecache/src/MSHR.scala#L194)) — it is only high from the
   cycle *after* the decision
 - `status.migPending` is `migDeferred`, the deferred path only
-  ([MSHR.scala:270](../design/craft/inclusivecache/src/MSHR.scala#L270))
+  ([MSHR.scala:270](../../design/craft/inclusivecache/src/MSHR.scala#L270))
 - so in the exact cycle a fast-path MSHR takes its destination, `migrantOH` is **all zero**
 - and the fast path decides on `io.directory.valid`, which is 2 cycles after allocate — by then the
   queue head has moved on
@@ -233,7 +234,7 @@ Three things to be deliberate about:
 Scheduler already ANDs the two independently (`adviceMigrate` and `dstOfferValid`).
 
 A full partner is *not* handled here — it falls out downstream at the existing dst-full abort
-([MSHR.scala:888-893](../design/craft/inclusivecache/src/MSHR.scala#L888-L893)), which is the
+([MSHR.scala:888-893](../../design/craft/inclusivecache/src/MSHR.scala#L888-L893)), which is the
 decline-and-skip fallback and is already counted.
 
 #### AT read ports — count them, and the Fmax escape hatch
@@ -252,7 +253,7 @@ Turn it into a sim-only assert and drop the mux. Do this only if measurements de
 ### 1c. `Scheduler.scala` — "partner is busy": no new code
 
 The existing filter at
-[:509-511](../design/craft/inclusivecache/src/Scheduler.scala#L509-L511) already does the right job:
+[:509-511](../../design/craft/inclusivecache/src/Scheduler.scala#L509-L511) already does the right job:
 
 ```scala
 val dstOfferOwned = mshrs.map { m => m.io.status.valid && m.io.status.bits.set === coldDst }.reduce(_ || _)
@@ -263,7 +264,7 @@ With 1b, `coldDst` now carries the **pinned partner** instead of the DSS pick, s
 becomes "is my partner busy right now?" — and if it is, the offer drops and the MSHR falls back to a
 plain eviction. That is decline-and-skip, reusing a proven path. Leave it alone.
 
-⚠️ `sbcForceDstSet` overrides `coldDst` ([:493-494](../design/craft/inclusivecache/src/Scheduler.scala#L493-L494)).
+⚠️ `sbcForceDstSet` overrides `coldDst` ([:493-494](../../design/craft/inclusivecache/src/Scheduler.scala#L493-L494)).
 Under pinning that forcibly breaks the 1:1 invariant, so the asserts in 1d **must** be suppressed when
 `sbcForceDstSet >= 0` (Scala `if`, zero hardware). Keep the knob — it is the only way to exercise the
 displaced-reclaim tier.
@@ -273,7 +274,7 @@ displaced-reclaim tier.
 ### 1d. `SetBalanceUnit.scala` — commit asserts
 
 The AT writes stay as-is (they become idempotent re-writes for a pinned source). Add asserts inside
-the existing commit block at [:144](../design/craft/inclusivecache/src/SetBalanceUnit.scala#L144) so
+the existing commit block at [:144](../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L144) so
 any scatter bug dies loudly in sim:
 
 ```scala
@@ -294,13 +295,13 @@ if (params.micro.sbcForceDstSet < 0) {   // the force knob deliberately breaks 1
 Without this, a paired set can sit at "coldest" forever and block every new pairing (`dssOK` stays
 false — the guard is correct but progress stalls).
 
-**(a)** New remove port in the IO bundle at [:22-26](../design/craft/inclusivecache/src/DSS.scala#L22-L26):
+**(a)** New remove port in the IO bundle at [:22-26](../../design/craft/inclusivecache/src/DSS.scala#L22-L26):
 
 ```scala
 val remove = Flipped(Valid(UInt(params.setBits.W)))
 ```
 
-and after the `io.clear` block at [:65-67](../design/craft/inclusivecache/src/DSS.scala#L65-L67), so a
+and after the `io.clear` block at [:65-67](../../design/craft/inclusivecache/src/DSS.scala#L65-L67), so a
 same-cycle update loses to the removal:
 
 ```scala
@@ -345,14 +346,14 @@ The swap will ask the directory: *"does set D hold a DISPLACED way with tag T?"*
 **`Directory.scala`:**
 
 **(a)** `DirectoryRead` — new request flag, next to `preferEvictable` at
-[:64](../design/craft/inclusivecache/src/Directory.scala#L64):
+[:64](../../design/craft/inclusivecache/src/Directory.scala#L64):
 
 ```scala
 // SBC Phase 3: match a DISPLACED way by tag — the mirror of the normal hit, which excludes them.
 val secondarySearch = Bool()
 ```
 
-**(b)** `DirectoryResult` at [:67-71](../design/craft/inclusivecache/src/Directory.scala#L67-L71) — new outputs:
+**(b)** `DirectoryResult` at [:67-71](../../design/craft/inclusivecache/src/Directory.scala#L67-L71) — new outputs:
 
 ```scala
 val secondaryHit = Bool()                 // a displaced way matched `tag`
@@ -360,14 +361,14 @@ val secondaryWay = UInt(params.wayBits.W) // its way
 ```
 
 **(c)** Pipeline the flag to result alignment, next to `preferInvalid` at
-[:131](../design/craft/inclusivecache/src/Directory.scala#L131):
+[:131](../../design/craft/inclusivecache/src/Directory.scala#L131):
 
 ```scala
 val secondarySearch = params.dirReg(RegEnable(io.read.bits.secondarySearch, ren), ren1)
 ```
 
 **(d)** Compute the displaced match next to `hits` at
-[:172-175](../design/craft/inclusivecache/src/Directory.scala#L172-L175). Note `displaced` is
+[:172-175](../../design/craft/inclusivecache/src/Directory.scala#L172-L175). Note `displaced` is
 **included** here and INVALID excluded — the exact mirror of `hits`:
 
 ```scala
@@ -390,7 +391,7 @@ below before implementing.
 val internalRead = Bool()
 ```
 
-Pipeline it beside `secondarySearch` at [:131](../design/craft/inclusivecache/src/Directory.scala#L131),
+Pipeline it beside `secondarySearch` at [:131](../../design/craft/inclusivecache/src/Directory.scala#L131),
 then use it in two places:
 
 ```scala
@@ -408,7 +409,7 @@ io.tap.valid := ren2 && !internalRead
 ```
 
 Gating `tagMatch` rather than only `hits` matters: `tagMatch` has three consumers — `io.result.bits.hit`,
-the metadata mux, and the way mux ([:178-180](../design/craft/inclusivecache/src/Directory.scala#L178-L180)).
+the metadata mux, and the way mux ([:178-180](../../design/craft/inclusivecache/src/Directory.scala#L178-L180)).
 Leaving it live would let a same-cycle directory write with tag 0 make the probe report a hit and
 return the bypassed way, which is the exact defect the flag exists to kill.
 *(Found by the coder during review, 2026-08-24.)*
@@ -429,11 +430,11 @@ Found while checking whether the dread lane was ready to reuse. Both effects are
 today, on every migration destination probe.
 
 **Defect 1 — the destination probe heats the destination set.**
-`io.tap.valid := ren2` at [Directory.scala:184](../design/craft/inclusivecache/src/Directory.scala#L184)
+`io.tap.valid := ren2` at [Directory.scala:184](../../design/craft/inclusivecache/src/Directory.scala#L184)
 is ungated, and `directory.io.read.valid` includes `mshr_uses_directory_for_dread`
-([Scheduler.scala:334](../design/craft/inclusivecache/src/Scheduler.scala#L334)). So every destination
+([Scheduler.scala:334](../../design/craft/inclusivecache/src/Scheduler.scala#L334)). So every destination
 probe taps the SBU with `set = destination`, `hit = false` — and
-[SetBalanceUnit.scala:102](../design/craft/inclusivecache/src/SetBalanceUnit.scala#L102) counts a miss
+[SetBalanceUnit.scala:102](../../design/craft/inclusivecache/src/SetBalanceUnit.scala#L102) counts a miss
 as **+1 saturation**.
 
 The loop is self-defeating: pick the coldest set → probe it → make it look hotter → it leaves the DSS
@@ -442,10 +443,10 @@ cold list and `destOk` starts failing. One phantom miss per migration that reach
 before and after.
 
 **Defect 2 — a tag-0 collision overrides the victim choice.**
-The probe sends `tag := 0.U` ([MSHR.scala:332](../design/craft/inclusivecache/src/MSHR.scala#L332)),
+The probe sends `tag := 0.U` ([MSHR.scala:332](../../design/craft/inclusivecache/src/MSHR.scala#L332)),
 and the directory tag-matches every read. If the destination set happens to hold a valid,
 non-displaced way with tag 0, `hit` goes high and
-[Directory.scala:178-180](../design/craft/inclusivecache/src/Directory.scala#L178-L180) returns the
+[Directory.scala:178-180](../../design/craft/inclusivecache/src/Directory.scala#L178-L180) returns the
 **hit way and its metadata** instead of the `preferInvalid` / `preferEvictable` victim.
 
 The MSHR still safety-checks what comes back (`dstFree || dstEvictable`), so there is **no correctness
@@ -458,8 +459,8 @@ than a better tag constant.
 ---
 
 **(f)** `Scheduler.scala` — route the dread victim hints from the MSHR's bundle so a secondary search
-can turn them off, at [:339](../design/craft/inclusivecache/src/Scheduler.scala#L339) and
-[:352](../design/craft/inclusivecache/src/Scheduler.scala#L352):
+can turn them off, at [:339](../../design/craft/inclusivecache/src/Scheduler.scala#L339) and
+[:352](../../design/craft/inclusivecache/src/Scheduler.scala#L352):
 
 ```scala
 // was: directory.io.read.bits.preferInvalid := mshr_uses_directory_for_dread
@@ -480,7 +481,7 @@ ways is exactly the question being asked. The migrate probe keeps sending 0, whi
 because `internalRead` suppresses the comparison.
 
 Set the new fields on the MSHR's existing dread bundle at
-[:331-334](../design/craft/inclusivecache/src/MSHR.scala#L331-L334):
+[:331-334](../../design/craft/inclusivecache/src/MSHR.scala#L331-L334):
 
 ```scala
 io.schedule.bits.dread.bits.internalRead    := true.B    // both dread uses are internal
@@ -504,7 +505,7 @@ fetch, which is always correct. Latching once at allocate is therefore fine, and
 mux per MSHR near the dir-read path.
 
 **`Scheduler.scala`:** drive the currently tied-off AT query
-([:523-524](../design/craft/inclusivecache/src/Scheduler.scala#L523-L524)) with the allocating
+([:523-524](../../design/craft/inclusivecache/src/Scheduler.scala#L523-L524)) with the allocating
 request's set, and fan the answer to all MSHRs exactly like `migAdvice`:
 
 ```scala
@@ -523,8 +524,8 @@ the latch stays stable, holding the pair that was set when this MSHR was fresh-a
 *(Found by the coder during review, 2026-08-24.)*
 
 **`MSHR.scala`:** new IO next to `migAdvice` at
-[:120](../design/craft/inclusivecache/src/MSHR.scala#L120), and a latch next to the `migAdviceValidReg`
-latch at [:860](../design/craft/inclusivecache/src/MSHR.scala#L860):
+[:120](../../design/craft/inclusivecache/src/MSHR.scala#L120), and a latch next to the `migAdviceValidReg`
+latch at [:860](../../design/craft/inclusivecache/src/MSHR.scala#L860):
 
 ```scala
 val pairInfo = Flipped(Valid(UInt(params.setBits.W)))
@@ -544,7 +545,7 @@ Consumed by the 1f assert now; the swap spec consumes it properly later.
 
 ## Platform constraint to document (same change)
 
-Add to `CLAUDE.md` (MMIO section) and keep in [phase-3.md](phase-3.md):
+Add to `CLAUDE.md` (MMIO section) and keep in [phase-3.md](../tasks/phase-3.md):
 
 > **MMIO flush (`Flush64`/`Flush32`) is unsupported on this platform and must not be used while
 > `enableSetBalancing` is on.** A flush only searches the home set; a displaced copy in the partner
@@ -573,7 +574,7 @@ Add to `CLAUDE.md` (MMIO section) and keep in [phase-3.md](phase-3.md):
    real contributor, this is where the yield moves.
 6. **Decline rate** — count `ABORT-DST` and the no-offer `MIG-DECLINE`s. Pinning can only raise them
    (a pinned source cannot re-pick). If the rate jumps sharply, stop and report before building the
-   swap — the escape hatches are the optimization table in [phase-3.md](phase-3.md).
+   swap — the escape hatches are the optimization table in [phase-3.md](../tasks/phase-3.md).
 7. **Building blocks** — compile-only is acceptable for `secondarySearch`/`pairInfo` (no consumer
    yet); functional verification comes with the swap spec.
 8. **Stock config** — one `migration_stress_test` run on `VerilatorRocket8KL116KL2Config` must stay

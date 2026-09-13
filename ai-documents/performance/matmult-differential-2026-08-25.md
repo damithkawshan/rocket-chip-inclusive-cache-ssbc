@@ -1,8 +1,13 @@
 # matmult differential run — SBC is data-safe, and 42% slower
 
+> ⚠️ **Out of date (checked 2026-09-14) — do not quote these numbers.** They were measured before
+> `522c540` and the 003 corruption fix; the last simulation re-check was +0.10% cycles / 1.00× memory
+> traffic. For speed, use the board results in
+> [fpga-ab-baseline-2026-09-11.md](fpga-ab-baseline-2026-09-11.md) §4. Kept for the method.
+
 **Date:** 2026-08-25 · **Status:** result, signed off by measurement
-Companions: [phase-3.md](phase-3.md) · [destination-side-blocker.md](destination-side-blocker.md) ·
-[phase-2.md](phase-2.md)
+Companions: [phase-3.md](../tasks/phase-3.md) · [destination-side-blocker.md](destination-side-blocker.md) ·
+[phase-2.md](../tasks/phase-2.md)
 
 **First end-to-end SBC-on vs SBC-off comparison on a real third-party benchmark.**
 Two findings, and they point in opposite directions.
@@ -65,7 +70,7 @@ Identical in every respect except SBC: `nWays=8, capacityKB=4, subBankingFactor=
 1. **Statically** — every migration entry point is gated: `adviceMigrate` / `dstOfferValid` are
    `WireInit(false.B)` and assigned only inside `if (enableSetBalancing)` (Scheduler `:191/:197/:470`);
    `migFastWantW` and `migFastDecline` are gated by `enableSetBalancing.B`
-   ([MSHR.scala:727/739](../design/craft/inclusivecache/src/MSHR.scala#L727)); `migDeferred` is only set
+   ([MSHR.scala:727/739](../../design/craft/inclusivecache/src/MSHR.scala#L727)); `migDeferred` is only set
    under the gate at `:1011`. With no migration, `s_dread` never fires, so `internalRead` is permanently
    false and the Directory behaves exactly as upstream. SBU/DSS are not instantiated.
 2. **Empirically** — **0 `MIG-*` lines of any kind** in the control output.
@@ -82,7 +87,7 @@ spike-dasm'd trace (stderr). Grepping the wrong one reports "no result line" on 
 ## Why it got slower — leading hypothesis, not yet proven
 
 **What is measured:** 9.29x the DRAM fetches for identical work. `OUTER-A` fires on
-`io.schedule.bits.a.valid && io.schedule.ready` ([MSHR.scala:496](../design/craft/inclusivecache/src/MSHR.scala#L496))
+`io.schedule.bits.a.valid && io.schedule.ready` ([MSHR.scala:496](../../design/craft/inclusivecache/src/MSHR.scala#L496))
 — a true count of outer fetches, gated only by `sbcDebug`, so the condition is identical in both
 configs. Same binary (md5 `faefe80f…`), both `*** PASSED ***`.
 
@@ -109,7 +114,7 @@ Supporting evidence from this run:
 
 **Stronger than the reclaim ratio: in Phase 2 a displaced line can NEVER serve a hit.** Hit detection
 excludes them by construction (`w.tag === tag && w.state =/= INVALID && !w.displaced`,
-[Directory.scala:~146](../design/craft/inclusivecache/src/Directory.scala)). So it is not that 97% of
+[Directory.scala:~146](../../design/craft/inclusivecache/src/Directory.scala)). So it is not that 97% of
 migrations were wasted — **100% of them were, by design**, until Phase 3 adds the secondary search.
 Each migration costs an internal copy plus a way that cannot hit, and returns nothing.
 

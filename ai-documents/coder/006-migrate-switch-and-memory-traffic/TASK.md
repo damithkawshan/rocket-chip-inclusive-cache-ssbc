@@ -44,7 +44,7 @@ software tool.
 | **A** | `SBC_MigrateEnable` — one R/W bit, default OFF, gates only the start of a *new* migration | `Control.scala`, `Scheduler.scala`, `SetBalanceUnit.scala:185` | 1 register + 1 AND term |
 | **B** | Four main-memory traffic counters, in their own module, behind their own flag | new `PerfCounters.scala`, `Scheduler.scala`, `Control.scala` | 4 × 64-bit counters |
 | **C** | `sbc_read` learns the switch, the reset ordering, and cycle/instret/wall timing | `sw/sbc_read.c`, `sw/sbc_mmio.h` | none |
-| **D** | Docs: `CLAUDE.md` register table, `ai-documents/devmem-register-map.md` | — | none |
+| **D** | Docs: `CLAUDE.md` register table, `ai-documents/guides/devmem-register-map.md` | — | none |
 
 **Out of scope, explicitly:** any change to `L2_Accesses` / `L2_Hits` (they stay exactly as they
 are); the A-channel hit decomposition and interval sampler of task 005; any change to victim
@@ -340,7 +340,7 @@ amount of memory pressure will flush them out. Reboot is the clean slate.
 | `0x3E0` | `L2_MemRelClean` | R | 64 | outer `Release` without data — no bytes |
 
 Current map ends at `0x3B8`. Update, **in the same commit**: `sw/sbc_mmio.h`, the register table in
-`CLAUDE.md`, and `ai-documents/devmem-register-map.md`.
+`CLAUDE.md`, and `ai-documents/guides/devmem-register-map.md`.
 
 ---
 
@@ -371,7 +371,7 @@ int main(void) {
 EOF
 riscv64-unknown-linux-gnu-gcc -O2 -static -o cyc /tmp/cyc.c
 riscv64-unknown-linux-gnu-strip cyc
-# copy `cyc` to the board the same way sbc_read is copied (ai-documents/fpga-linux-run.md), then:
+# copy `cyc` to the board the same way sbc_read is copied (ai-documents/guides/fpga-linux-run.md), then:
 ./cyc
 ```
 
@@ -420,7 +420,7 @@ being deleted.** It stays open and un-started.
 The reason: 005 exists to make the *hit rate* honest. Since the headline metric is now memory
 traffic, 005 is no longer blocking any result — it became a nice-to-have for a secondary number.
 Re-open it after 006 lands and after the re-run in
-`ai-documents/workplan-parked-occupancy-2026-09-11.md` produces a memory-traffic differential.
+`ai-documents/performance/workplan-parked-occupancy-2026-09-11.md` produces a memory-traffic differential.
 
 One thing 005 established that **still binds here**: `L2_Accesses` / `L2_Hits` must not change.
 Everything in 006 is additive.
@@ -713,3 +713,65 @@ before committing the methodology.
 |---|---|---|
 | G11 | `rdtime` timebase calibration | DT value and the measured 10-second delta agree; both recorded |
 | G12 | One-bitstream A/B, order (1) then (2) above | result matches the reboot-separated repeat within run-to-run noise |
+
+---
+
+## 13. Amendment 3 (2026-09-14) — the results are in. Close out the REPORT and the 64-bit change
+
+**Why:** the fixed-work A/B this task exists for has run on the board. Three pairs finished between
+2026-09-11 and 09-13; the thinker recovered them from `chipyard/scripts/logs/`. The REPORT does not
+have them, its Verdict still says Parts B–E are untouched, and a 32→64-bit counter change sits
+uncommitted in the working tree. **No new RTL features in this amendment.**
+
+### 13.1 Put the results in REPORT → "Numbers"
+
+- Source: `ai-documents/performance/fpga-ab-baseline-2026-09-11.md` §4. All values there are copied from the logs.
+- Use **pair B** as the main table (256 KB, the real geometry, the longest run). Add A and C as extra rows.
+- Quote reads and writes separately.
+- `instret` row: "not available on this board" (Amendment 1).
+- Say plainly: one run per pair; no reboot-separated repeat yet, so G12 is still open.
+
+### 13.2 Refresh the top of the REPORT
+
+- **Status + Summary:** Parts A, B, D, E landed; C partial (child timing not done).
+- **Verdict:** replace the three G3 options with what happened — the one-bitstream method is accepted
+  (board: 90.19% vs 90.24%), the fixed-work A/B is done, and SBC is slower.
+- **Gates table:** mark what now has board evidence (G7, G9). G6, G8, G11, G12 stay open unless you run them.
+
+### 13.3 Finish the 64-bit SBC counter change
+
+`Control.scala` and `SetBalanceUnit.scala` (uncommitted) widen the SBC event counters from 32 to 64
+bits. The software and docs still assume 32. Land it as **one commit** with:
+
+| file | change |
+|---|---|
+| `sw/sbc_read.c` | `REGS[]` width 32 → 64 for every widened counter (`0x328`…`0x3A0`; not `0x398`). Drop the `& 0xffffffffULL` on `parked` (~L173). Fix the 32-bit comments (~L36-37, L60-62, L216-217) |
+| `ai-documents/guides/devmem-register-map.md` | `devmem … 32` → `64` on the same rows |
+| `ai-documents/guides/fpga-linux-run.md` | ~L92: "32-bit-wrap-safe DELTA" → "DELTA" |
+| `CLAUDE.md` register table | mark those rows `64`, like `0x3C8`–`0x3E8` |
+
+Before committing:
+- `migration_stress_test` 7/7, 0 asserts; `sbc_migrate_switch_test` 4/4 (via `make run-binary`).
+- Elaborate both the SBC and NoSbc configs.
+- Report the FF/LUT cost of the wider counters if a synth report exists; if not, say so.
+
+### 13.4 Still open — report on them, do not start them
+
+- `sbc_read` child timing (`rdtime` / `getrusage`) — optional now that `L2_Cycles` works.
+- `L2_Cycles` clock domain — is the L2 clock the CPU clock on the VCU118 config? Answer by reading the config; no run needed.
+
+---
+
+## 14. Amendment 4 (2026-09-14) — 64-bit is a must. Finish it before anything else
+
+Damith needs 64-bit counters for every long board run. §13.3 now **blocks** closing this task.
+
+1. **One more 32-bit leftover:** `sw/run_sbc_window.sh:9` still says the SBC counters "WRAP silently". Fix the comment.
+2. **Before the commit:** `migration_stress_test` 7/7 and `sbc_migrate_switch_test` 4/4 through
+   `make run-binary`; elaborate both the SBC and NoSbc configs. Put the results in REPORT.
+3. **After the commit:** the board keeps reading 32-bit counters until a bitstream is rebuilt from this
+   commit. Say in REPORT which bitstream was rebuilt, or that it is still owed.
+4. **One REPORT wording fix (Verdict):** it says "the two same-work halves agree (90.19% vs 90.24%)".
+   Those two numbers are the switch-off half of one bitstream vs a separately built NoSbc bitstream,
+   both in fixed-time windows. The OFF half is "SBC built but switched off", not "no SBC" — the board
+   check says that gap is small. Say that instead.

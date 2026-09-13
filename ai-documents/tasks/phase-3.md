@@ -2,7 +2,7 @@
 
 > # ⚠️ SUPERSEDED 2026-08-29 — this file describes SWAP/REPATRIATE, which is deleted
 >
-> **The current design is serve-in-place. SSOT: [coder/003-serve-in-place/](coder/003-serve-in-place/)**
+> **The current design is serve-in-place. SSOT: [coder/003-serve-in-place/](../coder/003-serve-in-place)**
 > (`TASK.md` for the work order, `diagram.md` for the visuals).
 >
 > The paper (MICRO'09 §2.4) does **not** swap: *"the SBC does not swap lines to return them to their
@@ -21,7 +21,7 @@ Phase 3's job is to make those copies pay off: when the CPU asks for a moved lin
 
 ## Where we are
 
-> **2026-08-24 — read [destination-side-blocker.md](destination-side-blocker.md) first.** It carries the
+> **2026-08-24 — read [destination-side-blocker.md](../performance/destination-side-blocker.md) first.** It carries the
 > current destination-side numbers (749 commits, 98.3% ABORT-DST), the `internalRead` + DSS-reject fixes,
 > the `acquireBeforeRelease` finding, the verdict on both "dirty" extensions, and the strategic risk that
 > this evaluation setup may have no spare capacity to migrate into.
@@ -35,7 +35,7 @@ Phase 3's job is to make those copies pay off: when the CPU asks for a moved lin
   `f* · (M−C) = p · (M−C)`, so at this rate the secondary search finds nothing and every displaced
   lookup is wasted work. Building the swap datapath before that is building a road to an empty pool.
   - ✅ **CAUSE FOUND 2026-08-18 — stale `clients` bits, not dirty lines.** The `EVICT-ASSESS` printf
-    ([MSHR.scala:787](../design/craft/inclusivecache/src/MSHR.scala#L787)) already logged the reject
+    ([MSHR.scala:787](../../design/craft/inclusivecache/src/MSHR.scala#L787)) already logged the reject
     reason, so no RTL or re-run was needed — only a tally of the existing log. Of the 46,082
     advice-latched assessments: **99.72% rejected for `clients =/= 0`**, 0.26% dirty, 0.02% eligible.
     The bit is **stale** — L1 holds at most 8 lines (2×2 D$ + 2×2 I$) yet ~32 ways read as held, and
@@ -47,7 +47,7 @@ Phase 3's job is to make those copies pay off: when the CPU asks for a moved lin
     [July18AfterBreakWorkplan.md](July18AfterBreakWorkplan.md).**
 - ⚠️ **`s_verify` moves from "nice to have" to a hard prerequisite.** Phase 2 parked copies without
   verifying them, which was safe only because nothing read them. Always-use *serves* them.
-- Threshold fix — **applied** to [Configs.scala](../design/craft/inclusivecache/src/Configs.scala) (T_hi=2K−1, T_lo=K). Working tree, not committed.
+- Threshold fix — **applied** to [Configs.scala](../../design/craft/inclusivecache/src/Configs.scala) (T_hi=2K−1, T_lo=K). Working tree, not committed.
 - `SBC_Reset` register (0x358) — **implemented** by the coder. Zeroes all SBC counters/DSS/AT via devmem.
 - The Phase-3 *approach* changed after review (see below). Nothing in the always-use datapath is built yet.
 
@@ -142,7 +142,7 @@ fall back to a plain eviction for that one victim. The pairing itself is untouch
 
 **Liveness confirmed (coder trace, 2026-08-24).** Pinning cannot deadlock on declines: `migDeferred`
 clears unconditionally on `w_rprobeacklast` and falls through to a plain release
-([MSHR.scala:743](../design/craft/inclusivecache/src/MSHR.scala#L743)), and a watchdog assert already
+([MSHR.scala:743](../../design/craft/inclusivecache/src/MSHR.scala#L743)), and a watchdog assert already
 guards the deferred window. A raised decline rate costs opportunities, not liveness.
 
 **Instrument it before assuming it is fine.** A declined migration is a lost opportunity, and if the
@@ -218,8 +218,8 @@ Every displaced line is **clean** by construction (Phase 2 only migrates clean, 
 - **Bounce vs force-overwrite:** the paper force-overwrites a full partner; we bounce. Under pinning, a full partner makes S's migrations abort until teardown/drain frees room. Safe (falls back to normal eviction) but temporarily stops migration from S. Teardown/drain keeps it from being permanent.
 - **Fence pressure:** the partner-set fence blocks all requests to the partner during a swap window. Bounded (already true in Phase 2), but always-use makes windows frequent — worth a counter to watch.
 - **Throughput:** every miss in a paired set now pays a mandatory second directory read, and the one-token rule serializes swaps to one in flight. Fine for v1, measure later.
-- **Destination-side `clients` staleness (2026-08-24):** 46% of migration aborts are on a `clients` bit that is provably false — max true client-held fraction is 6.25% (the I$ is not a TL-C client, so all bits come from a 4-line D$), measured 52%. Root cause is Rocket's `acquireBeforeRelease = false` default (`silentDrop`), **not** our RTL. Try the config flag before building the destination probe: [destination-side-blocker.md](destination-side-blocker.md).
-- **Migration is a net negative — MEASURED 2026-08-25, ⚠️ figures now STALE (superseded by `522c540` and the 003 corruption fix; last verified differential is +0.10% / 1.00x at `b6156d4`):** first SBC-on vs SBC-off differential run on a real benchmark (`matmult` N=32). Data correct (identical checksum, 1,737 migrations), but **+42% cycles and 9.29x the DRAM traffic**. Miss rate ~10% -> ~93%: the L2 effectively stops working. Leading (unproven) cause: sets fill with displaced lines, which cannot serve hits and are evictable only by the last-resort reclaim tier, so effective associativity collapses. **This is the number Phase 3 has to beat.** SSOT: [matmult-differential-2026-08-25.md](matmult-differential-2026-08-25.md).
+- **Destination-side `clients` staleness (2026-08-24):** 46% of migration aborts are on a `clients` bit that is provably false — max true client-held fraction is 6.25% (the I$ is not a TL-C client, so all bits come from a 4-line D$), measured 52%. Root cause is Rocket's `acquireBeforeRelease = false` default (`silentDrop`), **not** our RTL. Try the config flag before building the destination probe: [destination-side-blocker.md](../performance/destination-side-blocker.md).
+- **Migration is a net negative — MEASURED 2026-08-25, ⚠️ figures now STALE (superseded by `522c540` and the 003 corruption fix; last verified differential is +0.10% / 1.00x at `b6156d4`):** first SBC-on vs SBC-off differential run on a real benchmark (`matmult` N=32). Data correct (identical checksum, 1,737 migrations), but **+42% cycles and 9.29x the DRAM traffic**. Miss rate ~10% -> ~93%: the L2 effectively stops working. Leading (unproven) cause: sets fill with displaced lines, which cannot serve hits and are evictable only by the last-resort reclaim tier, so effective associativity collapses. **This is the number Phase 3 has to beat.** SSOT: [matmult-differential-2026-08-25.md](../performance/matmult-differential-2026-08-25.md).
 
 ## Threshold fix + re-run (carried over)
 
@@ -259,7 +259,7 @@ Payoff per S-miss versus baseline:
 | 5 | **Ping-pong thrash** | The same lines swap S⇄D repeatedly. Each swap still beats a DRAM miss (C < M), so it's a *reduced* win, not a loss — but it's the case the yield throttle (Step 5) exists for. | Repeat-swap rate on the same tags; throttle only if measured. |
 | 6 | **Fence pressure on D** | The partner fence blocks all requests to D during each swap window; always-use makes windows frequent. D's own traffic pays. | Stall counter on the dstSetConflict fence. |
 | 7 | **Serialization (one token)** | One swap in flight at a time — concurrent hot sets queue behind each other. | Fine for v1; revisit if attempt rate ≫ completion rate. |
-| 8 | **⚠️ No spare capacity anywhere (added 2026-08-24)** | The premise is that some sets have room. Measured: **2 free ways in 44,060 destination probes**. Every migration displaces a *resident* line. Worse, "coldest" (low miss-pressure) selects the sets whose lines **hit most**, i.e. the fullest ones — we have no signal for "has room" at all. If SBC shows no gain, **this is the first explanation to test**, ahead of any policy tuning. | Free-way rate on the dst probe (already in `sbc_stats.py`). Fixing it is a **workload + geometry** change, not RTL — see [destination-side-blocker.md](destination-side-blocker.md) §Strategic risk. |
+| 8 | **⚠️ No spare capacity anywhere (added 2026-08-24)** | The premise is that some sets have room. Measured: **2 free ways in 44,060 destination probes**. Every migration displaces a *resident* line. Worse, "coldest" (low miss-pressure) selects the sets whose lines **hit most**, i.e. the fullest ones — we have no signal for "has room" at all. If SBC shows no gain, **this is the first explanation to test**, ahead of any policy tuning. | Free-way rate on the dst probe (already in `sbc_stats.py`). Fixing it is a **workload + geometry** change, not RTL — see [destination-side-blocker.md](../performance/destination-side-blocker.md) §Strategic risk. |
 
 **Counters this adds to the build list:** `SBC_HalfSwaps` (risk 1 — required), reclaim + fence-stall
 counters (risks 4/6 — cheap, recommended).
@@ -286,3 +286,79 @@ counters (risks 4/6 — cheap, recommended).
 
 - **Secondary-hit accounting:** when a line is recovered by a swap, does it count as a **hit** or a **miss** for the home set's saturation counter? A hit keeps S looking satisfied; a miss pushes S toward migrating again. Interacts with the future throttle.
 - **`s_verify` timing:** re-enable it before the swap lands (safer, since we now serve copies) or after (faster to first result)?
+
+---
+
+## Still built from the pairing spec — checked against the RTL, 2026-09-14
+
+The pairing spec ([spec-sbc-phase3-prereqs.md](../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md))
+was retired to `obsolete_files_do_not_refer/` on 2026-09-14. **Everything in this section came from it,
+is in the RTL today, and is the expected behavior.** The swap parts of this file are dead; these are not.
+
+### Pairing rules (strict one-to-one)
+
+- A source that is already paired sends every migration to its partner. The DSS is not asked, and the
+  partner's temperature is ignored (paper behavior). — `SetBalanceUnit.scala:206-207`
+- An unpaired source asks the DSS, and the pick must not already be in a pairing. The first commit
+  creates the pairing. — `SetBalanceUnit.scala:187`
+- A set that is someone's destination never acts as a source. — `SetBalanceUnit.scala:188-190, 206`
+- Partner full or busy → decline, plain eviction instead. Never re-pick, never stall. —
+  `Scheduler.scala:675` (busy); the MSHR destination-full abort (full)
+- `sbcForceDstSet` may only force a set that keeps pairing one-to-one (`forcedLegal`). This replaced the
+  spec's "switch the asserts off while forcing". — `SetBalanceUnit.scala:201-206`
+
+### Two questions, two keys
+
+- "Is this set hot enough to migrate?" is asked for the **allocating** request. — `Scheduler.scala:636-637`
+- "Where does this migration go?" is asked for the MSHR that is **deciding now**: the migration already
+  in flight (deferred path), else the MSHR whose directory result lands this cycle (fast path). —
+  `Scheduler.scala:641-643`
+- Assert: only the MSHR the question was asked for may claim the destination. — `Scheduler.scala:646-647`
+- `preferEvictable` is a hint only; the old `&& dstOfferValid` term is gone. — `Scheduler.scala:451`
+
+### Safety checks
+
+- On commit, a paired source may only re-commit to its own partner, and a destination may not join a
+  second pairing. Always on. — `SetBalanceUnit.scala:253-257`
+- A paired source never claims a destination other than its partner, checked with the live value in the
+  decision cycle (the P7 fix). — `MSHR.scala:1223`
+- At most one migration in flight. — `Scheduler.scala:282`
+
+### Cold-set list (DSS) hygiene
+
+- Paired sets never re-enter the list (updates gated on `!at(set).valid`). — `SetBalanceUnit.scala:156`
+- On commit, the source and destination are removed from the list. — `SetBalanceUnit.scala:260-262`
+- A destination that refused because it was full stays blocked until every candidate was tried (task
+  000). — `DSS.scala:75-91`, `SetBalanceUnit.scala:159`
+
+### Secondary search and internal reads
+
+- The directory can match a **displaced** way by tag — the mirror of a normal hit, which skips
+  displaced ways. — `Directory.scala:305`
+- The search sends the request's own tag (a displaced line keeps its home tag). — `MSHR.scala:582`
+- Cache-internal reads (the destination check, the partner search) set `internalRead`: no tag match and
+  no heat update. — `Directory.scala:238, 241, 313`; `MSHR.scala:585`
+
+### Partner info in the MSHR
+
+- Looked up on the directory-result cycle for the MSHR that result belongs to — not at allocate, as the
+  spec first said. It carries: paired or not, which side (source or destination), the partner set, and
+  the paper's "partner may hold my line" bit (§2.3). — `Scheduler.scala:705-722`
+- Latched in the MSHR, with the live value used in the cycle it is written (the 002 C1 fix). —
+  `MSHR.scala:287-294`
+
+### Platform constraint
+
+- MMIO flush is unsupported with SBC on. Flushing a parked line asserts. — `MSHR.scala:1375`
+
+### Not built, or different from what this file assumed
+
+- **Teardown is not built.** Nothing clears a pairing except `SBC_Reset`. `Directory.scala` computes
+  `displacedOther` (the "partner holds none of my lines any more" test), but nothing reads it. The rule
+  "pinned until teardown" still holds — teardown just never happens, so every pairing is permanent.
+  (Tracker L8.)
+- **A secondary hit counts as a miss for heat.** The home lookup misses and updates the heat counter;
+  the partner search is an internal read and is not counted. So a set that is served well from its
+  partner still looks hot and keeps migrating. This answers "Secondary-hit accounting" above by
+  default, not by decision. — `Directory.scala:313-315` (Tracker M11.)
+- **`s_verify`** is still not rebuilt. Moved to the last phase on 2026-09-14. (Tracker L1.)

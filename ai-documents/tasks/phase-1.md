@@ -6,8 +6,8 @@
 used is **superseded by the demand-coupled flow in [phase-2.md](phase-2.md)** — do active work there.
 
 > This doc is the consolidated Phase-1 plan + status + bugs, kept as the historical record. Cross-phase
-> risk detail lives in [SBC_implementation_challenges.md](SBC_implementation_challenges.md) and
-> [SetBalanceUnit_design.md](SetBalanceUnit_design.md).
+> risk detail lives in [SBC_implementation_challenges.md](../design/SBC_implementation_challenges.md) and
+> [SetBalanceUnit_design.md](../design/SetBalanceUnit_design.md).
 
 ---
 
@@ -171,7 +171,7 @@ MSHR scoreboard sequence (mirrors `s_release`/`w_releaseack`):
   AcquirePerm type which is unexpected using diplomatic parameters."* Sim aborted.
 - **Confirmed ours:** `sbcAutoMigrate=false` → gone; on → fired during heavy migration.
 - **Actual root cause:** a **premature migrate retire**. The retire condition (`no_wait && mig_ready`,
-  [MSHR.scala:279](../design/craft/inclusivecache/src/MSHR.scala#L279)) was satisfied at setup because
+  [MSHR.scala:279](../../design/craft/inclusivecache/src/MSHR.scala#L279)) was satisfied at setup because
   `no_wait` was already true (`w_copy` not cleared) and the old `mig_ready = s_dmeta` was already true.
   So the migrate MSHR retired the **same cycle it issued its 2nd dir-read** — before copying. The read
   result then landed on a dead/reused MSHR, leaving a stale "needs acquire" flag that later fired as the

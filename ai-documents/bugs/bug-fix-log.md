@@ -1,7 +1,7 @@
 # SBC — Bug-Fix Log (by phase)
 
-**Branch:** `set_migration_refactored`
-**Updated:** 2026-06-30
+**Branch:** started on `set_migration_refactored`; now `sbc-sampling`
+**Updated:** 2026-06-30 · **Status lines re-checked:** 2026-09-14 (P1, P2, P5 marked closed to match the 003 REPORT)
 **Scope:** Every bug we have hit building SBC, grouped by the phase it was found in — cause, fix, and
 status. This is the consolidated record so nobody has to re-read the phase docs to know "what did we
 already fix?" Newest understanding wins.
@@ -13,6 +13,7 @@ Quick index:
 - **Phase 1** — BUG-1 (premature retire), BUG-2 (second-requester nesting).
 - **Phase 2** — Bug A (preferEvictable wiring), Bug B (copy_wsafe race), Dst-collision (illegal
   inner-D), Displaced accumulation (bricked set); plus `s_verify` disabled, Q3 rejected.
+- **Found in 003** — P1 ✅, P2 ✅, P5 ✅ (closed by deletion), P6 ✅, P7 ✅; A5.1 / A5.2 🟡 live RTL facts, not the corruption.
 - **Open** — residual `[born→gate]` sub-window (latent, do not pre-build).
 
 ---
@@ -31,7 +32,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   path issue an acquire in a state the protocol forbids.
 - **Fix:** hold retire until dir-write #1 is out **and** the 2nd dir-read is back —
   `mig_ready := !migrating || (s_dmeta && w_dread)`
-  ([MSHR.scala:249](../design/craft/inclusivecache/src/MSHR.scala#L249)).
+  ([MSHR.scala:249](../../design/craft/inclusivecache/src/MSHR.scala#L249)).
 - **Status:** ✅ verified; carries into Phase 2 unchanged.
 
 ### ✅ BUG-2 — second requester nests into a live demand MSHR → illegal inner-D
@@ -88,8 +89,8 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   both failed for the same reason: they watched the wrong moment.
 - **Fix — allocation-side fence:** move the check to **allocation**, the step that actually creates the
   second owner. `allocReady = alloc && !dstSetConflict`, routed into **both** allocation points — the
-  alloc dir-read ([Scheduler.scala:297](../design/craft/inclusivecache/src/Scheduler.scala#L297)) and
-  the MSHR allocate ([Scheduler.scala:337](../design/craft/inclusivecache/src/Scheduler.scala#L337)).
+  alloc dir-read ([Scheduler.scala:297](../../design/craft/inclusivecache/src/Scheduler.scala#L297)) and
+  the MSHR allocate ([Scheduler.scala:337](../../design/craft/inclusivecache/src/Scheduler.scala#L337)).
   The collider re-passes the fence at allocation, by which time `dstValid` is up → held in the queue
   until the migration retires. Bounded, acyclic, deadlock-free — the cache's existing
   one-owner-per-set rule applied to migration. The **opposite** of the rejected "make the migration
@@ -99,7 +100,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   inner-D, destinations spread across sets 0/3/7. Fully closed.
 
 ### ✅ Displaced-line accumulation → bricked set
-- **Symptom:** [Directory.scala:156](../design/craft/inclusivecache/src/Directory.scala#L156)
+- **Symptom:** [Directory.scala:156](../../design/craft/inclusivecache/src/Directory.scala#L156)
   `assert(PopCount(victimWayOH) === 1)` fires; the set can no longer pick a victim. Under the forced
   config it reproduced in ~8 migrations.
 - **Cause:** a migrated-out line is parked `displaced` in `d`. Displaced ways were excluded from
@@ -107,7 +108,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   converting `{invalid|evictable}` ways → `displaced`; when all ways were displaced, `nonDisplacedOH=0`
   → `victimWayOH=0` → assert.
 - **Key safe invariant:** every displaced way is **clean + client-free by construction**
-  ([MSHR.scala:384](../design/craft/inclusivecache/src/MSHR.scala#L384)) → it can be **silently
+  ([MSHR.scala:384](../../design/craft/inclusivecache/src/MSHR.scala#L384)) → it can be **silently
   dropped** (no writeback, no probe).
 - **Fix — last-resort reclaim (two minimal edits, two files):**
   - `Directory.scala` — a **5th, lowest-priority victim tier**: `displacedOH = ~nonDisplacedOH`, taken
@@ -132,8 +133,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 
 ### 🟡 `s_verify` disabled — copy self-check starves on the lowest-priority read port
 - **What:** `s_verify` re-read `(dstSet,dstWay)` to assert the copy landed. It reads on the SBC copy
-  *read* port — **rank 7 (dead last)** in BankedStore priority ([priority-orders.md](priority-orders.md)
-  **F**). Under load it starved → deadlock.
+  *read* port — **rank 7 (dead last)** in BankedStore priority ([priority-orders.md](../guides/priority-orders.md), order 7). Under load it starved → deadlock.
 - **Decision:** **disabled** — falls through to `s_done`. Copy correctness holds by write-through.
   Returns in Phase 3 behind a non-starvable read path.
 - **Status:** 🟡 intentionally off. Not a correctness hole.
@@ -171,17 +171,17 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **⚠️ Keep the repro tooling (2026-08-18).** `sbcGateStallCycles` (`MSHR.scala` L221–L231) exists
   precisely to widen this window, so it is the only instrument that can reproduce this bug. Cleanup
   Batch D originally proposed deleting it on the grounds that "the dst-collision bug is closed" — that
-  call is **reversed**; see [code-cleanup-suggestions.md](code-cleanup-suggestions.md) → Batch D.
+  call is **reversed**; see [code-cleanup-suggestions.md](../tasks/code-cleanup-suggestions.md) → Batch D.
   Exposure is about to rise sharply: if probe-then-migrate raises `p`, migration goes from 9 per run
   to thousands, and every migration opens a destination-fence window.
 
 ---
 
-## 🔴 Found in 003 (pre-existing, not caused by this task)
+## Found in 003 (pre-existing, not caused by this task)
 
-### 🔴 P1 — C-channel head-of-line deadlock (exists today)
-- **What:** `secValid` folds into `dstSetConflict` ([Scheduler.scala:237](../design/craft/inclusivecache/src/Scheduler.scala#L237))
-  which gates `request.ready` ([Scheduler.scala:366](../design/craft/inclusivecache/src/Scheduler.scala#L366)).
+### ✅ P1 — C-channel head-of-line deadlock
+- **What:** `secValid` folds into `dstSetConflict` ([Scheduler.scala:237](../../design/craft/inclusivecache/src/Scheduler.scala#L237))
+  which gates `request.ready` ([Scheduler.scala:366](../../design/craft/inclusivecache/src/Scheduler.scala#L366)).
   A client `Release` addressed to a fenced partner set blocks the head of the C channel. If that same
   client's `ProbeAck` is queued behind it, the cache deadlocks: the fence only lifts when the migration
   completes, and the migration waits on the `ProbeAck`.
@@ -189,31 +189,36 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   `ProbeAck` can genuinely sit behind a `Release`.
 - **Fix (003 Stage 1):** exempt `prio(2)` from the fence at `:366` only —
   `!(dstSetConflict && !request.bits.prio(2))`. Safe because a `prio(2)` request never evicts
-  ([MSHR.scala:1129-1144](../design/craft/inclusivecache/src/MSHR.scala#L1129-L1144) has no eviction
+  ([MSHR.scala:1129-1144](../../design/craft/inclusivecache/src/MSHR.scala#L1129-L1144) has no eviction
   branch and asserts `new_meta.hit`), so it creates no victim-selection hazard. The full condition
   stays on `allocReady` (`:239`).
-- **Status:** 🔴 open, pre-existing. Found by reading during 003 planning, not by a run.
+- **Status:** ✅ **closed in 003 Stage 2c** (`ac7253d`) — by removal, not by patch: the way-lock
+  protects the parked way, so the partner-set term left `dstSetConflict` and a `Release` can no longer
+  stall the C head. C-head watchdog kept, silent over four full 7/7 runs. Found by reading during 003
+  planning. See the 003 REPORT findings register.
 
-### 🔴 P2 — C/X requests for displaced lines
+### ✅ P2 — C/X requests for displaced lines
 - **What:** a client voluntarily releasing a parked line allocates on its *home* set, reads that row,
   misses (the line is not there — it is parked in the partner), and trips
-  `assert(new_meta.hit)` ([MSHR.scala:1143](../design/craft/inclusivecache/src/MSHR.scala#L1143)).
+  `assert(new_meta.hit)` ([MSHR.scala:1143](../../design/craft/inclusivecache/src/MSHR.scala#L1143)).
   The same hole exists on the X channel: an MMIO flush of a displaced line is a **silent no-op** today,
   and becomes **data loss** once displaced lines are allowed to be dirty (003 Stage 2).
 - **Fix (003 Stage 4):** arm the secondary search for the C-channel and X-channel plan branches, not
   only the A-channel branch. MMIO flush stays a documented unsupported constraint
-  ([phase-3.md:156-158](phase-3.md)) — upgrade the comment to an assert rather than build flush support.
-- **Status:** 🔴 open, pre-existing. Found by reading during 003 planning, not by a run.
+  ([phase-3.md:156-158](../tasks/phase-3.md)) — upgrade the comment to an assert rather than build flush support.
+- **Status:** ✅ **closed in 003 Stage 2d** — secondary search armed on both the C and X plan branches
+  (shared `armSearch()`); the flush constraint is now an assert, not a comment. Found by reading during
+  003 planning. See the 003 REPORT findings register.
 
-### 🔴 P5 — the SetCopyUnit collides with itself: repatriation copy overtakes the migration copy
+### ✅ P5 — the SetCopyUnit collides with itself: repatriation copy overtakes the migration copy
 - **What:** for an MSHR that both migrates its victim out and repatriates the demanded line home, the
   two SCU jobs use the **same physical location** — `doSecCopy` writes `(physSet, meta.way)` and
   `doMigCopy` reads `(physSet, migSrcWay)`, and `migSrcWay === meta.way`. The migration must read
   first. It does not, so the migration parks the **repatriated line's bytes** into the partner set
   under the **victim's tag**, behind a valid-looking directory entry.
-- **Root cause:** `doSecCopy` ([MSHR.scala](../design/craft/inclusivecache/src/MSHR.scala) ~L402) is
+- **Root cause:** `doSecCopy` ([MSHR.scala](../../design/craft/inclusivecache/src/MSHR.scala) ~L402) is
   missing the `!migDeferred` term that its sibling `io.schedule.bits.a.valid`
-  ([MSHR.scala:428](../design/craft/inclusivecache/src/MSHR.scala#L428)) has. While `migDeferred` is
+  ([MSHR.scala:428](../../design/craft/inclusivecache/src/MSHR.scala#L428)) has. While `migDeferred` is
   set the migrate/release decision is still open, so `migrating` is false and `(!migrating || w_copy)`
   reads as "nothing to wait for". The decision then resolves on `w_rprobeacklast` — the same register
   `doSecCopy` tests — and `migrating := true.B` only lands at the end of that cycle, so `doSecCopy`
@@ -237,16 +242,16 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   the 001 commit-4 repatriation path.
 
 ### ✅ P6 — `migFastWantW` evaluates against the partner set's directory result — NEVER BENIGN
-- **What:** `migFastDecline` ([MSHR.scala:~845](../design/craft/inclusivecache/src/MSHR.scala)) carries
+- **What:** `migFastDecline` ([MSHR.scala:~845](../../design/craft/inclusivecache/src/MSHR.scala)) carries
   `!(searching && !w_ssearch)` with the comment "that result is the partner set, not ours". Its
-  sibling `migFastWantW` ([MSHR.scala:~819](../design/craft/inclusivecache/src/MSHR.scala)) does not.
+  sibling `migFastWantW` ([MSHR.scala:~819](../../design/craft/inclusivecache/src/MSHR.scala)) does not.
   So on the cycle the secondary-search result returns, `migFastWantW` assesses the **partner set's**
   directory entry as if it were its own victim and can raise `io.dstClaim.valid` spuriously.
 - **Impact: NOT benign — observed live in 003 Stage 2a.** It was originally filed as latent (the plan
   block's search-result branch runs first, so `migrating` is never set from it). Deleting the
   repatriation path was enough to expose it: `migration_stress_test` case 7 halts deterministically at
   sim-time `9757041000` on
-  `assert(!(migFastWantW && migDeferWantW))` ([MSHR.scala:964](../design/craft/inclusivecache/src/MSHR.scala#L964))
+  `assert(!(migFastWantW && migDeferWantW))` ([MSHR.scala:964](../../design/craft/inclusivecache/src/MSHR.scala#L964))
   with `searching=1 w_ssearch=0 migDeferred=1 set=1 dirHit=0` — the missing term, read off the failing
   cycle. Before 2a a secondary hit cancelled the fetch and entered the repatriation, which changed when
   the search result landed relative to `migDeferred` and masked the collision.
@@ -260,20 +265,20 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   carried for two tasks under the wrong label. See the rule below.
 
 ### 🟡 A5.1 — the SetCopyUnit can stall mid-block (LIVE RTL, not the corruption)
-- **What:** [SetCopyUnit.scala:137](../design/craft/inclusivecache/src/SetCopyUnit.scala#L137) is
+- **What:** [SetCopyUnit.scala:137](../../design/craft/inclusivecache/src/SetCopyUnit.scala#L137) is
   `io.bs_wadr.valid := io.copy_wsafe` inside `s_write`, and `wrBeat` advances only on `io.bs_wadr.fire`.
   So `copy_wsafe` is re-evaluated on **every write beat**; a drop mid-block stalls the write there and
   can hand SourceD a half-new block. Nothing latches the safety decision for the duration of the block.
 - **Status (corrected 2026-08-29):** **not the cause** — the `case_reaccess_migrated` corruption was
   **P5**, confirmed in 003 Stage 2a. A5.1 is therefore no longer a corruption lead.
 - **⚠️ And it is NOT deleted.** The earlier header said "deleted in 003 Stage 4"; that was wrong.
-  Stage 2a deleted the *repatriation* copy, but [SetCopyUnit.scala:137](../design/craft/inclusivecache/src/SetCopyUnit.scala#L137)
+  Stage 2a deleted the *repatriation* copy, but [SetCopyUnit.scala:137](../../design/craft/inclusivecache/src/SetCopyUnit.scala#L137)
   still exists and still serves the **migration** copy, which is the SCU's one remaining caller. So
   this stays a live RTL fact: the copy can still stall mid-block on `copy_wsafe`.
 - **Status:** 🟡 live, unexercised. Keep — it describes real hardware, just not the bug we were hunting.
 
 ### 🟡 A5.2 — `copy_wsafe`'s one-cycle blind spot (LIVE RTL, upstream, not the corruption)
-- **What:** [SourceD.scala:406](../design/craft/inclusivecache/src/SourceD.scala#L406) guards the `s1`
+- **What:** [SourceD.scala:406](../../design/craft/inclusivecache/src/SourceD.scala#L406) guards the `s1`
   comparison with `busy`, a `RegInit` (`:91`), but `:95` is `s1_req = Mux(!busy, io.req.bits, s1_req_reg)`
   and `:103` drives `io.bs_radr.valid := (busy || io.req.valid) && …`. In the cycle `io.req` fires,
   SourceD issues its first bank read from `io.req.bits` while `busy` is still false and `s1_req_reg`
@@ -289,7 +294,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 ---
 
 ### ✅ P7 — the 1f pinning assert reads `pairSetReg` in the cycle it is written
-- **What:** [MSHR.scala:974](../design/craft/inclusivecache/src/MSHR.scala#L974) compares
+- **What:** [MSHR.scala:974](../../design/craft/inclusivecache/src/MSHR.scala#L974) compares
   `io.dstClaim.bits === pairSetReg`, but `pairSetReg`/`pairValidReg`/`pairIsSrcReg` are written under
   `when (io.directory.valid)` (`:1150`) — and `migFastWantW`, which drives `dstClaim.valid` on the
   **plan** path, also requires `io.directory.valid`. So at a plan-time claim the assert compares this
@@ -373,8 +378,8 @@ Keep both selectors distinct, and keep the comment saying why.
 ---
 
 ## Cross-references
-- Phase-2 single source of truth: [phase-2.md](phase-2.md)
-- All arbitration/priority orders: [priority-orders.md](priority-orders.md)
-- Visual flow: [diagram.md](diagram.md)
-- Phase-1 historical: [phase-1.md](phase-1.md)
-- Risk register: [SBC_implementation_challenges.md](SBC_implementation_challenges.md)
+- Phase-2 single source of truth: [phase-2.md](../tasks/phase-2.md)
+- All arbitration/priority orders: [priority-orders.md](../guides/priority-orders.md)
+- Visual flow: [diagram.md](../design/diagram.md)
+- Phase-1 historical: [phase-1.md](../tasks/phase-1.md)
+- Risk register: [SBC_implementation_challenges.md](../design/SBC_implementation_challenges.md)

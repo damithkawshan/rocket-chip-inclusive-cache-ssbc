@@ -2,9 +2,9 @@
 
 **Opened:** 2026-08-26 · **From:** thinker · **Report into:** `REPORT.md` in this directory
 
-**Specs:** [../../spec-sbc-phase3-prereqs.md](../../spec-sbc-phase3-prereqs.md) (Part 1 + Part 2) ·
-[../../phase-3.md](../../phase-3.md) (design SSOT) ·
-[../../diagram.md](../../diagram.md) **Part B** (the swap sequence, step by step)
+**Specs:** [../../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md](../../obsolete_files_do_not_refer/spec-sbc-phase3-prereqs.md) (Part 1 + Part 2) ·
+[../../tasks/phase-3.md](../../tasks/phase-3.md) (design SSOT) ·
+[../../design/diagram.md](../../design/diagram.md) **Part B** (the swap sequence, step by step)
 
 ---
 

@@ -1,7 +1,8 @@
 # FPGA A/B baseline data — VCU118, 520.omnetpp_r
 
 Measured board data for the SBC-off (and matching SBC-on) halves, recovered from the session
-transcripts in `chipyard/scripts/logs/`. Recorded 2026-09-11.
+transcripts in `chipyard/scripts/logs/`. Recorded 2026-09-11. **§4 added 2026-09-14 — the fixed-work
+results. Read §4 first.**
 
 Board: VCU118, `FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled`, 50 MHz, 2 GB DDR4,
 1 Rocket core, 8 KB L1s, 256 KB 16-way L2 (256 sets). One bitstream, migration toggled at
@@ -9,7 +10,7 @@ runtime via `SBC_MigrateEnable` (0x3C0), so both halves are the same silicon and
 
 ---
 
-## 1. The only complete A/B on record
+## 1. First A/B — fixed TIME window (not valid as a result; see §4)
 
 Session `board_session_20260910-234644.log`, 2026-09-11 00:43–01:05.
 Workload: `520.omnetpp_r` **ref** input, `-c General -r 0`, no sim-time override.
@@ -73,7 +74,7 @@ mem accesses/kcyc: 0.146
 
 ---
 
-## 3. Run-to-completion attempts — both stalled
+## 3. Run-to-completion attempts on 2026-09-11 — both stalled (smaller limits later finished, see §4)
 
 Switching from the fixed window to `sbc_read --zero -- <cmd>` (fixed **work**, the method
 CLAUDE.md asks for) was tried twice and neither finished:
@@ -103,3 +104,90 @@ A valid fixed-work A/B on this board needs a workload whose **total** cost — b
 the session. Either measure the build floor first (`--sim-time-limit=0.001s`) and pick a limit from
 the observed `simsec/sec`, or use a workload that completes, e.g. the `memtest` already staged at
 `test_dir/memtest`.
+
+---
+
+## 4. Fixed-work A/B runs that finished (2026-09-11 night → 2026-09-13)
+
+Added 2026-09-14 from the session logs. Every run used `sbc_read --zero -- <omnetpp>` with a
+`--sim-time-limit`, so the benchmark **ran to the end**. Both halves of each pair reached the **same
+event count**, so they did the same work. This is the valid A/B that §1 was not.
+
+Method: one bitstream, one boot, migrate-OFF half first, then `--reset-all --migrate=on`.
+
+### 4.1 Headline — SBC is slower and moves more data, in every pair
+
+| pair | L2 | sim-time | events | cycles, ON vs OFF | memory accesses, ON vs OFF |
+|---|---|---|---:|---:|---:|
+| A | 256 KB | 0.001 s | 28,270 | **+31.9%** | **6.96×** |
+| B | 256 KB | 0.1 s | 35,128,553 | **+46.0%** | **3.56×** |
+| C | 64 KB | 0.02 s | 9,347,248 | **+51.2%** | **2.45×** |
+
+### 4.2 Full numbers
+
+**Pair A** — `board_session_20260911-215010.log`, `…L18K256K16WL2ConfigSBCResetEnabled`
+
+| | migrate OFF | migrate ON | ON / OFF |
+|---|---:|---:|---:|
+| `L2_Cycles` | 21,699,257,295 | 28,621,018,860 | 1.32× |
+| `L2_MemReads` | 24,173,405 | 191,537,857 | 7.92× |
+| `L2_MemWrites` | 8,676,146 | 37,143,501 | 4.28× |
+| memory accesses (reads + writes) | 32,849,551 | 228,681,358 | 6.96× |
+| total hit rate | 95.47% | 68.34% | |
+| migrations / parked at end | 0 / 0 | 88,892 / 1,780 | |
+
+**Pair B** — `board_session_20260912-021811.log`, same bitstream as A
+
+| | migrate OFF | migrate ON | ON / OFF |
+|---|---:|---:|---:|
+| `L2_Cycles` | 606,430,476,198 | 885,140,998,271 | 1.46× |
+| `L2_MemReads` | 2,322,681,628 | 8,983,608,947 | 3.87× |
+| `L2_MemWrites` | 775,830,225 | 2,040,240,733 | 2.63× |
+| memory accesses (reads + writes) | 3,098,511,853 | 11,023,849,680 | 3.56× |
+| total hit rate | 86.81% | 55.54% | |
+| migrations / parked at end | 0 / 0 | 8,323,681 / 1,903 | |
+| `secHits` | 0 | 996,051,875 | |
+| wall time at 50 MHz | ~3.4 h | ~4.9 h | |
+
+**Pair C** — `board_session_20260913-185905.log` (clean copy: `SBC-dual_log_64KB.log`),
+`…L18K64K16WL2ConfigSBC` (64 KB, 16-way L2)
+
+| | migrate OFF | migrate ON | ON / OFF |
+|---|---:|---:|---:|
+| `L2_Cycles` | 214,361,396,378 | 324,118,459,931 | 1.51× |
+| `L2_MemReads` | 1,608,360,059 | 3,976,237,323 | 2.47× |
+| `L2_MemWrites` | 375,102,721 | 891,009,893 | 2.38× |
+| memory accesses (reads + writes) | 1,983,462,780 | 4,867,247,216 | 2.45× |
+| total hit rate | 69.69% | 39.81% | |
+| migrations / parked at end | 0 / 0 | 1,547,988 / 480 | |
+| hits per park | — | 180.6 | |
+
+### 4.3 What this shows
+
+- The loss in §1 was **not** a fixed-time artifact. With equal work, SBC is still clearly worse.
+- **Reads and writes both go up.** Reads go up more.
+- Pair A is too short to trust on its own — 0.001 s of simulation is mostly network setup.
+- `L2_Accesses` is higher in every ON half even though the work is the same. It is not a work
+  measure (see task 006 REPORT, G3). Use the event count for "same work".
+
+### 4.4 Limits — read before quoting
+
+- **One run per pair.** No repeats yet (workplan Step 1.4).
+- Pair C is a different bitstream (64 KB). It is not a repeat of A or B.
+- The ON half runs after the OFF half in the same boot. `--reset-all` clears SBC state, not the cache contents.
+- `L2_Cycles` is the L2/uncore clock. Whether it equals CPU cycles is still unconfirmed (task 006). The ON/OFF ratio holds either way.
+- Hit rates still count L1 write-backs as hits (task 005). Quote memory accesses and cycles, not hit rate.
+- The SBC event counters are 32-bit in these bitstreams. Nothing wrapped here (largest: `secHits`
+  996 M in pair B), but a 1.0 s run would.
+
+### 4.5 Runs that did not finish
+
+All on the 256 KB bitstream. Each log ends after the OFF half was launched; there is no result.
+
+| session | sim-time |
+|---|---|
+| `board_session_20260912-001108` | 0.1 s |
+| `board_session_20260912-181154` | 1.0 s |
+| `board_session_20260913-030303` | 1.0 s |
+| `board_session_20260913-134117` | 0.5 s |
+| `board_session_20260913-175855` | 0.1 s |
