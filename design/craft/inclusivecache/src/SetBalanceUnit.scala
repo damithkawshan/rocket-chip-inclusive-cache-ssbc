@@ -35,24 +35,24 @@ class SBCStats(setBits: Int, satBits: Int) extends Bundle
   val coldestLevel = UInt(satBits.W)
   val satReadValue = UInt(satBits.W)       // saturation of the SW-selected set
   val atValid      = Bool()                // AT[selected set].valid (Phase 0: always 0)
-  val migrations   = UInt(32.W)            // committed migrations
-  val attempted    = UInt(32.W)            // migrations attempted (setup reached)
-  val aborted      = UInt(32.W)            // migrations aborted (ineligible src/dst)
-  val secHits      = UInt(32.W)
-  val secMiss      = UInt(32.W)
+  val migrations   = UInt(64.W)            // committed migrations
+  val attempted    = UInt(64.W)            // migrations attempted (setup reached)
+  val aborted      = UInt(64.W)            // migrations aborted (ineligible src/dst)
+  val secHits      = UInt(64.W)
+  val secMiss      = UInt(64.W)
   // SBC (003 Stage 9a): of the secondary HITS, how many had to acquire permission over the parked
   // line instead of being served outright. A subset of secHits, not a decline of it.
-  val secPerm      = UInt(32.W)
+  val secPerm      = UInt(64.W)
   // SBC (003 §10.5): serve-in-place and displaced-eviction event counts, plus AT read-back.
-  val secWrite     = UInt(32.W)   // serves where the requester needed T
-  val secProbe     = UInt(32.W)   // serves that had to probe a client off the parked line first
-  val dispRelease  = UInt(32.W)   // dirty parked lines written back (addressed by lineHome)
-  val dispDrop     = UInt(32.W)   // clean parked lines released with no data
-  val secC         = UInt(32.W)   // serves raised by a C-channel Release
-  val homeBranch   = UInt(32.W)   // requests that found their own HOME line in BRANCH
+  val secWrite     = UInt(64.W)   // serves where the requester needed T
+  val secProbe     = UInt(64.W)   // serves that had to probe a client off the parked line first
+  val dispRelease  = UInt(64.W)   // dirty parked lines written back (addressed by lineHome)
+  val dispDrop     = UInt(64.W)   // clean parked lines released with no data
+  val secC         = UInt(64.W)   // serves raised by a C-channel Release
+  val homeBranch   = UInt(64.W)   // requests that found their own HOME line in BRANCH
   val atAssocSet   = UInt(setBits.W)  // AT[satReadSet].assocSet
   val atSd         = Bool()           // AT[satReadSet].sd (0 = source side)
-  val parked       = UInt(32.W)   // live displaced lines currently resident
+  val parked       = UInt(64.W)   // live displaced lines currently resident
 }
 
 class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
@@ -208,24 +208,24 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
 
   // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
   // attempted/aborted come from dedicated MSHR pulses; migrations from commit{MIGRATE}.
-  val nAttempt = RegInit(0.U(32.W))
-  val nAbort   = RegInit(0.U(32.W))
-  val nCommit  = RegInit(0.U(32.W))
+  val nAttempt = RegInit(0.U(64.W))
+  val nAbort   = RegInit(0.U(64.W))
+  val nCommit  = RegInit(0.U(64.W))
   when (io.migAttempt) { nAttempt := nAttempt + 1.U }
   when (io.migAbort)   { nAbort   := nAbort + 1.U }
-  val nSecHit  = RegInit(0.U(32.W))
-  val nSecMiss = RegInit(0.U(32.W))
-  val nSecPerm = RegInit(0.U(32.W))
+  val nSecHit  = RegInit(0.U(64.W))
+  val nSecMiss = RegInit(0.U(64.W))
+  val nSecPerm = RegInit(0.U(64.W))
   when (io.secHit)  { nSecHit  := nSecHit + 1.U }
   when (io.secMiss) { nSecMiss := nSecMiss + 1.U }
   when (io.secPerm) { nSecPerm := nSecPerm + 1.U }
   // SBC (003 §10.5): the six new event counters.
-  val nSecWrite    = RegInit(0.U(32.W))
-  val nSecProbe    = RegInit(0.U(32.W))
-  val nDispRelease = RegInit(0.U(32.W))
-  val nDispDrop    = RegInit(0.U(32.W))
-  val nSecC        = RegInit(0.U(32.W))
-  val nHomeBranch  = RegInit(0.U(32.W))
+  val nSecWrite    = RegInit(0.U(64.W))
+  val nSecProbe    = RegInit(0.U(64.W))
+  val nDispRelease = RegInit(0.U(64.W))
+  val nDispDrop    = RegInit(0.U(64.W))
+  val nSecC        = RegInit(0.U(64.W))
+  val nHomeBranch  = RegInit(0.U(64.W))
   when (io.secWrite)    { nSecWrite    := nSecWrite + 1.U }
   when (io.secProbe)    { nSecProbe    := nSecProbe + 1.U }
   when (io.dispRelease) { nDispRelease := nDispRelease + 1.U }
@@ -235,7 +235,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // SBC (003 §10.4b): live displaced-line occupancy. Plain observability counter, no assert.
   // ++ when a line gets parked (migration commit), -- when a displaced line leaves (release or drop).
   // Saturates at 0 so an underflow cannot print as a huge number.
-  val nParked   = RegInit(0.U(32.W))
+  val nParked   = RegInit(0.U(64.W))
   val parkErase = io.dispRelease || io.dispDrop
   // Paper section 2.3 "sc" bit, as a per-source-set count of lines currently parked in the partner.
   // A count rather than a bare bit because we have no cheap "OR of the d bits" read of the partner

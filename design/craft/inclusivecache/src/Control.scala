@@ -136,32 +136,32 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcStatusField = RegField.r(8,
       Cat(io.sbc_stats.atValid, io.sbc_stats.coldestValid, outer.micro.enableSetBalancing.B),
       RegFieldDesc("SBC_Status", "bit0=enabled, bit1=coldestValid, bit2=selectedAtValid", volatile=true))
-    val sbcMigrationsField = RegField.r(32, io.sbc_stats.migrations,
+    val sbcMigrationsField = RegField.r(64, io.sbc_stats.migrations,
       RegFieldDesc("SBC_Migrations", "Migrations committed", volatile=true))
-    val sbcSecHitsField = RegField.r(32, io.sbc_stats.secHits,
+    val sbcSecHitsField = RegField.r(64, io.sbc_stats.secHits,
       RegFieldDesc("SBC_SecHits", "Secondary hits (0 in Phase 0)", volatile=true))
-    val sbcSecMissField = RegField.r(32, io.sbc_stats.secMiss,
+    val sbcSecMissField = RegField.r(64, io.sbc_stats.secMiss,
       RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
-    val sbcSecPermField = RegField.r(32, io.sbc_stats.secPerm,
+    val sbcSecPermField = RegField.r(64, io.sbc_stats.secPerm,
       RegFieldDesc("SBC_SecPerm", "Secondary hits that had to acquire permission (subset of SecHits)", volatile=true))
     // SBC (003 §10.5): serve-in-place / displaced-eviction observability.
-    val sbcSecWriteField = RegField.r(32, io.sbc_stats.secWrite,
+    val sbcSecWriteField = RegField.r(64, io.sbc_stats.secWrite,
       RegFieldDesc("SBC_SecWrite", "Serves where the requester needed T", volatile=true))
-    val sbcSecProbeField = RegField.r(32, io.sbc_stats.secProbe,
+    val sbcSecProbeField = RegField.r(64, io.sbc_stats.secProbe,
       RegFieldDesc("SBC_SecProbe", "Serves that probed a client off the parked line first", volatile=true))
-    val sbcDispReleaseField = RegField.r(32, io.sbc_stats.dispRelease,
+    val sbcDispReleaseField = RegField.r(64, io.sbc_stats.dispRelease,
       RegFieldDesc("SBC_DispRelease", "Dirty parked lines written back (addressed by lineHome)", volatile=true))
-    val sbcDispDropField = RegField.r(32, io.sbc_stats.dispDrop,
+    val sbcDispDropField = RegField.r(64, io.sbc_stats.dispDrop,
       RegFieldDesc("SBC_DispDrop", "Clean parked lines released with no data", volatile=true))
-    val sbcSecCField = RegField.r(32, io.sbc_stats.secC,
+    val sbcSecCField = RegField.r(64, io.sbc_stats.secC,
       RegFieldDesc("SBC_SecC", "Serves raised by a C-channel Release", volatile=true))
-    val sbcHomeBranchField = RegField.r(32, io.sbc_stats.homeBranch,
+    val sbcHomeBranchField = RegField.r(64, io.sbc_stats.homeBranch,
       RegFieldDesc("SBC_HomeBranch", "Requests that found their own HOME line in BRANCH", volatile=true))
     // bits [7:0] = AT[sel].assocSet, bit 8 = sd (0 = source side). sd forced to bit 8 regardless of setBits.
     val sbcAtAssocField = RegField.r(9,
       Cat(io.sbc_stats.atSd, 0.U((8 - sbcSetBits).W), io.sbc_stats.atAssocSet),
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
-    val sbcParkedField = RegField.r(32, io.sbc_stats.parked,
+    val sbcParkedField = RegField.r(64, io.sbc_stats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
@@ -189,9 +189,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       when (ivalid) { sbcArmPulse := true.B; sbcArmSet := data }
       (true.B, true.B)  // fire-and-forget: ovalid must not track ivalid, or the D beat never fires on real fabric (hangs on FPGA, not sim).
     }), RegFieldDesc("SBC_BalanceSet", "Arm SBC migration for the written source-set index"))
-    val sbcAttemptedField = RegField.r(32, io.sbc_stats.attempted,
+    val sbcAttemptedField = RegField.r(64, io.sbc_stats.attempted,
       RegFieldDesc("SBC_Attempted", "Migrations attempted (setup reached)", volatile=true))
-    val sbcAbortedField = RegField.r(32, io.sbc_stats.aborted,
+    val sbcAbortedField = RegField.r(64, io.sbc_stats.aborted,
       RegFieldDesc("SBC_Aborted", "Migrations aborted (ineligible source/destination)", volatile=true))
 
     // SBC: zero all SBC observation state (write-only). A write of any value pulses io.sbc_reset.

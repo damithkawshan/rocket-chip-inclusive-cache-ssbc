@@ -33,8 +33,9 @@
  * Two ways to get a clean window:
  *   --zero writes SBC_StatsReset (0x3B8), which zeroes ONLY the event/hit counters in hardware and
  *     never touches sat/AT/DSS/parkCount/nParked, so the SBC flow keeps running. One read after the
- *     workload then gives exact window counts with no subtraction and no 32-bit wrap ambiguity.
- *   The bare delta form needs no reset at all: it subtracts two reads (32-bit wrap handled below).
+ *     workload then gives exact window counts with no subtraction and no wrap ambiguity.
+ *   The bare delta form needs no reset at all: it subtracts two reads (the counters are 64-bit,
+ *     so no wrap in any realistic window; the width-mask below still handles it).
  * SBC_Reset (0x358) is the bigger hammer and is only safe when NOTHING is parked - it wipes the
  * Association Table, which is what tells a parked line where it belongs. --reset-all checks
  * SBC_Parked and refuses rather than trusting the caller. For a routine counter window inside a
@@ -57,15 +58,16 @@
 #define SBC_RESET_OFF      0x358UL   /* W: zero ALL SBC state - UNSAFE while lines are parked */
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
 
-/* name, offset, hardware counter width. Every SBC counter is a 32-bit RegInit in
- * SetBalanceUnit.scala; only L2_Accesses / L2_Hits are 64-bit. The width matters for the delta:
- * a 32-bit counter that rolls over mid-window must wrap, not go hugely negative. */
+/* name, offset, hardware counter width. Every SBC counter is a 64-bit RegInit in
+ * SetBalanceUnit.scala (widened 32->64 in the 006 counter change), same as L2_Accesses / L2_Hits.
+ * The width still drives the delta mask so a rollover wraps, not goes hugely negative -- though a
+ * 64-bit counter does not wrap in any realistic window. */
 static const struct { const char *name; unsigned off; unsigned bits; } REGS[] = {
-    { "migrations",  0x328, 32 }, { "secHits",     0x330, 32 }, { "secMiss",     0x338, 32 },
-    { "attempted",   0x348, 32 }, { "aborted",     0x350, 32 }, { "secPerm",     0x360, 32 },
-    { "secWrite",    0x368, 32 }, { "secProbe",    0x370, 32 }, { "dispRelease", 0x378, 32 },
-    { "dispDrop",    0x380, 32 }, { "secC",        0x388, 32 }, { "homeBranch",  0x390, 32 },
-    { "parked",      0x3A0, 32 }, { "L2_Accesses", 0x3A8, 64 }, { "L2_Hits",     0x3B0, 64 },
+    { "migrations",  0x328, 64 }, { "secHits",     0x330, 64 }, { "secMiss",     0x338, 64 },
+    { "attempted",   0x348, 64 }, { "aborted",     0x350, 64 }, { "secPerm",     0x360, 64 },
+    { "secWrite",    0x368, 64 }, { "secProbe",    0x370, 64 }, { "dispRelease", 0x378, 64 },
+    { "dispDrop",    0x380, 64 }, { "secC",        0x388, 64 }, { "homeBranch",  0x390, 64 },
+    { "parked",      0x3A0, 64 }, { "L2_Accesses", 0x3A8, 64 }, { "L2_Hits",     0x3B0, 64 },
     /* 006 main-memory traffic. Appended, never inserted: show() indexes this table positionally. */
     { "memReads",    0x3C8, 64 }, { "memWrites",   0x3D0, 64 }, { "memUpgrades", 0x3D8, 64 },
     { "memRelClean", 0x3E0, 64 }, { "L2_Cycles",   0x3E8, 64 },
@@ -170,7 +172,7 @@ int main(int argc, char **argv) {
      * which is what running the migrate-OFF half of an A/B first guarantees - and this refusal is
      * what catches the mistake if the halves are ever run the other way round. */
     if (reset_all) {
-        uint64_t parked = base[SBC_PARKED_OFF / 8] & 0xffffffffULL;
+        uint64_t parked = base[SBC_PARKED_OFF / 8];
         if (parked && !force) {
             fprintf(stderr,
                     "sbc_read: refusing --reset-all: %llu line(s) still parked.\n"
@@ -214,7 +216,7 @@ int main(int argc, char **argv) {
     int st; waitpid(p, &st, 0);
     snap(b);
     /* With --zero the window is just the absolute post-run reading (no wrap possible); without it,
-     * subtract the two snapshots and mask each counter to its width so a 32-bit wrap stays correct. */
+     * subtract the two snapshots and mask each counter to its width so a wrap stays correct. */
     for (unsigned i = 0; i < NREG; i++) d[i] = zero ? b[i] : ((b[i] - a[i]) & mask_of(i));
     d[I_PARKED] = b[I_PARKED];          /* parked is a level, not a count - report the final value */
     show(zero ? "SBC-WINDOW" : "SBC-DELTA", d);
