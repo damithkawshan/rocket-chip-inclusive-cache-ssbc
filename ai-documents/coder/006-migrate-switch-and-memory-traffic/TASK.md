@@ -775,3 +775,133 @@ Damith needs 64-bit counters for every long board run. §13.3 now **blocks** clo
    Those two numbers are the switch-off half of one bitstream vs a separately built NoSbc bitstream,
    both in fixed-time windows. The OFF half is "SBC built but switched off", not "no SBC" — the board
    check says that gap is small. Say that instead.
+
+---
+
+## 15. Amendment 5 (2026-09-14) — close-out checklist, and what comes next
+
+**Why:** thinker review of the working tree on 2026-09-14. Amendment 4 is still the job. This adds
+three REPORT corrections and says how to split the commit, because the tree now also holds thinker
+doc edits. **No new RTL.**
+
+### 15.1 Still owed from Amendment 4 (none of it is done yet — checked 2026-09-14)
+
+- [ ] `migration_stress_test` 7/7, 0 asserts, and `sbc_migrate_switch_test` 4/4, through `make run-binary`.
+      `sw/verilator_logs/` has nothing newer than `006-partB-counters`.
+- [ ] Elaborate `VerilatorRocket8KL116KL2Config` and `VerilatorRocket8KL116KL2NoSbcConfig`.
+- [ ] `sw/run_sbc_window.sh:9-12` still says the SBC counters are 32-bit and "WRAP silently". Fix the comment.
+- [ ] REPORT Verdict wording (Amendment 4 item 4).
+- [ ] Commit, then record the bitstream status (Amendment 4 item 3, and 15.4 below).
+
+### 15.2 Three more REPORT corrections
+
+1. **Verdict** says "The 64-bit counter widening (§13.3) is landed". It is changed in the tree but not
+   tested or committed. Replace it with the commit hash once it is.
+2. **What was built → `sbc_mmio.h` row** says the five counter offsets are "declared but no hardware
+   answers them yet". Part B landed, so they answer. Mark it ✅.
+3. **Summary** repeats "the two same-work halves agree to within noise (90.19% vs 90.24% hit rate)" —
+   same correction as Amendment 4 item 4.
+
+Leave gate G0 open in the REPORT with a pointer: task 005's first check (V1) elaborates the
+`enablePerfCounters = false` build.
+
+### 15.3 How to split the commit
+
+The working tree also holds thinker doc edits: `CLAUDE.md`, `ai-documents/README.md`,
+`ai-documents/coder/README.md`, the new `ai-documents/guides/cache-terminology.md`,
+`ai-documents/guides/devmem-register-map.md`, this TASK, task 005's TASK, the 003 REPORT,
+`tasks/phase-3.md`, the workplan, the 2026-09-14 weekly report, and `performance/why-sbc-loses-2026-09-15.md`.
+Keep all of them **out** of the 64-bit commit.
+
+- **64-bit commit:** `Control.scala`, `SetBalanceUnit.scala`, `sw/sbc_read.c`, `sw/run_sbc_window.sh`,
+  and this task's `REPORT.md`.
+- **Docs commit:** everything else — or leave it to the user.
+
+### 15.4 Bitstream — recommendation, the user decides
+
+Do **not** rebuild the bitstream for the 64-bit change alone. Task 005 changes the register map again,
+so rebuild **once**, after 005 lands. Short board runs this week are safe on the current 32-bit image:
+the fastest counter (`secMiss`, about 11% of L2 lookups) needs about 5 hours at ~2 M lookups/s to wrap.
+If the user needs a long run before 005 lands, rebuild now. Record which in REPORT.
+
+### 15.5 After this commit
+
+This task closes. Task 005 is next — its TASK now ends with Amendment 1. The hit/miss words it is
+built on are in `ai-documents/guides/cache-terminology.md`; read that first.
+
+### 15.6 Correction (2026-09-14, later the same day) — the 64-bit commit had already landed
+
+15.1 was wrong, and so were parts of 15.2 and 15.3. The 64-bit commit landed at 13:54 as **`06fcca8`**
+(`Control.scala`, `SetBalanceUnit.scala`, `sw/sbc_read.c`), before this amendment was written. Its
+message reports: generated Verilog is 64-bit for all 13 counters, `migration_stress_test` 7/7 PASS,
+`sbc_migrate_switch_test` PASS, NoSbc config elaborates. The tree has no 32-bit counter left.
+
+What is really left:
+- [ ] `sw/run_sbc_window.sh:9-12` — the stale 32-bit comment. It was not in that commit.
+- [ ] REPORT Verdict — "landed" is right; add `06fcca8`. 15.2 items 2 and 3 still stand.
+- [ ] REPORT — say where the test logs are. Nothing from 2026-09-14 is under `sw/verilator_logs/`,
+      `results/` or `sims/verilator/output/`. If they are gone, say so. Do not re-run just for this:
+      task 005 re-runs both tests.
+- [ ] Commit the script comment and the REPORT together. 15.3's file list no longer applies.
+
+15.4 (one bitstream, after 005) and 15.5 still stand.
+
+---
+
+## 16. Amendment 6 (2026-09-14) — close-out clean-up, then close
+
+**Why:** the thinker reviewed everything this task changed (`d8671cf..06fcca8`). The code works, but it
+has one sim check that can raise a false alarm, some stale comments and a little dead code. Damith wants
+this task closed with none of that left. This section replaces 15.6's "what is really left" list.
+**No behaviour change. No counter meaning, width or address changes.**
+
+### 16.1 RTL
+
+| # | Where | Do |
+|---|---|---|
+| R1 | `Scheduler.scala:760-773` — the `beatsPerBlock` / `memWriteBeats` assert block | **Delete it** (keep the `else` branch). An `SBC_StatsReset` that lands after `SourceC` accepted a dirty release zeroes `memWrites`; the release's remaining beats then count against 0 and the assert fires. No test has hit it — none resets the stats during write traffic — but task 005's tests will. The identity it guards already passed as G5 |
+| R2 | `PerfCounters.scala:1-12` (header) | Cut to 2–3 lines: what the module counts, and that it is not gated by `enableSetBalancing`. Drop the "every denominator is a judgement call" argument — the agreed terminology now fixes the denominator, and task 005 adds hit and miss counters to this file |
+| R3 | `PerfCounters.scala:37-39` | Keep the rule — count `sourceC.io.req.fire`, not the multi-beat `io.out.c.fire` — in 2 lines. Drop the `SourceC.scala:81` line reference |
+| R4 | `Control.scala:166` | `// SBC 004: free-running total L2 hit-rate counters …` now sits above `SBC_MigrateEnable` and the memory counters. Move it down to `l2AccessesField` |
+| R5 | `Parameters.scala`, `Configs.scala` — the `enablePerfCounters` comments (4 and 3 lines) | One line each, for example `// 006: memory-traffic counters; false only for area/timing builds` |
+
+### 16.2 Software
+
+| # | Where | Do |
+|---|---|---|
+| S1 | `sw/run_sbc_window.sh:6-12` | Delete the 32-bit wrap paragraph (lines 9-12). Replace "NEVER has to finish - which is the whole point" with: a fixed-time **observation** window; not valid for an on/off comparison — use `sbc_read --zero -- <cmd>` so both halves do the same work. Keep the script: `run_board_session.exp` copies it to the board |
+| S2 | `sw/run_sbc_window.sh:41-44` | The `ref` comment says the run is meant to finish under `sbc_read --zero`, not on this script's timer — the opposite of what the script does. Keep one line: `--sim-time-limit=1s` overrides the ini (2.25 s) |
+| S3 | `sw/sbc_read.c:65-94` and `:220` | Every counter is 64-bit, so the `bits` column and `mask_of()` do nothing. Remove both; the delta is plain `b[i] - a[i]` (unsigned 64-bit wraps on its own). Remove the width-mask wording from the header and the table comment |
+| S4 | `sw/sbc_read.c:157-164` | Reject unknown options: one-line usage to stderr, exit 2. Arguments after `--` belong to the child and are not checked. Today a typo such as `--migrate=1` is ignored and the benchmark runs with the switch unchanged |
+| S5 | `sw/sbc_migrate_switch_test.c:117-118` | T4 passes when nothing is parked at the flip. Make that a FAIL ("nothing parked at flip — T4 proves nothing"): `t4_live = (parked_base > 0) && (live_end > live_base)` |
+
+### 16.3 Check
+
+Through `make run-binary` / `run_sbc.sh`. Save logs under `sw/verilator_logs/` with a `006-closeout` suffix.
+
+1. Elaborate `VerilatorRocket8KL116KL2Config` and `VerilatorRocket8KL116KL2NoSbcConfig`.
+2. `migration_stress_test`: 7/7, 0 asserts, both configs. Every value in the `[SBC]` and `[SBC-MEM]` lines
+   should equal the `006-partB-counters` logs of the same config — nothing since then changes behaviour.
+   If any differ, report which. Do not chase it.
+3. `sbc_migrate_switch_test`: 4/4, and T4 reports more than 0 lines parked at the flip.
+4. `sbc_read` builds with no warnings. No board run needed.
+
+### 16.4 REPORT, then commit
+
+- REPORT fixes still owed from 15.2 (items 2 and 3) and 15.6: add `06fcca8` to the Verdict; mark the
+  `sbc_mmio.h` row ✅; fix the 90.19% / 90.24% wording; give log paths (the 64-bit run left none — cite this
+  close-out run).
+- Gates: G0 → "task 005, first check". G6 → "next board session: `sbc_read --reset-all` after a
+  migrate-on half must refuse". G8, G11, G12 stay open (tracked in `ai-documents/README.md`).
+- Bitstream: the board still runs the 32-bit image; one rebuild after task 005.
+- Status → **Closed**.
+- **One commit:** `SBC 006 close-out: drop false-alarm beat check, stale comments, dead sbc_read code` —
+  only the files in 16.1–16.2 and this task's `REPORT.md`. Leave the thinker's doc edits (`CLAUDE.md`,
+  `ai-documents/…`) out.
+
+### 16.5 Do not
+
+- Rename `L2_MemUpgrades` (it counts outer `AcquirePerm`, not upgrade misses) — Damith decides.
+- Shrink `nParked` — task 005 moves it.
+- Commit anything in the chipyard repo (`run_board_session.exp`, configs) — ask Damith first.
+- Start task 005 work in this commit.
