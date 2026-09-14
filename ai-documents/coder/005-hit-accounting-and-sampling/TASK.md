@@ -25,9 +25,8 @@ Working rules:
   match this file, stop, write it under "Where the work order is wrong" in REPORT, and tell Damith.
 - **A failing check is a finding.** Report it. Never change RTL or a test to make it pass mid-run.
 - **Never `git checkout` or revert a file you did not change** — some configs live as uncommitted work.
-- **Stage files by name** — never `git add -A` or `git add .`. The thinker's doc edits are uncommitted in the
-  tree. Commit only files under `design/` and `sw/`, plus this task's `REPORT.md`. Edit the docs §9.3 lists,
-  but leave them uncommitted — Damith commits docs.
+- **Stage files by name** — never `git add -A` or `git add .`. The tree was clean at the start (`c318092`).
+  Put the doc edits §9.3 lists and your `REPORT.md` updates in the commit that lands each change.
 - **The tests are functional checks.** Counter values need not match older runs. What must hold are the
   identities inside one run (§10).
 - Simple, readable RTL. Comments 1–3 lines; long reasons go in REPORT or the commit message.
@@ -387,7 +386,7 @@ module changes.
 - Extend `migration_stress_test.c` to print the new counters and, at the end of each case, the in-progress
   value read under hold (C5).
 
-### 9.3 Docs — edit them when each register lands, leave them uncommitted (§0)
+### 9.3 Docs — in the commit that lands each register
 
 - `CLAUDE.md`: register table rows (new registers; the rename, noting old logs say `memUpgrades=`;
   `SBC_Aborted`'s new description); the micro-parameter table (`enablePerfCounters` now means all
