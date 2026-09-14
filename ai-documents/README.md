@@ -3,6 +3,24 @@
 What is in this folder, grouped, plus one tracker of every task and how far it got.
 Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in section 10.
 
+> ## ⚠️ VERIFY THIS WEEK — due Friday 2026-09-18
+>
+> Two findings from 2026-09-14 may explain why SBC is slower. **Do not build a fix on either one until
+> it is checked.**
+>
+> 1. **Set pairs never break up.** Once two sets are paired, the code never un-pairs them.
+>    - Why it matters: the 2026-09-15 analysis says this is one reason about half the cache ends up full
+>      of moved lines.
+>    - How to check on the board: after an SBC run, look at every set — is every set paired? During a
+>      run, watch the number of moved lines — does it only ever go up?
+> 2. **How the heat counter should change when a moved line is found in the partner set.** Our code
+>    raises the home set's heat and leaves the partner set's heat alone.
+>    - The paper clearly lowers the **partner** set's heat (its Figure 2). It does not clearly say what
+>      happens to the **home** set's heat.
+>    - How to check: look for a longer version of the paper, or ask the authors. Then decide.
+>
+> When both are checked, update the two matching rows in the tracker and remove this box.
+
 **Doc labels**
 - 🟢 **Use now**
 - 📘 **History** — was right when it was written
@@ -29,14 +47,25 @@ Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in secti
   - it takes **32% to 51% longer**
   - it goes to main memory **2.5 to 7 times more often**
   - each setup was measured once, not repeated yet ([details](performance/fpga-ab-baseline-2026-09-11.md), section 4)
-- **Found on 2026-09-14** while checking the old pairing spec against the code:
-  - nothing ever ends a pairing between two sets (L8)
-  - a line served from its partner set counts as a *miss* for the heat counter (M11)
-- **Doing now:** coder task 006 — make the counters 64-bit (**must do**) so long runs cannot overflow them.
+- **Must check this week:** set pairs never break up, and how the heat counter should change when a
+  moved line is found in the partner set — see the box at the top.
+- **Start here on 2026-09-15:** [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) —
+  an analysis, **not yet verified**, of why SBC loses where the paper wins. Its claim: three of our
+  eviction rules plus pairings that never end leave about 47% of the cache full of moved lines, at any
+  cache size. It also says Step 3 of the workplan needs rethinking. Its two board tests come first.
+- **Hit and miss words are now fixed (2026-09-14):** [guides/cache-terminology.md](guides/cache-terminology.md).
+  Use them in every report. Until task 005 is done, **do not quote a hit rate** — the old counters mix
+  in messages that are not real requests. The number of misses is already exact.
+- **Doing now, in this order:**
+  1. task 005 (ready for a fresh coder chat) — first move every counter into one place behind one switch,
+     so the area can be measured without them; then new counters that follow the hit and miss words, with
+     strict timing rules; fix three counting mistakes; take snapshots of the counters over time
+  2. merge the testing branch into the main branch
+  3. build one new FPGA image (one for tasks 006 and 005, not one each)
+- **Done 2026-09-14:** task 006 closed (`e4c5d53`).
 - **Plan:** [workplan-parked-occupancy-2026-09-11.md](performance/workplan-parked-occupancy-2026-09-11.md) — find out
-  why moved lines make the cache slower.
+  why moved lines make the cache slower. Step 3 is under review (see the analysis above).
 - **Moved to the last phase:** task 003's final tests (GATE 5) and the copy self-check.
-- **On hold:** coder task 005 (count hits honestly).
 
 ---
 
@@ -71,8 +100,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 002 | Fix a one-cycle timing bug in set pairing | ✅ | — | 2026-08-28 |
 | 003 | Use a moved line right where it sits | 🟡 | final tests (GATE 5) ⏭ moved to the last phase | 2026-09-14 |
 | 004 | Count all cache hits and misses | ✅ | — | 2026-09-02 |
-| 005 | Count hits honestly + sample counters over time | ⏸ | not started | 2026-09-09 |
-| 006 | On/off switch + count trips to main memory | 🟡 | 64-bit counters: tests and commit (**must do**) | 2026-09-14 |
+| 005 | Count hits honestly + sample counters over time | 🔴 next — ready to start | rewritten 2026-09-14 as one clean work order: counters in one place behind one switch, counters that follow the hit and miss words, strict timing rules, three fixes, snapshots; not started | 2026-09-14 |
+| 006 | On/off switch + count trips to main memory | ✅ 2026-09-14 | closed (`e4c5d53`). A new FPGA image is still owed — one image after task 005 | 2026-09-14 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -81,14 +110,18 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M1 | Same-work speed test on the board, feature on vs off | ✅ 2026-09-13 | 3 tests: 32–51% slower, 2.5–7× more trips to memory |
 | M2 | Repeat each test 3 times | 🔴 | every number so far comes from one run |
 | M3 | Watch moved lines pile up for one hour | 🔴 | workplan step 2 |
-| M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | 🔴 | workplan step 3 |
-| M5 | Count hits honestly (task 005) | ⏸ | needed before quoting any hit rate |
-| M6 | 64-bit counters | 🟡 **must do** | code and docs changed; tests, commit and a new FPGA image still owed |
+| M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | 🔴 | workplan step 3 — **under review**: the 2026-09-15 analysis predicts the "first slot" fix does almost nothing (see M14) |
+| M5 | Count hits honestly (task 005) | 🔴 next | needed before quoting any hit rate. The words are fixed: [cache-terminology.md](guides/cache-terminology.md) |
+| M6 | 64-bit counters | 🟡 | ✅ saved and passing in simulation 2026-09-14 (`06fcca8`). Still owed: a new FPGA image — build one image after task 005 |
 | M7 | Is the cache's cycle counter the same clock as the CPU? | 🔴 | the on/off comparison is fair either way |
-| M8 | The "moves attempted" counter does not add up | 🔴 | attempted is smaller than moved + aborted |
+| M8 | The "moves attempted" counter does not add up | 🟡 cause found 2026-09-14 | the "aborted" count also includes moves that were turned down before they started, and two in the same cycle count once. Fix is in task 005 |
 | M9 | Check that changed moved lines are always saved, never lost | 🔴 | cheap to check, bad if wrong |
 | M10 | Try the CPU-cache setting that makes it report lines it drops | 🔴 | never tried; should cut wasted move attempts |
-| M11 | Decide: should a line served from its partner count as a hit for heat? | 🔴 | today it counts as a miss — by default, nobody decided it. A set being helped still looks hot |
+| M11 | ⚠️ **VERIFY THIS WEEK (due 09-18):** which heat counter a partner hit should change | 🔴 | our code: home +1, partner unchanged. Paper §3.3 + Figure 2: partner goes **down**; the home rule is unclear. Find a longer version of the paper or ask the authors |
+| M12 | Board check 1: after an SBC run, read every set — paired or not, and how hot | 🔴 | analysis §6 check 1. Predicts every set paired and destinations near maximum heat. **Also verifies L8** |
+| M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
+| M14 | Decide the fair version to test, before building M4's switches | 🔴 | analysis §5: moved lines compete equally for eviction; a move may replace an older moved line; end pairings; maybe a 1-bit "recently used" mark per slot |
+| M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
 
 ### 1d. Left over from the build phases — details in CLAUDE.md
 
@@ -101,7 +134,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | L5 | Move lines that have been written to | P3R | 🔴 | only unchanged lines can move today |
 | L6 | Stop moving lines from sets whose moved lines are never reused | P4 | 🔴 | not built |
 | L7 | Test "serve a moved line that needs write permission" | P3R | ⏭ | needs two cores; never happened in any run |
-| L8 | End a pairing once its moved lines are gone (teardown) | P4 | 🔴 | never built — every pairing lasts forever (found 2026-09-14) |
+| L8 | End a pairing once its moved lines are gone (teardown) | P4 | 🔴 | ⚠️ **VERIFY THIS WEEK (due 09-18).** Never built — every pairing lasts forever (found in the code 2026-09-14). Confirm on the board with M12 |
 
 ### 1e. Tidy-up — low priority, do during the improve phase
 
@@ -113,9 +146,9 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | H4 | The "arm a set" register does nothing in auto mode | 🟡 | written down, not removed |
 | H5 | Write the priority-order guide | ✅ 2026-09-14 | [priority-orders.md](guides/priority-orders.md) |
 | H6 | Commit the chipyard-side changes (configs, board scripts) | 🔴 | |
-| H7 | Merge `sbc-sampling` into `sbc-paper-aligned` | 🔴 | next, after the 64-bit commit |
+| H7 | Merge `sbc-sampling` into `sbc-paper-aligned` | 🔴 | after task 005 (006 is closed) |
 | H8 | Move docs into folders, then fix links | ✅ 2026-09-14 | 24 files moved; one link to a long-deleted file marked as deleted |
-| H9 | Remove debug and measurement hardware for the final area number | 🔴 | list in CLAUDE.md; only after the last measurement |
+| H9 | Remove debug and measurement hardware for the final area number | 🔴 | task 005 puts every counter, the read-back muxes and the sampler behind one switch (`enablePerfCounters`); the rest is listed in CLAUDE.md; only after the last measurement |
 
 ---
 
@@ -126,6 +159,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 🟢 [guides/fpga-linux-run.md](guides/fpga-linux-run.md) — build the FPGA image, boot Linux on the board, read the counters.
 - 🟢 [guides/devmem-register-map.md](guides/devmem-register-map.md) — every counter and switch the cache exposes.
 - 🟢 [guides/priority-orders.md](guides/priority-orders.md) — who goes first when two parts of the cache want the same thing.
+- 🟢 [guides/cache-terminology.md](guides/cache-terminology.md) — **the words we use** for hit, miss, secondary hit and the rest, where they come from, and which counters follow them.
 
 ## 3. Task documents — `tasks/` and `coder/`
 
@@ -142,13 +176,15 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 - 📘 [000](coder/000-internalread/) · 📘 [001](coder/001-phase3-reuse-loop/) · 📘 [002](coder/002-partner-latch-fix/)
 - 🟢 [003](coder/003-serve-in-place/) — the current design, with diagrams.
-- 📘 [004](coder/004-l2-hitrate-counters/) · ⏸ [005](coder/005-hit-accounting-and-sampling/)
-- 🟢 [006](coder/006-migrate-switch-and-memory-traffic/) — **active**.
+- 📘 [004](coder/004-l2-hitrate-counters/)
+- 🟢 [005](coder/005-hit-accounting-and-sampling/) — **active**: work order rewritten 2026-09-14, ready for a fresh coder chat.
+- 📘 [006](coder/006-migrate-switch-and-memory-traffic/) — closed 2026-09-14.
 
 ## 4. Speed and improvement — `performance/`
 
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
-- 🟢 [workplan-parked-occupancy-2026-09-11.md](performance/workplan-parked-occupancy-2026-09-11.md) — **the current plan**: why SBC is slower, and three steps to find out.
+- 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
+- 🟢 [workplan-parked-occupancy-2026-09-11.md](performance/workplan-parked-occupancy-2026-09-11.md) — **the current plan**: why SBC is slower, and three steps to find out. Step 3 under review.
 - 📘 [omnetpp-differential-2026-09-10.md](performance/omnetpp-differential-2026-09-10.md) — first board test (fixed time, not fixed work). Its moved-line analysis still holds.
 - 📘 [destination-side-blocker.md](performance/destination-side-blocker.md) — why most moves were refused at the target set (2026-08-24).
 - ⚠️ [matmult-differential-2026-08-25.md](performance/matmult-differential-2026-08-25.md) — first simulation test. Numbers are old — do not quote.
@@ -169,7 +205,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 - 📘 [2026-08-21.md](weekly-report/2026-08-21.md) (+ `.html`) — moving lines works end to end.
 - 📘 [2026-08-31.md](weekly-report/2026-08-31.md) (+ `.html`) — a moved line served real data for the first time.
-- 🟢 [2026-09-14.md](weekly-report/2026-09-14.md) (+ `.html`) — first fair test on the board: SBC is slower. Replaces the 09-08 weekly plan.
+- 🟢 [2026-09-14.md](weekly-report/2026-09-14.md) (+ `.html`) — first fair test on the board: SBC is slower. Replaces the 09-08 weekly plan. **Its "Next steps" section is this week's plan** (week of 15 Sep).
 
 ## 7. Design notes and diagrams — `design/`
 
@@ -201,7 +237,8 @@ rocket-chip-inclusive-cache/
     ├── guides/
     │   ├── fpga-linux-run.md
     │   ├── devmem-register-map.md
-    │   └── priority-orders.md
+    │   ├── priority-orders.md
+    │   └── cache-terminology.md
     ├── tasks/
     │   ├── phase-1.md
     │   ├── phase-2.md
@@ -212,6 +249,7 @@ rocket-chip-inclusive-cache/
     ├── coder/                             000 … 006, unchanged
     ├── performance/
     │   ├── fpga-ab-baseline-2026-09-11.md
+    │   ├── why-sbc-loses-2026-09-15.md
     │   ├── workplan-parked-occupancy-2026-09-11.md
     │   ├── omnetpp-differential-2026-09-10.md
     │   ├── destination-side-blocker.md

@@ -18,6 +18,16 @@ live in `ai-documents/`.
 **Start here: [ai-documents/README.md](ai-documents/README.md)** — every doc grouped and labelled
 (live / record / superseded), with the same status in point form. Keep the two in step.
 
+> **⚠️ VERIFY THIS WEEK (due 2026-09-18) — do not build a fix on either until it is checked:**
+> 1. **L8 — pairings never end.** Nothing in the RTL clears an AT pairing except `SBC_Reset`. Confirm on
+>    the board: after an SBC run, sweep `SBC_SetSel` over all sets — is every set paired? Does
+>    `SBC_Parked` only ever rise? (tracker M12, M13)
+> 2. **M11 — heat counter on a partner hit.** RTL: home set +1, partner unchanged (the search is
+>    `internalRead`). Paper §3.3 + Fig 2: the partner's counter goes **down**; the home-set rule is
+>    unclear. Settle it from a longer version of the paper or the authors before changing the RTL.
+>
+> Details and how to check: `ai-documents/README.md` (box at the top).
+
 - **Main branch: `sbc-paper-aligned`** (tracks `origin/sbc-paper-aligned`) — treat it as the project's main line.
 - **Testing branch: `sbc-sampling`** — local only, cut from `sbc-paper-aligned` at `d8671cf`.
   **Plan: merge `sbc-sampling` back into `sbc-paper-aligned`** (not done yet).
@@ -28,12 +38,19 @@ live in `ai-documents/`.
 - **Result (fixed work, 2026-09-11 → 09-13):** SBC is **slower** on omnetpp — **+32% to +51% cycles**
   and **2.5× to 7× more main-memory accesses** in 3 A/B pairs (256 KB and 64 KB L2). One run each, no
   repeats yet. Data: [fpga-ab-baseline-2026-09-11.md](ai-documents/performance/fpga-ab-baseline-2026-09-11.md) §4.
-- **Active task:** [coder/006](ai-documents/coder/006-migrate-switch-and-memory-traffic) — results are
-  in the REPORT. **Must do: 64-bit SBC counters.** RTL, `sbc_read.c` and the docs are changed but not
-  committed; tests + commit are owed (TASK Amendment 4), then a bitstream rebuild.
+- **Active task, then the merge** (on `sbc-sampling`):
+  1. [coder/005](ai-documents/coder/005-hit-accounting-and-sampling) — **ready to start** (TASK rewritten
+     2026-09-14 as one clean work order for a fresh coder chat). Move every monitoring counter into
+     `PerfCounters` behind one flag; one counter per terminology term; three counter fixes; the interval
+     sampler. **Binding timing and sampling rules** (TASK §2.2): counters add MSHR pulses with `PopCount`, never OR.
+  2. Merge `sbc-sampling` into `sbc-paper-aligned`, then **one** bitstream rebuild (recommended — not one per task).
+- **Task [coder/006](ai-documents/coder/006-migrate-switch-and-memory-traffic) closed 2026-09-14** (`e4c5d53`).
+- **Terminology is fixed (2026-09-14)** — see "Cache terminology" below. Use it for every hit/miss number.
 - **Before debugging or tuning anything, read "Build-phase leftovers" below.**
-- **Active plan:** [ai-documents/performance/workplan-parked-occupancy-2026-09-11.md](ai-documents/performance/workplan-parked-occupancy-2026-09-11.md).
-- **Parked:** coder/005 (honest hit counting).
+- **Active plan:** [ai-documents/performance/workplan-parked-occupancy-2026-09-11.md](ai-documents/performance/workplan-parked-occupancy-2026-09-11.md). Step 3 is under review.
+- **Start here on 2026-09-15:** [ai-documents/performance/why-sbc-loses-2026-09-15.md](ai-documents/performance/why-sbc-loses-2026-09-15.md)
+  — unverified analysis: a fixed point in our eviction rules parks ~47% of the cache at any size. Run its
+  §6 board checks first (tracker M12, M13).
 - The Phase 1 / Phase 2 sections further down are **history** — right for their phase, not the current status.
 
 ### Remote
@@ -45,6 +62,29 @@ Both `origin` and `myfork` point to the same GitHub fork:
 - `sbc-sampling` — testing branch, local only, cut from `sbc-paper-aligned`; to be merged back into it.
 - `set_migration_refactored` — older SBC branch (to 2026-08-26), an ancestor of the active branch.
 - `main`, `perf_counter`, `coherency_aware_replacement`, `TL_signal_analysis` — separate lines of work.
+
+## Cache terminology — use these words (agreed 2026-09-14)
+
+**Single source: [ai-documents/guides/cache-terminology.md](ai-documents/guides/cache-terminology.md)** —
+the full table, the literature it comes from, and which counters follow it. This is a short copy:
+**change both together.** Use these words in every report, counter name, TASK and REPORT.
+
+| Term | In TileLink and our design |
+|---|---|
+| **Access** | One **inner-A** request from L1, counted once. Ends as exactly one of the four outcomes below |
+| **Primary hit** | Home line (`displaced = 0`) with enough permission → **no outer A** |
+| **Secondary hit** | Home set misses; the second search finds the parked line (`displaced = 1`) in the partner set with enough permission → **no outer A**, served in place |
+| **Data miss** | Line not in the L2 → outer A `NtoB` / `NtoT` (after evicting or migrating a victim if the set is full) |
+| **Upgrade miss** | Line in the L2 (home or parked) but only `BRANCH`, and the request needs `TRUNK` → outer A **`BtoT`** |
+| **Probed hit** | A primary or secondary hit that first sends inner B `Probe` to another L1 client. **Still a hit** |
+| **Secondary miss** | The second search ran and found nothing. Always a data miss, plus the cost of the search |
+| **Not accesses** | Inner C `Release` / `ReleaseData` (write-back), inner B `Probe` (invalidation), X-channel flush, SBC's own directory reads |
+
+- **Hit = no outer A message. Miss = an outer A message.** Nothing else decides it.
+- **Hit rate = (primary + secondary hits) ÷ accesses.**
+- ⚠️ **`L2_Accesses` / `L2_Hits` and `SBC_SecHits` are legacy and do not follow these words** (every
+  channel; upgrade misses and write-backs count as hits). Until coder/005 lands, the only exact number
+  is **misses = `L2_MemReads + L2_MemUpgrades`** — do not quote a hit rate.
 
 ## ⚠️ Build-phase leftovers — check these first
 
@@ -63,7 +103,7 @@ Both `origin` and `myfork` point to the same GitHub fork:
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
 | L6 | No adaptive yield throttle | **Speed gap:** a set keeps migrating even when its parked lines are never reused | not built |
 | L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
-| L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful | `Directory.scala` computes `displacedOther`, but nothing reads it |
+| L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful. **⚠️ Verify this week** (due 2026-09-18) | `Directory.scala` computes `displacedOther`, but nothing reads it |
 
 ### Known causes of the speed gap
 
@@ -76,7 +116,8 @@ Both `origin` and `myfork` point to the same GitHub fork:
 | G5 | ~70–80% of migration attempts abort on the board | Wasted probes and directory reads | stale `clients` bit; `acquireBeforeRelease = true` never tried |
 | G6 | Random (LFSR) replacement, not LRU as in the paper; small 8 KB L1 | The paper's "a moved line gets a head start" became "a moved line is never evicted" | `Directory.scala` |
 | G7 | SBU logic is 60 levels deep; its per-set tables are flip-flops | Timing and area cost | `SetBalanceUnit.scala`, `DSS.scala` |
-| G8 | A secondary hit counts as a **miss** for heat — the home lookup misses, and the partner search is not counted (found 2026-09-14) | A set served well from its partner still looks hot, so it keeps migrating | `Directory.scala:313-315` |
+| G8 | **Open question — ⚠️ verify this week (M11).** On a partner hit our RTL does home +1, partner unchanged. The paper lowers the partner's counter (§3.3, Fig 2) but is unclear on the home counter | Unknown until settled. Do **not** change the RTL on the current reading | `Directory.scala:313-315` |
+| G9 | **Hypothesis (2026-09-15, unverified):** a move may only overwrite a *home* line in the destination (`dstEvictable` needs `!displaced`); destinations evict home lines first; pairs never end (L8) → each pair settles at 1 home + 15 moved lines | ~47% of the cache parked at any size (measured 480/1024 and 1903/4096); primary hit rate roughly halves | `ai-documents/performance/why-sbc-loses-2026-09-15.md`; `MSHR.scala:1469-1470`, `Directory.scala:217-226` |
 
 ### Bug patterns that keep coming back (details: `ai-documents/bugs/bug-fix-log.md`)
 
@@ -88,6 +129,8 @@ Both `origin` and `myfork` point to the same GitHub fork:
 - **Comments that describe deleted hardware** led to the `s_wsafe` fix being deleted.
 - **Simulating without `+dramsim`** gives a false shadow-checker alarm (cycle 27141).
 - **32-bit counters wrap** on long board runs — fixed by the 64-bit change (task 006).
+- **OR-ing pulses from several MSHRs into one counter** loses events that land in the same cycle. Add them
+  (`PopCount`). Rules for every counter: coder/005 TASK §2.2.
 
 ### Can be removed in the optimization phase (area)
 
@@ -106,6 +149,10 @@ the last measurement, and report area both with and without it.**
 | `sbcDebug` printfs | no — FPGA configs set it `false` | sim only |
 | `sbcForceDstSet`, `sbcGateStallCycles` | no hardware at defaults | test knobs; keep until L2 and L3 are closed |
 | `SBC_MigrateEnable` switch | 1 FF | **keep** — needed for the one-bitstream A/B |
+
+**After task 005, one flag covers the measurement rows:** `enablePerfCounters = false` removes every
+counter (rows 1–3), the read-back muxes (row 4) and the sampler; their registers read 0. Report area with
+the flag on and off.
 
 Not a removal but the biggest area lever: move the per-set tables (`sat`, `at`, `parkCount`, ~5,120 FF)
 from flip-flops to LUTRAM (`ai-documents/daily-summary/2026-09-08.md`).
@@ -294,14 +341,14 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x318` | `SBC_ColdestLevel` | R — saturation of coldest candidate |
 | `0x320` | `SBC_Status` | R — bit0=SBC enabled, bit1=coldestValid, bit2=AT[sel].valid |
 | `0x328` | `SBC_Migrations` | R, 64 — migrations committed |
-| `0x330` | `SBC_SecHits` | R, 64 — secondary hits (parked line found and served from the partner set) |
+| `0x330` | `SBC_SecHits` | R, 64 — every serve from the partner set, **including** write-backs (`SecC`) and upgrade misses (`SecPerm`) — **not** the terminology's secondary hit |
 | `0x338` | `SBC_SecMiss` | R, 64 — secondary misses (partner set searched, line not there) |
 | `0x340` | `SBC_BalanceSet` | W — arm migration for the written source-set index |
 | `0x348` | `SBC_Attempted` | R, 64 — migrations attempted (setup reached) |
-| `0x350` | `SBC_Aborted` | R, 64 — migrations aborted (ineligible src/dst) |
+| `0x350` | `SBC_Aborted` | R, 64 — migrations aborted after start (destination full) **plus declines before start** (no destination on offer) — why attempted < migrations + aborted. coder/005 adds `SBC_Declined`. Can also undercount: two declines/aborts in one cycle count once (OR fan-in) — coder/005 fixes |
 | `0x358` | `SBC_Reset` | W — write any value to zero all SBC counters/AT/DSS/event state. **Unsafe while lines are parked** (wipes the AT); `sbc_read --reset-all` refuses |
 | `0x360` | `SBC_SecPerm` | R, 64 — secondary hits that had to acquire permission (subset of SecHits) |
-| `0x368` | `SBC_SecWrite` | R, 64 — serves where the requester needed T |
+| `0x368` | `SBC_SecWrite` | R, 64 — serves where the requester needed T. 🐞 **Also counts C-channel write-backs:** `Release` / `ReleaseData` reuse opcodes 6 / 7 of `AcquireBlock` / `AcquirePerm`, so `needT()` is true for `TtoN` / `BtoN`. Counter only; fix in coder/005 |
 | `0x370` | `SBC_SecProbe` | R, 64 — serves that probed a client off the parked line first |
 | `0x378` | `SBC_DispRelease` | R, 64 — dirty parked lines written back |
 | `0x380` | `SBC_DispDrop` | R, 64 — clean parked lines released with no data |
@@ -309,13 +356,13 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x390` | `SBC_HomeBranch` | R, 64 — requests that found their own HOME line in BRANCH |
 | `0x398` | `SBC_AtAssoc` | R — AT[sel]: bits[7:0]=assocSet, bit8=sd |
 | `0x3A0` | `SBC_Parked` | R, 64 — live parked (displaced) lines currently resident |
-| `0x3A8` | `L2_Accesses` | R — total primary directory lookups (hit+miss), free-running, always active (SBC on or off), **not** reset by SBC_Reset |
-| `0x3B0` | `L2_Hits` | R — total primary hits, free-running (misses = accesses − hits) |
+| `0x3A8` | `L2_Accesses` | R — **legacy:** directory lookups on every channel (includes write-backs and flushes, leaves out repeats) — **not** the terminology's access. Free-running, always active (SBC on or off), **not** reset by SBC_Reset |
+| `0x3B0` | `L2_Hits` | R — **legacy:** directory hits on every channel (upgrade misses and write-backs count as hits, secondary hits as misses) — do not quote it as a hit rate |
 | `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits` + the five 006 counters below). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |
 | `0x3C0` | `SBC_MigrateEnable` | R/W, 1 bit, **default 0 (OFF)** — gates only the START of a new migration. Everything about an already-parked line (secondary search, serve-in-place, `dispRelease`/`dispDrop`, AT teardown) is unaffected, so flipping it off mid-run strands nothing. Saturation counters and the DSS keep running while off |
 | `0x3C8` | `L2_MemReads` | R, 64 — outer `AcquireBlock`: blocks read from main memory |
 | `0x3D0` | `L2_MemWrites` | R, 64 — outer `ReleaseData`: dirty blocks written to main memory |
-| `0x3D8` | `L2_MemUpgrades` | R, 64 — outer `AcquirePerm`: permission round trip, moves no bytes |
+| `0x3D8` | `L2_MemUpgrades` | R, 64 — **renamed `L2_MemAcqPerm` in task 005.** Outer `AcquirePerm` (the requester overwrites the whole block): moves no bytes. **Not** the same as an upgrade miss (param `BtoT`, usually sent as `AcquireBlock`) |
 | `0x3E0` | `L2_MemRelClean` | R, 64 — outer `Release` without data: clean eviction, moves no bytes |
 | `0x3E8` | `L2_Cycles` | R, 64 — free-running L2/uncore clock. In the `SBC_StatsReset` list, so `sbc_read --zero -- cmd` yields exactly the cycles the child ran for |
 
@@ -323,6 +370,10 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 depend on anyone's definition of "an access". Report reads and writes **separately** in every table:
 SBC can trade one for the other (a parked dirty line that would have been dropped now gets written
 back) and a combined figure hides exactly that. Bytes moved = `(reads + writes) × blockBytes`.
+
+**Miss count in the terminology's sense** (see "Cache terminology" above) = `L2_MemReads + L2_MemUpgrades`:
+every outer A message is exactly one data miss or upgrade miss. There is no exact access or hit count
+until coder/005 lands.
 
 ⚠️ **The metric is only valid when both runs do the SAME WORK.** Fewer memory accesses over a fixed
 *time* window can simply mean the machine did less. Measured on the board 2026-09-11: a 600 s window
