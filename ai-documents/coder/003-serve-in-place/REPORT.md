@@ -1,7 +1,7 @@
 # REPORT 003 — serve in place, and let displaced lines be first-class
 
-**Coder:** Claude (Opus 5) · **Status:** 🔴 Stage 1 landed; **stopped at GATE 1 per TASK §10** (shadow model fired)
-**Last updated:** 2026-08-29 · **Base:** `0f5a7ac` · **Fallback tag:** `sbc-003-fallback-b6156d4`
+**Coder:** Claude (Opus 5) · **Status:** 🟢 GATE 4 GREEN (`97c282b`, 2026-08-30); real-workload clean (Amendment 11, 2026-08-31); GATE 5 not signed off
+**Last updated:** 2026-09-14 (Amendment 12 — REPORT refresh) · **Base:** `0f5a7ac` · **Fallback tag:** `sbc-003-fallback-b6156d4`
 
 > Write it as you go, not at the end. Newest facts appended per section.
 > If you stop early, this file still gets a verdict saying where and why.
@@ -10,9 +10,22 @@
 
 ## Verdict
 
-_(held until GATE 1 returns)_
+**GATE 4 GREEN (`97c282b`, 2026-08-30).** Serve-in-place works: a parked/displaced line is served to
+the CPU directly from its partner set — no repatriation copy — including as a write target, with the
+correct probe-back and dirty-writeback path. `migration_stress_test` 7/7 PASS, 0 asserts, both the
+BankedStore and directory shadow models clean. **Confirmed corruption-clean on a real workload
+2026-08-31 (Amendment 11):** `tmp.c` 32×32 matmul, 53 secHits, checksum identical to the SBC-off
+oracle, 0 asserts. **GATE 5** (the per-event serve-in-place test, Amendment 10) is **NOT signed off** —
+where it stopped is in its own section below. FPGA performance is a loss and is tracked in **task 006**,
+not here.
 
-**The one thing to read first: GATE 1's SBC-off half cannot be "bit-exact / zero new hardware", and
+**Dirty-source migration (§10.10) was NOT built** — only clean victims migrate
+(`MSHR.scala:1058`, `migClean = !m.dirty && !m.displaced`). Out of scope, unchanged.
+
+The original Stage 2/3/4 plan was re-ordered by Amendment 1 into Stages 2a–2e and Stage 9; the blank
+Stage 2/3/4 templates below are marked accordingly.
+
+**Historical GATE-1 note (still true): GATE 1's SBC-off half cannot be "bit-exact / zero new hardware", and
 that is a property of the design you specified, not a mistake.** Splitting `set` into two fields on
 bundles that exist in *both* builds (`SourceCRequest`, `SourceDRequest`) means the SBC-off netlist
 carries a duplicated 3-bit field through the SourceC and SourceD pipelines. I measured the delta
@@ -25,7 +38,7 @@ meanings" straight back into the SBC-off build, which is the thing the split exi
 ## Stage 0 — before touching anything
 
 - [x] `b6156d4` tagged as the fallback → `sbc-003-fallback-b6156d4`
-- [x] both surviving SCU leads appended to `ai-documents/bug-fix-log.md` as **A5.1** (SCU stalls
+- [x] both surviving SCU leads appended to `ai-documents/bugs/bug-fix-log.md` as **A5.1** (SCU stalls
       mid-block, `SetCopyUnit.scala:137`) and **A5.2** (`copy_wsafe` one-cycle blind spot,
       `SourceD.scala:406`/`:91`/`:95`/`:103`), each with the file:line evidence and a note that the
       code they point at is deleted in Stage 4
@@ -910,45 +923,26 @@ watching if Stage 3 changes eligibility again.
 
 ---
 
-## Stage 2 — dirty-capable displaced lines
+## Stage 2 — dirty-capable displaced lines · **REPLACED by Stages 2a–2e / Stage 9 above**
 
-_(The `p` unlock. Report `p` before and after as a number.)_
-
-### GATE 2 result
-
-| check | expected | actual |
-|---|---|---|
-| G1 | pass/fail set unchanged | |
-| G2 | checksum identical | |
-| G3 | zero `homeShadow` mismatches | |
-| `p` | measurably up | |
+Superseded by Amendment 1's re-order. The `p`-unlock and dirty-capable displaced serving landed as the
+serve-in-place work (2a–2e, Stage 9), signed off at GATE 4. See those sections and "GATE 4 additions",
+not this blank template.
 
 ---
 
-## Stage 3 — way-lock + eviction deferral
+## Stage 3 — way-lock + eviction deferral · **REPLACED by Stages 2a–2e / Stage 9 above**
 
-### GATE 3 result
+Superseded. The way-lock and eviction deferral landed inside the serve-in-place work (GATE 4 green).
 
 ---
 
-## Stage 4 — serve in place
+## Stage 4 — serve in place · **DONE — see the GATE 4 sections above, this template superseded**
 
-### GATE 4 result
-
-| check | expected | actual |
-|---|---|---|
-| G1 | **7/7, 0 asserts** | |
-| G2 | no worse than +0.10% cycles / 1.00x DRAM | |
-| G3 | zero mismatches | |
-| G4 | zero mismatches | |
-| G5 | `SBC_SecHits` > 0 and rising | |
-
-### The corruption experiment (TASK §9)
-
-**Which happened?**
-
-- [ ] `case_reaccess_migrated` **passes** after Stage 4 → the bug was in the repatriation copy
-- [ ] it **still fails** → the bug is elsewhere. Stop here. What do the shadow models say?
+GATE 4 is green (`97c282b`, 2026-08-30) — recorded in the Stage 2e/9 sections and "GATE 4 additions".
+The corruption experiment (TASK §9) resolved: **`case_reaccess_migrated` passes** after the fix, so the
+bug was the repatriation copy — P5, closed by deletion in Stage 2a. This original blank template is
+kept only as a marker.
 
 ---
 
@@ -962,12 +956,12 @@ All four were found by reading, not by running. Each needs a confirming observat
 | P1 | C-channel head-of-line deadlock (pre-existing) | `prio(2)` exemption + C-head watchdog silent over a full run | ✅ **CLOSED in 2c**, and by removal rather than by patch. The partner-set term is gone from `dstSetConflict` because the way-lock protects the parked way directly, so a `Release` to a partner set can no longer stall the C head — **the deadlock has no first step.** Watchdog kept, silent across four full 7/7 runs |
 | P2 | C/X requests for displaced lines (pre-existing) | secondary search on C/X plan branches; flush assert | ✅ **CLOSED in 2d.** Search armed on both branches through the shared `armSearch()`; flush constraint upgraded from comment to assert. Inert until 2e by construction, and the byte-identical counters prove it |
 | P3 | `!w.displaced` never weakened, single-hop rule | `PopCount(hits) <= 1` assert quiet | ✅ assert landed and **stayed quiet** over 646k cycles including 3 passing migration cases. No `displaced` test was touched in Stage 1 — see the site-by-site table below |
-| P4 | `inPlace` survives a `repeat` reload | Stage 4 assert + GATE 4 | ⬜ Stage 4 work, not started |
-| **P5** | **NEW — SCU repatriation copy overtakes the migration copy into the same way** | one-term fix (`&& !migDeferred` on `doSecCopy`) | 🔴 **diagnosed, fix known, not applied.** Caught live by the Stage-1 shadow model. Recorded in `bug-fix-log.md`. Awaiting your call (see GATE 1) |
+| P4 | `inPlace` survives a `repeat` reload | folded into the serve-in-place lifecycle checks (Stage 2e/9) | 🟡 **substantively handled, no dedicated assert.** The `inPlace`/`physSet`/`meta` commit timing was verified (committed no later than `d.valid`; cleared before any Release — see §743, §808), and `case_reaccess_migrated` passes under GATE 4. A separate `repeat`-reload assert was **not** added, so if a formal net is wanted this is the one remaining piece |
+| **P5** | **SCU repatriation copy overtakes the migration copy into the same way** | **deletion of the repatriation path (Stage 2a)** | ✅ **CLOSED in Stage 2a — P5 *was* the long-open corruption.** Deleting the repatriation copy removed the racer; `case_reaccess_migrated` then passes. `bug-fix-log.md` records it |
 | **P6** | **`migFastWantW` assesses the partner set's directory result as if it were its own victim** | add `!(searching && !w_ssearch)`, the term its sibling `migFastDecline` already has | ✅ **CLOSED in 2b(1).** Never benign — masked by the repatriation path, exposed the moment 2a deleted it. 7/7 with the fix |
-| **P7** | **the 1f pinning assert (`MSHR.scala:1064`) compares against a stale `pairSetReg` on the fast-path claim cycle** — same latch-timing family as 002 C1 and P6 | the live-value treatment the 002 C1 fix used, when something next touches this assert | 🟡 **fix pending, low priority, deliberately not fixed now.** Found via A/B regression against `a148a82`. **False alarm only — no data was ever wrong**; the claim (`migOffer.bits`) is sourced live from the AT and is correct, only the register it is compared against is stale. 2b's resume-cycle timing does not hit it, but the fast path's own exposure is unresolved |
+| **P7** | **the 1f pinning assert compares against a stale `pairSetReg` on the fast-path claim cycle** — same latch-timing family as 002 C1 and P6 | the live-value treatment (gate the compare on `io.directory.valid`) | ✅ **CLOSED in Stage 9** — the compare now reads `pairSetReg` in the cycle it is written, same signal gating the claim (`bug-fix-log.md` §P7). Was a false alarm only — no data was ever wrong |
 
-- [x] P1 and P2 recorded in `ai-documents/bug-fix-log.md` (plus P5 and P6)
+- [x] P1 and P2 recorded in `ai-documents/bugs/bug-fix-log.md` (plus P5 and P6)
 
 ### ⚠️ P1's specified fix closes only half of the bug — flagging before you count it done
 
