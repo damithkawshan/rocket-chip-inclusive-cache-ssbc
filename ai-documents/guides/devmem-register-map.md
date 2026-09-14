@@ -3,6 +3,9 @@
 Control block base: **`0x2010000`**  
 Authoritative source: [`Control.scala`](../../design/craft/inclusivecache/src/Control.scala)
 
+> **Hit and miss words:** [cache-terminology.md](cache-terminology.md). `L2_Accesses`, `L2_Hits` and
+> `SBC_SecHits` are legacy counters that do **not** follow those words — do not quote a hit rate from them.
+
 ## Register Table
 
 | Offset | Command | What you get |
