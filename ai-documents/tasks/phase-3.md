@@ -356,9 +356,12 @@ is in the RTL today, and is the expected behavior.** The swap parts of this file
 - **Teardown is not built.** Nothing clears a pairing except `SBC_Reset`. `Directory.scala` computes
   `displacedOther` (the "partner holds none of my lines any more" test), but nothing reads it. The rule
   "pinned until teardown" still holds — teardown just never happens, so every pairing is permanent.
-  (Tracker L8.)
+  (Tracker L8.) **⚠️ Verify this week on the board (due 2026-09-18, tracker M12).** The paper ends a
+  pairing when a native miss in the destination evicts its last moved line (§3.4).
 - **A secondary hit counts as a miss for heat.** The home lookup misses and updates the heat counter;
   the partner search is an internal read and is not counted. So a set that is served well from its
-  partner still looks hot and keeps migrating. This answers "Secondary-hit accounting" above by
-  default, not by decision. — `Directory.scala:313-315` (Tracker M11.)
+  partner still looks hot and keeps migrating. — `Directory.scala:313-315`
+  **⚠️ Verify this week (tracker M11, due 2026-09-18):** the paper (§3.3 and its Figure 2) lowers the
+  *partner's* counter on a secondary hit, but does not clearly say what happens to the home set's
+  counter. So this may or may not match the paper. Do not change the RTL until it is settled.
 - **`s_verify`** is still not rebuilt. Moved to the last phase on 2026-09-14. (Tracker L1.)

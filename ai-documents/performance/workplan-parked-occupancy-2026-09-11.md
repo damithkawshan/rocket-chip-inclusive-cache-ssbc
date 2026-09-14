@@ -7,6 +7,11 @@ Full technical detail: [omnetpp-differential-2026-09-10.md](omnetpp-differential
 > and `L2_Cycles` gives the speed: SBC is **+32% to +51% slower** and makes **2.5× to 7× more memory
 > accesses** ([fpga-ab-baseline-2026-09-11.md](fpga-ab-baseline-2026-09-11.md) §4). So "SBC is losing"
 > holds with equal work. Step 1.4 (3 repeats) is not done. Steps 2 and 3 have not started.
+>
+> **⚠️ Step 3 under review (2026-09-15):** [why-sbc-loses-2026-09-15.md](why-sbc-loses-2026-09-15.md) §5
+> predicts Switch B does almost nothing and Switch A helps only partly, because pairings never end and a
+> move can only replace a home line. It proposes a fairer variant and two board checks to run first.
+> Decide before building the switches (tracker M4, M14).
 
 **Wording used here:** a **guest line** is a line that was moved out of its own set and now lives in a
 partner set. (The code calls it *displaced* or *parked*.) A **home line** is a line sitting in the set
