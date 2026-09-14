@@ -114,12 +114,16 @@ int main(void) {
     dump("T4 after");
 
     int t4_frozen = (mig_end == mig_base);          /* not one new migration */
-    int t4_live   = (live_end > live_base) ||       /* parked lines still worked on ... */
-                    (parked_base == 0);             /* ... unless there were none left to work on */
+    /* T4 only proves the parked machinery survives the flip if lines WERE parked at the flip.
+     * parked_base == 0 makes the test vacuous, so it is a FAIL, not a free PASS. */
+    int t4_live   = (parked_base > 0) && (live_end > live_base);
+    const char *t4_why = (parked_base == 0) ? "NOTHING PARKED, FAIL"
+                       : t4_live            ? "still running, PASS"
+                                            : "STALLED, FAIL";
     printf("T4 flip OFF while parked: migrations %lu -> %lu (%s), "
            "serve/retire events %lu -> %lu (%s), parked at flip=%lu\n",
            (unsigned long)mig_base, (unsigned long)mig_end, t4_frozen ? "frozen, PASS" : "MOVED, FAIL",
-           (unsigned long)live_base, (unsigned long)live_end, t4_live ? "still running, PASS" : "STALLED, FAIL",
+           (unsigned long)live_base, (unsigned long)live_end, t4_why,
            (unsigned long)parked_base);
     ok &= t4_frozen && t4_live;
 

@@ -67,9 +67,7 @@ class WithInclusiveCache(
   // SBC debug repro knobs (off by default; zero hardware when off)
   sbcForceDstSet: Int = -1,
   sbcGateStallCycles: Int = 0,
-  // 006: main-memory traffic counters. On by default in BOTH SBC and NoSbc builds - they are the
-  // measurement, so they must count identically on both sides of an A/B. Set false only to
-  // characterise their area/timing cost.
+  // 006: memory-traffic counters; on in both SBC and NoSbc builds. false only for area/timing.
   enablePerfCounters: Boolean = true
 ) extends Config((site, here, up) => {
   case InclusiveCacheKey => InclusiveCacheParams(

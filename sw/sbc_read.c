@@ -35,7 +35,7 @@
  *     never touches sat/AT/DSS/parkCount/nParked, so the SBC flow keeps running. One read after the
  *     workload then gives exact window counts with no subtraction and no wrap ambiguity.
  *   The bare delta form needs no reset at all: it subtracts two reads (the counters are 64-bit,
- *     so no wrap in any realistic window; the width-mask below still handles it).
+ *     so no wrap in any realistic window).
  * SBC_Reset (0x358) is the bigger hammer and is only safe when NOTHING is parked - it wipes the
  * Association Table, which is what tells a parked line where it belongs. --reset-all checks
  * SBC_Parked and refuses rather than trusting the caller. For a routine counter window inside a
@@ -58,19 +58,18 @@
 #define SBC_RESET_OFF      0x358UL   /* W: zero ALL SBC state - UNSAFE while lines are parked */
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
 
-/* name, offset, hardware counter width. Every SBC counter is a 64-bit RegInit in
- * SetBalanceUnit.scala (widened 32->64 in the 006 counter change), same as L2_Accesses / L2_Hits.
- * The width still drives the delta mask so a rollover wraps, not goes hugely negative -- though a
- * 64-bit counter does not wrap in any realistic window. */
-static const struct { const char *name; unsigned off; unsigned bits; } REGS[] = {
-    { "migrations",  0x328, 64 }, { "secHits",     0x330, 64 }, { "secMiss",     0x338, 64 },
-    { "attempted",   0x348, 64 }, { "aborted",     0x350, 64 }, { "secPerm",     0x360, 64 },
-    { "secWrite",    0x368, 64 }, { "secProbe",    0x370, 64 }, { "dispRelease", 0x378, 64 },
-    { "dispDrop",    0x380, 64 }, { "secC",        0x388, 64 }, { "homeBranch",  0x390, 64 },
-    { "parked",      0x3A0, 64 }, { "L2_Accesses", 0x3A8, 64 }, { "L2_Hits",     0x3B0, 64 },
+/* name and MMIO byte offset. Every counter is a 64-bit RegInit (SetBalanceUnit.scala) or a 64-bit
+ * PerfCounter, same as L2_Accesses / L2_Hits, so a plain 64-bit read and subtract is exact - no
+ * width mask, and no wrap in any realistic window. */
+static const struct { const char *name; unsigned off; } REGS[] = {
+    { "migrations",  0x328 }, { "secHits",     0x330 }, { "secMiss",     0x338 },
+    { "attempted",   0x348 }, { "aborted",     0x350 }, { "secPerm",     0x360 },
+    { "secWrite",    0x368 }, { "secProbe",    0x370 }, { "dispRelease", 0x378 },
+    { "dispDrop",    0x380 }, { "secC",        0x388 }, { "homeBranch",  0x390 },
+    { "parked",      0x3A0 }, { "L2_Accesses", 0x3A8 }, { "L2_Hits",     0x3B0 },
     /* 006 main-memory traffic. Appended, never inserted: show() indexes this table positionally. */
-    { "memReads",    0x3C8, 64 }, { "memWrites",   0x3D0, 64 }, { "memUpgrades", 0x3D8, 64 },
-    { "memRelClean", 0x3E0, 64 }, { "L2_Cycles",   0x3E8, 64 },
+    { "memReads",    0x3C8 }, { "memWrites",   0x3D0 }, { "memUpgrades", 0x3D8 },
+    { "memRelClean", 0x3E0 }, { "L2_Cycles",   0x3E8 },
 };
 /* Positional indices into REGS, used by show(). Keep in step with the table above. */
 #define I_MIGRATIONS 0
@@ -85,13 +84,9 @@ static const struct { const char *name; unsigned off; unsigned bits; } REGS[] = 
 
 static volatile uint64_t *base;
 
-static uint64_t mask_of(unsigned i) {
-    return REGS[i].bits >= 64 ? ~(uint64_t)0 : ((uint64_t)1 << REGS[i].bits) - 1;
-}
-
 static void snap(uint64_t *v) {
     for (unsigned i = 0; i < NREG; i++)
-        v[i] = base[REGS[i].off / 8] & mask_of(i);
+        v[i] = base[REGS[i].off / 8];
 }
 
 /* SBC_MigrateEnable exists in every build - Control.scala is not gated by enableSetBalancing - but
@@ -161,6 +156,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--reset-all")) reset_all = 1;
         else if (!strcmp(argv[i], "--force")) force = 1;
         else if (!strcmp(argv[i], "--")) { cmd = i + 1; break; }
+        else {
+            /* An unrecognised flag is almost always a typo (e.g. --migrate=1); running the child
+             * with the switch left unchanged would silently measure the wrong thing. */
+            fprintf(stderr, "sbc_read: unknown option '%s'\n"
+                    "usage: sbc_read [--zero] [--migrate=on|off] [--reset-all] [--force] [-- cmd ...]\n",
+                    argv[i]);
+            return 2;
+        }
     }
 
     /* --reset-all: SBC_Reset (0x358) wipes saturation, DSS, the AT and the counters together. Use it
@@ -215,9 +218,9 @@ int main(int argc, char **argv) {
     if (p == 0) { execvp(argv[cmd], &argv[cmd]); perror("exec"); _exit(127); }
     int st; waitpid(p, &st, 0);
     snap(b);
-    /* With --zero the window is just the absolute post-run reading (no wrap possible); without it,
-     * subtract the two snapshots and mask each counter to its width so a wrap stays correct. */
-    for (unsigned i = 0; i < NREG; i++) d[i] = zero ? b[i] : ((b[i] - a[i]) & mask_of(i));
+    /* With --zero the window is just the absolute post-run reading; without it, subtract the two
+     * snapshots. Both counters are 64-bit, so the unsigned subtraction is exact - no width mask. */
+    for (unsigned i = 0; i < NREG; i++) d[i] = zero ? b[i] : (b[i] - a[i]);
     d[I_PARKED] = b[I_PARKED];          /* parked is a level, not a count - report the final value */
     show(zero ? "SBC-WINDOW" : "SBC-DELTA", d);
     return WIFEXITED(st) ? WEXITSTATUS(st) : 1;

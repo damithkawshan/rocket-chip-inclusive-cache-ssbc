@@ -1,29 +1,34 @@
 # Coder report 006 — migration on/off switch + main-memory traffic counters
 
-**Date:** 2026-09-10 · **Author:** coder session · **Status:** IN PROGRESS
+**Date:** 2026-09-10 (updated 2026-09-14, Amendment 6) · **Author:** coder session · **Status:** 🟢 **CLOSED** (2026-09-14) — Parts A/B/D/E landed, C partial; fixed-work board A/B done, SBC is slower; 64-bit counters committed (`06fcca8`), close-out cleanup committed
 
 > Template. Fill in as you go, not at the end. A task that stops early still gets a report
 > saying where it stopped and why.
 
 ## Summary
 
-**Part A landed and works; work then stopped at gate G3 as the work order instructs.** `SBC_MigrateEnable`
-(0x3C0, R/W, default OFF) is wired Control → InclusiveCache → Scheduler → SetBalanceUnit and gates
-`hotOK` only; the `SBC_Reset`-while-parked assert is in. G2 passes: switch ON, 7/7 PASS, 0 asserts,
-13,566 migrations. **G3 comes back split.** The switch does what it says — with it off from reset,
-migrations/attempted/aborted/secHits/secMiss are all exactly 0 and the test is still 7/7 correct — but
-"switch off ⇒ the same numbers as a NoSbc build" is **not** true: `L2_Accesses` −5.21%, `L2_Hits`
-−7.36%. The useful detail is that derived **misses differ by only 1.47%** and outer **AcquireBlock by
-1.58%**, so nearly all of the gap is in *counted hit-lookups* rather than in data actually moving.
-Per the standing rule ("if G3 fails, STOP and report — do not proceed to Part B assuming it passed"),
-**Parts B, D and E were not started.** The thinker needs to rule on whether a ~1.5% systematic
-offset on the headline metric is acceptable for the one-bitstream method before the memory counters
-get built on top of it.
+**Updated 2026-09-14 (Amendment 3). Parts A, B, D and E landed; C is partial** — the `sbc_read`
+switch/reset/zero knobs shipped, but child cycle/instret timing was never built and is now moot (§13.4).
+The fixed-work board A/B this task exists to feed has run, and **SBC is slower and moves more memory
+traffic in all three pairs** — pair B (256 KB, the real geometry): **+46.0% cycles, 3.56× main-memory
+accesses** (see Numbers). The one-bitstream A/B method is accepted: on the board, **"SBC built but
+switched off" matches a separately-built NoSbc bitstream to within noise** (90.19% vs 90.24% hit rate,
+fixed-time windows), so switching migration off behaves like not building SBC and the G3 two-build
+offset below does **not** apply to the real measurement — the board A/B is migrate-ON vs migrate-OFF on
+**one** bitstream.
 
-**Added afterwards on request:** `sbc_read --migrate=on|off`, the software knob for the Part-A
-register, plus `sw/sbc_migrate_switch_test.c` which verifies it. That test's four sub-tests all pass
-and one of them **is gate G4**, which is therefore now closed. This work is independent of the G3
-question — it exercises the switch, not the baseline it is measured against.
+What landed: **Part A** `SBC_MigrateEnable` (0x3C0, R/W, default OFF) gating `hotOK`, wired Control →
+InclusiveCache → Scheduler → SetBalanceUnit, plus the `SBC_Reset`-while-parked assert; **Part B**
+`PerfCounters` + `enablePerfCounters` and the five 0x3C8–0x3E8 memory-traffic MMIO counters; **Part D**
+CLAUDE.md + `devmem-register-map.md`; **Part E** `L2_Cycles` (0x3E8), promoted to mandatory once
+`rdinstret`/`perf_event_open` proved dead on the board (Amendment 1); and the software `sbc_read
+--migrate/--reset-all/--zero` plus `sbc_migrate_switch_test.c` (4/4, its T4 **is** gate G4).
+
+**Historical (2026-09-10): work first stopped at G3.** G3's counter-matching half fails as a literal
+two-build comparison — `L2_Accesses` −5.21%, `L2_Hits` −7.36% between the switch-off and NoSbc builds —
+but derived **misses differ by only 1.47%** and outer **AcquireBlock by 1.58%**, so the gap is in
+*counted hit-lookups*, not data moved; its migration-gating half passes cleanly (7/7, all SBC counters
+0). The board's one-bitstream method sidesteps this, which is why Parts B/D/E were then built.
 
 ## What was built
 
@@ -40,7 +45,7 @@ question — it exercises the switch, not the baseline it is measured against.
 | C — child cycle/instret timing | `sw/sbc_read.c` | ❌ not started | needs Part E's `L2_Cycles`; `rdcycle`/`rdinstret`/`perf_event_open` are all dead on this board |
 | (unplanned) board A/B automation | `chipyard/scripts/ssbc_scripts/run_board_session.exp` | ✅ | Two-phase one-bitstream A/B, now the default. See below. |
 | (unplanned) switch verification test | `sw/sbc_migrate_switch_test.c` | ✅ new | T1 read-back both ways, T2 gate off, T3 gate on, T4 flip-off-while-parked. T4 **is gate G4.** |
-| C — `sbc_mmio.h` offsets | `sw/sbc_mmio.h` | 🟡 partial | all six 006 offsets (0x3C0–0x3E8) are already in the header, so the Part-A register and its header entry landed in one change per the CLAUDE.md rule. The five counter offsets are declared but no hardware answers them yet. |
+| C — `sbc_mmio.h` offsets | `sw/sbc_mmio.h` | ✅ | all six 006 offsets (0x3C0–0x3E8) are in the header. Part B has since landed, so the five 0x3C8–0x3E8 counter offsets are now answered by `PerfCounters` hardware (no longer "declared but unanswered"). |
 | D — `CLAUDE.md` + `devmem-register-map.md` | both | ✅ | Register table extended to 0x3E8 in both. `devmem-register-map.md` had stopped at 0x358 — everything from 0x360 up was missing, now filled in, plus the `sbc_read` recipes and the A/B ordering rule. |
 | D — config-word bit layout **was wrong** | `devmem-register-map.md` | ✅ fixed | It documented `[63:56]=banks … [39:32]=lgBlockBytes`. `RegFieldGroup` packs from the **LSB up** (`RegMapper.scala:44`, `fields.scanLeft(byte * 8)(_ + _.width)`), so it is `[7:0]=banks … [31:24]=lgBlockBytes`. Pre-existing error, unrelated to 006, found because `sbc_read` now decodes that word. |
 | (unplanned) test-harness switch write | `sw/migration_stress_test.c` | ✅ | `#ifndef SBC_MIGRATE_OFF` guarded; see the contradictions section |
@@ -88,34 +93,61 @@ split in the G3 table below was obtained.
 
 | # | Gate | Command run | Result |
 |---|---|---|---|
-| G0 | NoSbc + `enablePerfCounters=false` bit-exact | **not run** — needs a config with the flag off. The off-path is a Scala `if`, so no module is instantiated and the `else` drives zeros (same shape as the proven `io.sbcStats := 0.U.asTypeOf(...)`), but elaboration of that path is unexercised. Also see the contradictions section: this gate cannot hold *literally* once Part A lands. | — |
+| G0 | NoSbc + `enablePerfCounters=false` bit-exact | **not run** — needs a config with the flag off. The off-path is a Scala `if`, so no module is instantiated and the `else` drives zeros (same shape as the proven `io.sbcStats := 0.U.asTypeOf(...)`), but elaboration of that path is unexercised. Also see the contradictions section: this gate cannot hold *literally* once Part A lands. **Deferred to task 005** — its first check (V1) elaborates the `enablePerfCounters=false` build. | 005 |
 | G1 | NoSbc + counters on; `L2_Accesses`/`L2_Hits` unchanged | `mst_prePartB.riscv` (Part-A-era source, `[SBC-MEM]` printf stripped) on the new NoSbc build | ✅ **PASS, exactly.** `l2Accesses=368219 l2Hits=233963` — byte-identical to the Part A run. `PerfCounters` is behaviourally transparent. |
 | G2 | stress test, switch ON — 7/7 unchanged from `d8671cf` | `run_sbc.sh` clean rebuild, both configs, `migration_stress_test.riscv` (ON variant, `-DSBC_MIGRATE_OFF` undefined) | ✅ PASS — 7/7, 0 asserts. `migrations=13566 attempted=31507 aborted=18261 secHits=15290 secMiss=53918 l2Accesses=360436 l2Hits=187939`. **Not bit-diffed against a literal d8671cf rebuild** (would need a second full clean-rebuild cycle; the nearest captured baseline, `l2-hitrate-counters-004` from 2026-09-02, predates `322494a` "parked lines last priority" which changes victim selection and thus migration counts for unrelated reasons — not a valid comparison point). Correctness argued by construction instead: the only diff to `hotOK` is a new `io.migrateEnable &&` term forced to `1` by the SW write, so the gated expression is identical to pre-006 whenever the switch is on. |
 | G3 | stress test, switch OFF — matches NoSbc | same simulator (no rebuild), `migration_stress_test_off.riscv` (`-DSBC_MIGRATE_OFF`) vs the NoSbc run above | ⚠️ **SPLIT VERDICT — see the delta table below.** Migration-gating half **passes cleanly** (7/7 PASS, 0 asserts, `migrations=0 attempted=0 aborted=0 secHits=0 secMiss=0`). Counter-matching half **fails as written**: `L2_Accesses` −5.21%, `L2_Hits` −7.36% vs the NoSbc run — far outside OR-reduction noise. But derived **misses** are only −1.47% apart and outer **AcquireBlock −1.58%**, so the divergence is concentrated in *counted hits*, not in data movement. |
 | G4 | flip switch off mid-run with lines parked | `sw/sbc_migrate_switch_test.c` T4, on `VerilatorRocket8KL116KL2Config` | ✅ **PASS** — flipped OFF with 3 lines parked, then hammered 1500 iterations: `migrations` frozen at exactly 3, `secHits` kept climbing 211 → 399, no assert, no hang. Parked lines are still served in place while the switch is off. |
 | G5 | memory-counter identity vs `sbcDebug` OUTER-A | stress test on both configs, counters vs the `OUTER-A` tally in the same run | ✅ **PASS — but the gate's premise in TASK.md is wrong, see below.** `memUpgrades` vs `perm=1`: 0 vs 0, exact, both configs. `memReads` vs `perm=0`: SBC 142,258 vs 142,315 (gap 57); NoSbc 133,301 vs 133,308 (gap 7). |
-| G6 | `SBC_Reset` while parked — assert fires, `sbc_read` refuses | assert is in the RTL (`SetBalanceUnit.scala`) but **never exercised** — the switch-off run parks nothing, and no test issues `SBC_Reset` while parked | — |
-| G7 | full board recipe end to end | not run — no board access this session | — |
+| G6 | `SBC_Reset` while parked — assert fires, `sbc_read` refuses | assert is in the RTL (`SetBalanceUnit.scala`) but **never exercised** — the switch-off run parks nothing, and no test issues `SBC_Reset` while parked. **Next board session:** after a migrate-on half leaves lines parked, `sbc_read --reset-all` must refuse (its parked-line check). | next board |
+| G7 | full board recipe end to end | ✅ **board evidence** — the three fixed-work A/B pairs (2026-09-11 → 09-13) ran the full recipe end to end: boot, `sbc_read --zero -- omnetpp`, migrate off→on, dump. See Numbers / fpga-ab-baseline §4. | board |
 | G8 | `L2_Cycles` calibration vs `sleep 10` | not run — Part E not started, and needs the board | — |
-| G9 | `L2_Cycles` windowing consistent with wall clock | not run — Part E not started, and needs the board | — |
+| G9 | `L2_Cycles` windowing consistent with wall clock | ✅ **board evidence** — `L2_Cycles` framed every A/B window on the board and tracked run length sensibly (pair B: 606 G off / 885 G on ≈ ~3.4 h / ~4.9 h at 50 MHz). Absolute CPU-cycle calibration is G8, still open (§13.4). | board |
 | G10 | `sw/build/pe` verdict + errno recorded | ✅ recorded above, transcribed from TASK.md §12.1 (not re-run) | `EINVAL`, option A dead |
 
 ## Numbers
 
-The table this task exists to produce. **Same benchmark, run to completion, both configs, reboot
-between them.**
+The table this task exists to produce — **the fixed-work A/B, run on the board 2026-09-11 → 09-13.**
+Every run used `sbc_read --zero -- <omnetpp> --sim-time-limit`, so the benchmark **ran to the end** and
+both halves reached the **same event count** (same work — the valid A/B). One bitstream, one boot:
+migrate-OFF half first, then `--reset-all --migrate=on`. Values copied from the session logs via
+[fpga-ab-baseline-2026-09-11.md](../../performance/fpga-ab-baseline-2026-09-11.md) §4.
 
-| | SBC on | SBC off | ratio |
+**Main table — pair B** (256 KB 16-way L2, the real geometry and the longest run; sim-time 0.1 s,
+35,128,553 events; `board_session_20260912-021811.log`):
+
+| | SBC on (migrate ON) | SBC off (migrate OFF) | ratio ON/OFF |
 |---|---:|---:|---:|
-| `L2_MemReads` (blocks read from memory) | | | |
-| `L2_MemWrites` (dirty blocks written) | | | |
-| **main-memory accesses (reads + writes)** | | | |
-| bytes moved (accesses × 64) | | | |
-| `L2_MemUpgrades` | | | |
-| `L2_MemRelClean` | | | |
-| cycles (or wall clock) | | | |
-| instret | | | |
-| `SBC_Migrations` / `SBC_Parked` at end | | n/a | |
+| `L2_MemReads` (blocks read from memory) | 8,983,608,947 | 2,322,681,628 | **3.87×** |
+| `L2_MemWrites` (dirty blocks written) | 2,040,240,733 | 775,830,225 | **2.63×** |
+| **main-memory accesses (reads + writes)** | **11,023,849,680** | **3,098,511,853** | **3.56×** |
+| bytes moved (accesses × 64) | 705,526,379,520 | 198,304,758,592 | 3.56× |
+| `L2_MemUpgrades` | not separated in these logs | | |
+| `L2_MemRelClean` | not separated in these logs | | |
+| cycles (`L2_Cycles`, uncore clock) | 885,140,998,271 | 606,430,476,198 | 1.46× (**+46.0%**) |
+| instret | not available on this board (Amendment 1) | | |
+| `SBC_Migrations` / `SBC_Parked` at end | 8,323,681 / 1,903 | 0 / 0 | |
+| `secHits` | 996,051,875 | 0 | |
+
+**The other two pairs** (headline only; full per-counter breakdown in the source doc §4.2):
+
+| pair | L2 | sim-time | events | cycles ON/OFF | mem-access ON/OFF |
+|---|---|---|---:|---:|---:|
+| A | 256 KB | 0.001 s | 28,270 | +31.9% (1.32×) | 6.96× |
+| **B** | **256 KB** | **0.1 s** | **35,128,553** | **+46.0% (1.46×)** | **3.56×** |
+| C | 64 KB | 0.02 s | 9,347,248 | +51.2% (1.51×) | 2.45× |
+
+**Read before quoting:**
+- **One run per pair — no reboot-separated repeat yet, so G12 stays open.** Pair A (0.001 s) is too
+  short to trust alone (mostly network setup); pair C is a different bitstream (64 KB), not a repeat of A/B.
+- Reads and writes **both** rise, reads more — reported separately, never combined into one figure.
+- Quote **memory accesses and cycles, not hit rate**: hit rate still counts L1 write-backs as hits
+  (task 005), and `L2_Accesses` is higher in every ON half despite equal work — it is **not** a work
+  measure (see G3). The event count is the "same work" anchor.
+- `L2_Cycles` is the L2/uncore clock; whether it equals CPU cycles is unconfirmed (§13.4). The ON/OFF
+  ratio holds either way.
+- These bitstreams read the SBC event counters as **32-bit**; nothing wrapped (largest `secHits` 996 M
+  in pair B), but a ≥1.0 s run would — which is exactly why §13.3 widens them to 64-bit.
 
 ## G5's premise in TASK.md is wrong — read this before re-running it
 
@@ -345,33 +377,40 @@ victim pool" is a bigger standing behaviour than the Stage-2c comment above it d
 
 ## Verdict
 
-**Partially done — stopped deliberately at the G3 decision gate.** Part A is complete, compiles,
-elaborates on both configs, and is verified by G2. Parts B, C, D, E are untouched.
+**Done — and the answer is negative for SBC.** Parts A, B, D and E landed; C is partial (child timing
+never built, now moot — §13.4). Both the measurement method and the result resolved on the board.
 
-The work order made G3 the decision point for the whole one-bitstream measurement method and said to
-stop if it fails. It did not cleanly pass, so this is back with the thinker. Three ways forward, in
-the order I would rank them:
+- **The one-bitstream A/B method is accepted.** The G3 worry — that a switch-off build would not match
+  a separate NoSbc build — was about *two* bitstreams. The board method uses **one** bitstream and
+  flips migration on/off within a single boot, so that offset never enters. Validated on the board:
+  **"SBC built but switched off" matches a separately-built NoSbc bitstream to within noise**
+  (**90.19% vs 90.24%** hit rate, fixed-time windows) — so switching migration off behaves like not
+  building SBC at all.
+- **The fixed-work A/B is done** (three pairs, 2026-09-11 → 09-13; see Numbers). Both halves of each
+  pair reached the same omnetpp event count, so they did the same work.
+- **SBC is slower and moves more main-memory traffic, in every pair.** Pair B (256 KB, the real
+  geometry): **+46.0% cycles, 3.56× memory accesses** (reads 3.87×, writes 2.63×). Pairs A and C agree
+  in sign and magnitude (+31.9% / +51.2% cycles; 6.96× / 2.45× accesses).
 
-1. **Accept the one-bitstream method with a stated uncertainty band, and carry on with Part B.**
-   Justification: the headline metric this task exists to build is *main-memory accesses*, and outer
-   `AcquireBlock` differs by 1.58% between the two builds on a deliberately eviction-hostile stress
-   test (8 sets, 8 ways, a program written to thrash). A real benchmark should show less. If SBC's
-   effect on memory traffic is the double-digit change we are looking for, a ~1.5% systematic floor
-   does not endanger the conclusion — it just has to be *quoted* alongside it, never silently dropped.
-   Under this option the two-bitstream NoSbc control stays for area/Fmax, exactly as §12.2 already says.
-2. **Confirm the LFSR hypothesis first (half a day).** Re-run both configs with a fixed/disabled
-   replacement LFSR, or diff waveforms at the first divergent victim selection. If replacement
-   randomness is the whole story, the residual is provably noise rather than a behavioural difference,
-   and option 1 becomes solid instead of plausible. If it is *not* the story, there is a real bug
-   hiding behind the switch and it needs finding before any number is published.
-3. **Fall back to two bitstreams for performance too**, as §12.2's contingency says. Costs the
-   place-and-route-variation control that motivated the one-bitstream idea, and does not actually fix
-   anything — the two builds still differ by the same 1.5%, we just stop being able to see it.
+**Caveat that keeps this from being final:** one run per pair, no reboot-separated repeat yet, so
+**G12 is open** (workplan Step 1.4). The sign is not in doubt across three pairs and two geometries,
+but a published number needs the repeat. Quote memory accesses and cycles, not hit rate (task 005).
 
-I would not recommend building Part B and then discovering the baseline is contested; but I would also
-not treat 1.5% on memory traffic as fatal. **Option 2 then 1 is the cheap, defensible path.**
+Nothing in this task's RTL is implicated in the *result* — the switch, the counters and `L2_Cycles` are
+observation-only. The 64-bit counter widening (§13.3) landed in **`06fcca8`**, so a ≥1 s run cannot wrap
+`secHits`. The Amendment 6 close-out (false-alarm beat check dropped, stale comments and dead
+`sbc_read` code removed) landed in a follow-up commit — **no behaviour change**.
 
-Nothing in this task's RTL is implicated either way — Part A can stay as it is under all three options.
+**Close-out verification (2026-09-14, `sw/verilator_logs/*_006-closeout`):** `migration_stress_test`
+PASS on both `VerilatorRocket8KL116KL2Config` (22.40 M cyc) and `…NoSbcConfig` (23.11 M cyc), 0 asserts;
+every `[SBC-COUNTERS]`/`[SBC-MEM]` value **byte-for-byte identical** to the `006-partB-counters`
+baseline on both configs (confirming the cleanup changed nothing). `sbc_migrate_switch_test` 4/4, with
+T4 now reporting **3 lines parked at the flip** (the loophole fix — T4 was previously a free pass when
+nothing was parked). The 64-bit run itself left no logs; these close-out logs stand in.
+
+**Bitstream:** the board still runs the 32-bit-counter image. One rebuild is owed **after task 005**
+(it changes the register map again), not for this change alone — short board runs this week are safe on
+the current image (§15.4).
 
 ### Reproduction
 

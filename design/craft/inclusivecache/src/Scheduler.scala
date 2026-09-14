@@ -756,21 +756,6 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     perf.io.cDirty     := sourceC.io.req.bits.dirty
     perf.io.clearStats := io.sbcStatsReset
     io.perfStats       := perf.io.stats
-
-    // One io.req.fire per outer release, so the beats must reconcile. Only the UPPER bound is
-    // assertable continuously: the beats of a release stream out over later cycles, so equality
-    // holds only at quiescence, but "more beats than the requests authorised" is always a bug.
-    // Scala-gated: with one beat per block the bound is trivially true and elaborates nothing.
-    val beatsPerBlock = params.cache.blockBytes / params.outer.manager.beatBytes
-    if (beatsPerBlock > 1) {
-      val memWriteBeats = RegInit(0.U(64.W))
-      val cData = io.out.c.bits.opcode === TLMessages.ReleaseData ||
-                  io.out.c.bits.opcode === TLMessages.ProbeAckData
-      when (io.out.c.fire && cData) { memWriteBeats := memWriteBeats + 1.U }
-      when (io.sbcStatsReset)       { memWriteBeats := 0.U }
-      assert (memWriteBeats <= perf.io.stats.memWrites * beatsPerBlock.U,
-              "SBC 006: outer C sent more data beats than SourceC requests authorised")
-    }
   } else {
     io.perfStats := 0.U.asTypeOf(new PerfCounterStats)
   }

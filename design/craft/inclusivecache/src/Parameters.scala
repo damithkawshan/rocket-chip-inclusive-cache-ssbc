@@ -141,10 +141,7 @@ case class InclusiveCacheMicroParameters(
   sbcForceDstSet:          Int = -1,        // >=0: force every migration to target this set (-1 = off, DSS pick)
   sbcGateStallCycles:      Int = 0,         // >0: hold the dst fence (dstValid) low N extra cycles after a
                                             //     migration starts, widening the [advice->gate] collision window
-  // --- 006: main-memory traffic counters ---
-  // NOT gated by enableSetBalancing: the point of these is comparing a build that has SBC against one
-  // that does not, so they must exist and count identically in both. false = module not instantiated,
-  // MMIO reads as zero, zero hardware - for area/timing characterisation only.
+  // 006: memory-traffic counters; not gated by enableSetBalancing. false = not built, for area/timing only.
   enablePerfCounters:      Boolean = true)
 {
   require (writeBytes > 0 && isPow2(writeBytes))

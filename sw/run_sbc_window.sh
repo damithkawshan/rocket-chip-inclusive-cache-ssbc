@@ -3,13 +3,10 @@
 #
 # Modelled directly on TL_signal_analysis's run_tldmon_bench_vcu118.sh: launch the workload,
 # wait out a warm-up delay, open the counter window, sample for a fixed time, then kill the
-# workload. The benchmark NEVER has to finish - which is the whole point, because 520.omnetpp_r
-# on the `ref` input will not complete on a 50 MHz in-order Rocket in any usable time.
-#
-# A bounded window is also what keeps the 32-bit SBC counters honest: they WRAP silently
-# (nSecMiss := nSecMiss + 1.U, no saturation). secMiss is the fastest mover at ~11% of L2
-# accesses, so it wraps after ~37.6 G accesses. A 600 s window at ~2 M acc/s uses ~1.2 G
-# accesses -> secMiss ~140 M, about 30x margin. Keep windows bounded and wrap is a non-issue.
+# workload. This is a fixed-TIME observation window, so the benchmark need not finish - handy for
+# watching counters move during a long run. It is NOT valid for an on/off comparison: a fixed time
+# can simply mean less work got done. For an A/B, use `sbc_read --zero -- <cmd>` instead, so both
+# halves do the same work.
 #
 # Usage:
 #   ./run_sbc_window.sh omnetpp            # 520.omnetpp_r, ref input
@@ -38,10 +35,7 @@ log() { echo "[sbc_window] $(date '+%H:%M:%S') $*"; }
 
 # ---- workload table (same shape, and same omnetpp args, as the TLD branch) ----
 case "$1" in
-    # `ref` carries --sim-time-limit=1s, overriding its omnetpp.ini (2.25s), so the run is a
-    # FIXED AMOUNT OF SIMULATED WORK - identical on both bitstreams, which is the condition the
-    # L2_MemReads/MemWrites metric requires (CLAUDE.md, "same work"). It is meant to RUN TO
-    # COMPLETION under `sbc_read --zero -- <cmd>`, not to be killed on this script's timer.
+    # `ref` carries --sim-time-limit=1s, overriding its omnetpp.ini (2.25s).
     # `train` and `test` keep their own ini defaults (0.15s / 0.003s).
     omnetpp|omnetpp_ref)
         WDIR="$WL_BASE/520.omnetpp_r_run_ref";   WBIN="./omnetpp_r_base.riscv-64"; WARGS="-c General -r 0 --sim-time-limit=1s" ;;

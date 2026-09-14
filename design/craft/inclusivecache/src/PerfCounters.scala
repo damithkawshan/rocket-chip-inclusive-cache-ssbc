@@ -1,14 +1,7 @@
 /*
- * Main-memory traffic counters (coder task 006 Part B + E).
- *
- * Everything the L2 sends toward main memory leaves through two ports, so counting there gives a
- * number with no denominator to argue about: a count of things that physically happened at the
- * memory port. That is the whole reason this exists - a hit RATE needs a denominator, and every
- * candidate denominator ("does an L1 write-back count? a flush? a permission upgrade?") is a
- * judgement call. Bytes moved is not.
- *
- * Deliberately NOT gated by enableSetBalancing: these compare an SBC build against a non-SBC one,
- * so they must exist and count identically in both.
+ * Main-memory traffic counters (coder task 006 Part B + E): what the L2 moves to and from main
+ * memory, counted at the outer port. NOT gated by enableSetBalancing - they must exist and count
+ * identically in an SBC build and a non-SBC one, because they are what an A/B compares.
  */
 
 package sifive.blocks.inclusivecache
@@ -35,8 +28,7 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     val aFire   = Input(Bool())
     val aOpcode = Input(UInt(3.W))
     // Outer C, sampled at sourceC.io.req.fire - NOT io.out.c.fire, which is multi-beat for
-    // ReleaseData and would count one eviction once per beat. SourceC.scala:81 (`io.req.ready :=
-    // !busy && room`) is what makes req.fire exactly once per outer release.
+    // ReleaseData and would count one eviction once per beat (req.fire is exactly once per release).
     val cFire   = Input(Bool())
     val cDirty  = Input(Bool())
     val clearStats = Input(Bool())

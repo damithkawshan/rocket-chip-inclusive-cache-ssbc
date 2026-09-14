@@ -163,7 +163,6 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
     val sbcParkedField = RegField.r(64, io.sbc_stats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
-    // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
       RegFieldDesc("SBC_MigrateEnable", "Master switch: gates only the START of a new migration. 0=off (default)"))
     // SBC 006: main-memory traffic. reads+writes is the headline; report the two SEPARATELY in every
@@ -179,6 +178,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("L2_MemRelClean", "Outer Release without data: clean eviction, no bytes moved", volatile=true))
     val l2CyclesField = RegField.r(64, io.perfStats.cycles,
       RegFieldDesc("L2_Cycles", "Free-running L2 clock; reset by SBC_StatsReset", volatile=true))
+    // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
     val l2AccessesField = RegField.r(64, io.l2Accesses,
       RegFieldDesc("L2_Accesses", "Total primary directory lookups (hit+miss), free-running", volatile=true))
     val l2HitsField = RegField.r(64, io.l2Hits,
