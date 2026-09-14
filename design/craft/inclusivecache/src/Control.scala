@@ -45,17 +45,14 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // SBC: SW-selected set index out, read-only stats in
       val sbc_satReadSet = Output(UInt(log2Ceil(outer.cache.sets).W))
       val sbc_stats      = Input(new SBCStats(log2Ceil(outer.cache.sets), outer.micro.satCounterBits))
-      // SBC 004: free-running L2 hit-rate counters (NOT part of SBCStats -> not gated by enableSetBalancing)
-      val l2Accesses = Input(UInt(64.W))
-      val l2Hits     = Input(UInt(64.W))
-      // SBC 006: main-memory traffic + cycles (same rule: not gated by enableSetBalancing)
+      // SBC 005: every monitoring counter (PerfCounters). Reads 0 when enablePerfCounters = false.
       val perfStats  = Input(new PerfCounterStats)
       // SBC: SW arm pulse out (a write to SBC_BalanceSet → 1-cycle valid+set)
       val sbc_balanceSet = Valid(UInt(log2Ceil(outer.cache.sets).W))
       // SBC: SW reset pulse out (a write to SBC_Reset → 1-cycle high; zeroes all SBC observation state)
       val sbc_reset = Output(Bool())
       // SBC: SW counter-only reset pulse out (a write to SBC_StatsReset). Zeroes ONLY the event/hit
-      // counters, never sat/AT/DSS/parkCount/nParked, so the SBC flow is untouched.
+      // counters, never sat/AT/DSS/parkCount/SBC_Parked, so the SBC flow is untouched.
       val sbc_stats_reset = Output(Bool())
     })
     // Flush directive
@@ -103,7 +100,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     // Set-Balancing Cache (SBC) observation block (read-only stats + a SW set-select).
     val sbcSetBits = log2Ceil(outer.cache.sets)
     val sbcSatBits = outer.micro.satCounterBits
-    val sbcSetSel  = RegInit(0.U(sbcSetBits.W))
+    // SBC_SetSel only steers the read-back muxes, so it goes with them: reads 0 when the flag is off.
+    val sbcSetSel: UInt = if (outer.micro.enablePerfCounters) RegInit(0.U(sbcSetBits.W)) else 0.U(sbcSetBits.W)
     io.sbc_satReadSet := sbcSetSel
 
     // SBC: master switch. R/W, level (not a pulse), default OFF. Gates only the START of a new
@@ -125,8 +123,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcStatsResetPulse = WireInit(false.B)
     io.sbc_stats_reset := sbcStatsResetPulse
 
-    val sbcSetSelField = RegField(sbcSetBits, sbcSetSel,
-      RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back"))
+    val sbcSetSelDesc  = RegFieldDesc("SBC_SetSel", "Set index selected for SBC saturation read-back")
+    val sbcSetSelField = if (outer.micro.enablePerfCounters) RegField(sbcSetBits, sbcSetSel, sbcSetSelDesc)
+                         else RegField.r(sbcSetBits, sbcSetSel, sbcSetSelDesc)
     val sbcSetSatField = RegField.r(sbcSatBits, io.sbc_stats.satReadValue,
       RegFieldDesc("SBC_SetSat", "Saturation counter of the selected set", volatile=true))
     val sbcColdestSetField = RegField.r(sbcSetBits, io.sbc_stats.coldestSet,
@@ -136,32 +135,32 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcStatusField = RegField.r(8,
       Cat(io.sbc_stats.atValid, io.sbc_stats.coldestValid, outer.micro.enableSetBalancing.B),
       RegFieldDesc("SBC_Status", "bit0=enabled, bit1=coldestValid, bit2=selectedAtValid", volatile=true))
-    val sbcMigrationsField = RegField.r(64, io.sbc_stats.migrations,
+    val sbcMigrationsField = RegField.r(64, io.perfStats.migrations,
       RegFieldDesc("SBC_Migrations", "Migrations committed", volatile=true))
-    val sbcSecHitsField = RegField.r(64, io.sbc_stats.secHits,
+    val sbcSecHitsField = RegField.r(64, io.perfStats.secHits,
       RegFieldDesc("SBC_SecHits", "Secondary hits (0 in Phase 0)", volatile=true))
-    val sbcSecMissField = RegField.r(64, io.sbc_stats.secMiss,
+    val sbcSecMissField = RegField.r(64, io.perfStats.secMiss,
       RegFieldDesc("SBC_SecMiss", "Secondary misses (0 in Phase 0)", volatile=true))
-    val sbcSecPermField = RegField.r(64, io.sbc_stats.secPerm,
+    val sbcSecPermField = RegField.r(64, io.perfStats.secPerm,
       RegFieldDesc("SBC_SecPerm", "Secondary hits that had to acquire permission (subset of SecHits)", volatile=true))
     // SBC (003 §10.5): serve-in-place / displaced-eviction observability.
-    val sbcSecWriteField = RegField.r(64, io.sbc_stats.secWrite,
+    val sbcSecWriteField = RegField.r(64, io.perfStats.secWrite,
       RegFieldDesc("SBC_SecWrite", "Serves where the requester needed T", volatile=true))
-    val sbcSecProbeField = RegField.r(64, io.sbc_stats.secProbe,
+    val sbcSecProbeField = RegField.r(64, io.perfStats.secProbe,
       RegFieldDesc("SBC_SecProbe", "Serves that probed a client off the parked line first", volatile=true))
-    val sbcDispReleaseField = RegField.r(64, io.sbc_stats.dispRelease,
+    val sbcDispReleaseField = RegField.r(64, io.perfStats.dispRelease,
       RegFieldDesc("SBC_DispRelease", "Dirty parked lines written back (addressed by lineHome)", volatile=true))
-    val sbcDispDropField = RegField.r(64, io.sbc_stats.dispDrop,
+    val sbcDispDropField = RegField.r(64, io.perfStats.dispDrop,
       RegFieldDesc("SBC_DispDrop", "Clean parked lines released with no data", volatile=true))
-    val sbcSecCField = RegField.r(64, io.sbc_stats.secC,
+    val sbcSecCField = RegField.r(64, io.perfStats.secC,
       RegFieldDesc("SBC_SecC", "Serves raised by a C-channel Release", volatile=true))
-    val sbcHomeBranchField = RegField.r(64, io.sbc_stats.homeBranch,
+    val sbcHomeBranchField = RegField.r(64, io.perfStats.homeBranch,
       RegFieldDesc("SBC_HomeBranch", "Requests that found their own HOME line in BRANCH", volatile=true))
     // bits [7:0] = AT[sel].assocSet, bit 8 = sd (0 = source side). sd forced to bit 8 regardless of setBits.
     val sbcAtAssocField = RegField.r(9,
       Cat(io.sbc_stats.atSd, 0.U((8 - sbcSetBits).W), io.sbc_stats.atAssocSet),
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
-    val sbcParkedField = RegField.r(64, io.sbc_stats.parked,
+    val sbcParkedField = RegField.r(64, io.perfStats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
       RegFieldDesc("SBC_MigrateEnable", "Master switch: gates only the START of a new migration. 0=off (default)"))
@@ -172,16 +171,16 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("L2_MemReads", "Outer AcquireBlock: blocks read from main memory", volatile=true))
     val l2MemWritesField = RegField.r(64, io.perfStats.memWrites,
       RegFieldDesc("L2_MemWrites", "Outer ReleaseData: dirty blocks written to main memory", volatile=true))
-    val l2MemUpgradesField = RegField.r(64, io.perfStats.memUpgrades,
-      RegFieldDesc("L2_MemUpgrades", "Outer AcquirePerm: permission round trip, no bytes moved", volatile=true))
+    val l2MemAcqPermField = RegField.r(64, io.perfStats.memAcqPerm,
+      RegFieldDesc("L2_MemAcqPerm", "Outer AcquirePerm: requester overwrites the whole block, no bytes moved", volatile=true))
     val l2MemRelCleanField = RegField.r(64, io.perfStats.memRelClean,
       RegFieldDesc("L2_MemRelClean", "Outer Release without data: clean eviction, no bytes moved", volatile=true))
     val l2CyclesField = RegField.r(64, io.perfStats.cycles,
       RegFieldDesc("L2_Cycles", "Free-running L2 clock; reset by SBC_StatsReset", volatile=true))
     // SBC 004: free-running total L2 hit-rate counters (always active; not reset by SBC_Reset)
-    val l2AccessesField = RegField.r(64, io.l2Accesses,
+    val l2AccessesField = RegField.r(64, io.perfStats.l2Accesses,
       RegFieldDesc("L2_Accesses", "Total primary directory lookups (hit+miss), free-running", volatile=true))
-    val l2HitsField = RegField.r(64, io.l2Hits,
+    val l2HitsField = RegField.r(64, io.perfStats.l2Hits,
       RegFieldDesc("L2_Hits", "Total primary hits, free-running", volatile=true))
 
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
@@ -189,9 +188,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       when (ivalid) { sbcArmPulse := true.B; sbcArmSet := data }
       (true.B, true.B)  // fire-and-forget: ovalid must not track ivalid, or the D beat never fires on real fabric (hangs on FPGA, not sim).
     }), RegFieldDesc("SBC_BalanceSet", "Arm SBC migration for the written source-set index"))
-    val sbcAttemptedField = RegField.r(64, io.sbc_stats.attempted,
+    val sbcAttemptedField = RegField.r(64, io.perfStats.attempted,
       RegFieldDesc("SBC_Attempted", "Migrations attempted (setup reached)", volatile=true))
-    val sbcAbortedField = RegField.r(64, io.sbc_stats.aborted,
+    val sbcAbortedField = RegField.r(64, io.perfStats.aborted,
       RegFieldDesc("SBC_Aborted", "Migrations aborted (ineligible source/destination)", volatile=true))
 
     // SBC: zero all SBC observation state (write-only). A write of any value pulses io.sbc_reset.
@@ -239,7 +238,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x3C8 -> RegFieldGroup("L2_MemTraffic", Some("Main-memory traffic seen at the outer port"),
                              Seq(l2MemReadsField)),
       0x3D0 -> Seq(l2MemWritesField),
-      0x3D8 -> Seq(l2MemUpgradesField),
+      0x3D8 -> Seq(l2MemAcqPermField),
       0x3E0 -> Seq(l2MemRelCleanField),
       0x3E8 -> Seq(l2CyclesField)
     )

@@ -37,9 +37,12 @@ Authoritative source: [`Control.scala`](../../design/craft/inclusivecache/src/Co
 | `0x3C0` | `devmem 0x20103C0 32` | R/W — `SBC_MigrateEnable`. **Default 0.** 1 lets a new migration start; 0 stops new ones. Never affects a line already parked |
 | `0x3C8` | `devmem 0x20103C8 64` | `L2_MemReads` — blocks read from main memory |
 | `0x3D0` | `devmem 0x20103D0 64` | `L2_MemWrites` — dirty blocks written to main memory |
-| `0x3D8` | `devmem 0x20103D8 64` | `L2_MemUpgrades` — permission only, no bytes |
+| `0x3D8` | `devmem 0x20103D8 64` | `L2_MemAcqPerm` — outer `AcquirePerm` (whole-block write), no bytes. Was `L2_MemUpgrades` before task 005; old logs say `memUpgrades=` |
 | `0x3E0` | `devmem 0x20103E0 64` | `L2_MemRelClean` — clean eviction announced, no bytes |
 | `0x3E8` | `devmem 0x20103E8 64` | `L2_Cycles` — free-running L2 clock, zeroed by `0x3B8` |
+
+With `enablePerfCounters = false` (task 005) every counter above and the read-backs `0x300`, `0x308`,
+`0x320` bit 2 and `0x398` read 0.
 
 Note: `0x340` (`SBC_BalanceSet`) is write-only and **dead in Phase 2** — see below.
 

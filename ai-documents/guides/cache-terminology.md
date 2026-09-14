@@ -63,14 +63,14 @@ is why the simulator words carry over.
 
 ## 4. Our counters against these words (2026-09-14)
 
-**Until task 005 lands:** the only exact number is **misses = `L2_MemReads + L2_MemUpgrades`** — every
+**Until task 005 lands:** the only exact number is **misses = `L2_MemReads + L2_MemAcqPerm`** (was `L2_MemUpgrades`) — every
 outer A message is exactly one data miss or upgrade miss. **Do not quote a hit rate**: no counter today
 gives accesses or primary hits in these words.
 
 | Counter | Follows the words? | What it really counts |
 |---|---|---|
 | `L2_Accesses`, `L2_Hits` | ❌ legacy | Directory lookups on **every** channel: include write-backs and flushes, leave out repeats. `L2_Hits` counts upgrade misses and write-backs as hits, and secondary hits as misses. Kept unchanged so old numbers stay comparable |
-| `L2_MemReads` + `L2_MemUpgrades` | ✅ all misses | Every outer A message. Split by opcode (bytes moved or not), **not** by kind of miss: `L2_MemUpgrades` counts `AcquirePerm` (a whole-block write), which is not the same thing as an upgrade miss (`BtoT`) |
+| `L2_MemReads` + `L2_MemAcqPerm` | ✅ all misses | Every outer A message. Split by opcode (bytes moved or not), **not** by kind of miss: `L2_MemAcqPerm` counts `AcquirePerm` (a whole-block write), which is not the same thing as an upgrade miss (`BtoT`). Renamed from `L2_MemUpgrades` in task 005 commit 0 (same address `0x3D8`; old logs say `memUpgrades=`) |
 | `SBC_SecHits` | ❌ | Every serve from the partner set, **including** write-backs (`SBC_SecC`) and upgrade misses (`SBC_SecPerm`) |
 | `SBC_SecMiss` | ≈ ✅ | Secondary misses. A flush over a parked line would also count, but that case is asserted unsupported |
 | `SBC_SecProbe` | ≈ | Serves from the partner set that probed first — the parked half of probed hits, but it also includes upgrade misses |

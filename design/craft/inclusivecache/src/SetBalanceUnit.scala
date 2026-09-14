@@ -27,32 +27,17 @@ class ATEntry(params: InclusiveCacheParameters) extends InclusiveCacheBundle(par
 }
 
 // Read-only stats surfaced to the MMIO control block. Parameterised by widths only so Control.scala
-// can build it without a full InclusiveCacheParameters.
+// can build it without a full InclusiveCacheParameters. The event counters live in PerfCounters.
 class SBCStats(setBits: Int, satBits: Int) extends Bundle
 {
   val coldestValid = Bool()
   val coldestSet   = UInt(setBits.W)
   val coldestLevel = UInt(satBits.W)
+  // Read-backs of the SW-selected set: 0 when enablePerfCounters = false.
   val satReadValue = UInt(satBits.W)       // saturation of the SW-selected set
-  val atValid      = Bool()                // AT[selected set].valid (Phase 0: always 0)
-  val migrations   = UInt(64.W)            // committed migrations
-  val attempted    = UInt(64.W)            // migrations attempted (setup reached)
-  val aborted      = UInt(64.W)            // migrations aborted (ineligible src/dst)
-  val secHits      = UInt(64.W)
-  val secMiss      = UInt(64.W)
-  // SBC (003 Stage 9a): of the secondary HITS, how many had to acquire permission over the parked
-  // line instead of being served outright. A subset of secHits, not a decline of it.
-  val secPerm      = UInt(64.W)
-  // SBC (003 §10.5): serve-in-place and displaced-eviction event counts, plus AT read-back.
-  val secWrite     = UInt(64.W)   // serves where the requester needed T
-  val secProbe     = UInt(64.W)   // serves that had to probe a client off the parked line first
-  val dispRelease  = UInt(64.W)   // dirty parked lines written back (addressed by lineHome)
-  val dispDrop     = UInt(64.W)   // clean parked lines released with no data
-  val secC         = UInt(64.W)   // serves raised by a C-channel Release
-  val homeBranch   = UInt(64.W)   // requests that found their own HOME line in BRANCH
+  val atValid      = Bool()                // AT[selected set].valid
   val atAssocSet   = UInt(setBits.W)  // AT[satReadSet].assocSet
   val atSd         = Bool()           // AT[satReadSet].sd (0 = source side)
-  val parked       = UInt(64.W)   // live displaced lines currently resident
 }
 
 class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
@@ -95,34 +80,18 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     }))
     // SBC Phase 1: SW arm pulse from MMIO SBC_BalanceSet (1-cycle valid+set).
     val arm = Flipped(Valid(UInt(params.setBits.W)))
-    // SBC Phase 2: migration counter pulses from the MSHRs (attempted at the migrate decision,
-    // aborted at the dst-full fallback).
-    val migAttempt = Input(Bool())
-    val migAbort   = Input(Bool())
-    // SBC Phase 3: secondary search outcome pulses from the MSHRs. secHits/(secHits+secMiss) is `f`,
-    // the term the whole design turns on.
-    val secHit  = Input(Bool())
-    val secMiss = Input(Bool())
-    val secPerm = Input(Bool())
-    // SBC (003 §10.5): serve-in-place and displaced-eviction pulses (OR-reduced across MSHRs).
-    val secWrite    = Input(Bool())
-    val secProbe    = Input(Bool())
+    // SBC (003 §10.5): displaced-eviction pulses (OR-reduced across MSHRs), for parkCount.
     val dispHome    = Input(UInt(params.setBits.W))  // which set the reclaimed parked line came from
     val dispRelease = Input(Bool())
     val dispDrop    = Input(Bool())
-    val secC        = Input(Bool())
-    val homeBranch  = Input(Bool())
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
     // SBC: MMIO master switch (SBC_MigrateEnable). Gates only the START of a new migration; every
     // already-parked line keeps being searched, served, written back and evicted exactly as before.
     val migrateEnable = Input(Bool())
-    // SBC reset: SW pulse from MMIO SBC_Reset — zeroes all counters, saturation, AT and the DSS.
+    // SBC reset: SW pulse from MMIO SBC_Reset — zeroes saturation, armed, the AT and the DSS.
     val clear = Input(Bool())
-    // SBC counter-only reset: SW pulse from MMIO SBC_StatsReset — zeroes ONLY the event counters,
-    // never sat/armed/AT/DSS/parkCount/nParked, so the migration flow is untouched.
-    val clearStats = Input(Bool())
     // MMIO
     val satReadSet = Input(UInt(params.setBits.W))
     val stats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
@@ -206,36 +175,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.migrateResp.destOk  := !dIsDest && Mux(dIsSource, true.B, dssOK) && forcedLegal
   io.migrateResp.destSet := Mux(dIsSource, dEntry.assocSet, dssPick)
 
-  // ---- SBC Phase 1: migration counters + AT commit (step 7) -----------------------------------
-  // attempted/aborted come from dedicated MSHR pulses; migrations from commit{MIGRATE}.
-  val nAttempt = RegInit(0.U(64.W))
-  val nAbort   = RegInit(0.U(64.W))
-  val nCommit  = RegInit(0.U(64.W))
-  when (io.migAttempt) { nAttempt := nAttempt + 1.U }
-  when (io.migAbort)   { nAbort   := nAbort + 1.U }
-  val nSecHit  = RegInit(0.U(64.W))
-  val nSecMiss = RegInit(0.U(64.W))
-  val nSecPerm = RegInit(0.U(64.W))
-  when (io.secHit)  { nSecHit  := nSecHit + 1.U }
-  when (io.secMiss) { nSecMiss := nSecMiss + 1.U }
-  when (io.secPerm) { nSecPerm := nSecPerm + 1.U }
-  // SBC (003 §10.5): the six new event counters.
-  val nSecWrite    = RegInit(0.U(64.W))
-  val nSecProbe    = RegInit(0.U(64.W))
-  val nDispRelease = RegInit(0.U(64.W))
-  val nDispDrop    = RegInit(0.U(64.W))
-  val nSecC        = RegInit(0.U(64.W))
-  val nHomeBranch  = RegInit(0.U(64.W))
-  when (io.secWrite)    { nSecWrite    := nSecWrite + 1.U }
-  when (io.secProbe)    { nSecProbe    := nSecProbe + 1.U }
-  when (io.dispRelease) { nDispRelease := nDispRelease + 1.U }
-  when (io.dispDrop)    { nDispDrop    := nDispDrop + 1.U }
-  when (io.secC)        { nSecC        := nSecC + 1.U }
-  when (io.homeBranch)  { nHomeBranch  := nHomeBranch + 1.U }
-  // SBC (003 §10.4b): live displaced-line occupancy. Plain observability counter, no assert.
-  // ++ when a line gets parked (migration commit), -- when a displaced line leaves (release or drop).
-  // Saturates at 0 so an underflow cannot print as a huge number.
-  val nParked   = RegInit(0.U(64.W))
+  // ---- SBC Phase 1: AT commit (step 7). The event counters and SBC_Parked live in PerfCounters. --
   val parkErase = io.dispRelease || io.dispDrop
   // Paper section 2.3 "sc" bit, as a per-source-set count of lines currently parked in the partner.
   // A count rather than a bare bit because we have no cheap "OR of the d bits" read of the partner
@@ -261,7 +201,6 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   dss.io.remove.bits.src := io.commit.bits.src
   dss.io.remove.bits.dst := io.commit.bits.dst
   when (migrateCommit) {
-    nCommit := nCommit + 1.U
     at(io.commit.bits.src).valid    := true.B
     at(io.commit.bits.src).sd       := false.B            // source side
     at(io.commit.bits.src).assocSet := io.commit.bits.dst
@@ -269,9 +208,6 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     at(io.commit.bits.dst).sd       := true.B             // destination side
     at(io.commit.bits.dst).assocSet := io.commit.bits.src
   }
-  when (migrateCommit && !parkErase)                        { nParked := nParked + 1.U }
-  .elsewhen (!migrateCommit && parkErase && nParked =/= 0.U) { nParked := nParked - 1.U }
-
   // Per-set version. Commit and erase can name DIFFERENT sets in one cycle, so these are two
   // independent updates, not an if/else - unless they name the same set, where they cancel.
   val parkInc = migrateCommit
@@ -289,9 +225,6 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
   io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
 
-  // SBC_Reset while lines are parked orphans them - the AT is their only home-set record.
-  assert (!io.clear || nParked === 0.U, "SBC_Reset issued while lines are still parked")
-
   // SBC reset: a write to MMIO SBC_Reset zeroes every piece of SBC observation state in one cycle.
   // Placed after all update logic above so a same-cycle dirTap update / commit loses to the clear.
   when (io.clear) {
@@ -300,52 +233,24 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // TODO(phase3): once the AT is wired into the live secondary-search/teardown path, clearing it
     // while displaced lines still exist would orphan them (the AT is their home-set recovery info).
     at.foreach    (_ := 0.U.asTypeOf(new ATEntry(params)))
-    nAttempt := 0.U
-    nAbort   := 0.U
-    nCommit  := 0.U
-    nSecHit  := 0.U
-    nSecMiss := 0.U
-    nSecPerm := 0.U
-    nSecWrite    := 0.U
-    nSecProbe    := 0.U
-    nDispRelease := 0.U
-    nDispDrop    := 0.U
-    nSecC        := 0.U
-    nHomeBranch  := 0.U
-    // nParked deliberately NOT cleared here: clearing the AT while lines are still parked orphans
-    // them (§10.9, deferred). Nothing writes SBC_Reset today; this keeps the occupancy honest.
-  }
-
-  // SBC counter-only reset: zero the observability counters for a fresh measurement window WITHOUT
-  // touching sat/armed/AT/DSS/parkCount/nParked (the live flow state). After the increments so clear wins.
-  when (io.clearStats) {
-    nAttempt := 0.U; nAbort := 0.U; nCommit := 0.U
-    nSecHit := 0.U; nSecMiss := 0.U; nSecPerm := 0.U
-    nSecWrite := 0.U; nSecProbe := 0.U
-    nDispRelease := 0.U; nDispDrop := 0.U; nSecC := 0.U; nHomeBranch := 0.U
   }
 
   // Read-only stats for MMIO.
   io.stats.coldestValid := dss.io.coldestValid
   io.stats.coldestSet   := dss.io.coldestSet
   io.stats.coldestLevel := dss.io.coldestLevel
-  io.stats.satReadValue := sat(io.satReadSet)
-  io.stats.atValid      := at(io.satReadSet).valid
-  io.stats.migrations   := nCommit
-  io.stats.attempted    := nAttempt
-  io.stats.aborted      := nAbort
-  io.stats.secHits      := nSecHit
-  io.stats.secMiss      := nSecMiss
-  io.stats.secPerm      := nSecPerm
-  io.stats.secWrite     := nSecWrite
-  io.stats.secProbe     := nSecProbe
-  io.stats.dispRelease  := nDispRelease
-  io.stats.dispDrop     := nDispDrop
-  io.stats.secC         := nSecC
-  io.stats.homeBranch   := nHomeBranch
-  io.stats.atAssocSet   := at(io.satReadSet).assocSet
-  io.stats.atSd         := at(io.satReadSet).sd
-  io.stats.parked       := nParked
+  // Read-backs of the SW-selected set: two sets-way muxes, so they go with the measurement flag.
+  if (params.micro.enablePerfCounters) {
+    io.stats.satReadValue := sat(io.satReadSet)
+    io.stats.atValid      := at(io.satReadSet).valid
+    io.stats.atAssocSet   := at(io.satReadSet).assocSet
+    io.stats.atSd         := at(io.satReadSet).sd
+  } else {
+    io.stats.satReadValue := 0.U
+    io.stats.atValid      := false.B
+    io.stats.atAssocSet   := 0.U
+    io.stats.atSd         := false.B
+  }
 
   // ---- sim-only debug printfs (Scala-gated; nothing elaborated when sbcDebug=false) ----
   if (params.micro.sbcDebug) {

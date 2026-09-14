@@ -58,17 +58,17 @@
 #define SBC_RESET_OFF      0x358UL   /* W: zero ALL SBC state - UNSAFE while lines are parked */
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
 
-/* name and MMIO byte offset. Every counter is a 64-bit RegInit (SetBalanceUnit.scala) or a 64-bit
- * PerfCounter, same as L2_Accesses / L2_Hits, so a plain 64-bit read and subtract is exact - no
- * width mask, and no wrap in any realistic window. */
+/* name and MMIO byte offset. Every counter is a 64-bit register in PerfCounters.scala, so a plain
+ * 64-bit read and subtract is exact - no width mask, and no wrap in any realistic window. */
 static const struct { const char *name; unsigned off; } REGS[] = {
     { "migrations",  0x328 }, { "secHits",     0x330 }, { "secMiss",     0x338 },
     { "attempted",   0x348 }, { "aborted",     0x350 }, { "secPerm",     0x360 },
     { "secWrite",    0x368 }, { "secProbe",    0x370 }, { "dispRelease", 0x378 },
     { "dispDrop",    0x380 }, { "secC",        0x388 }, { "homeBranch",  0x390 },
     { "parked",      0x3A0 }, { "L2_Accesses", 0x3A8 }, { "L2_Hits",     0x3B0 },
-    /* 006 main-memory traffic. Appended, never inserted: show() indexes this table positionally. */
-    { "memReads",    0x3C8 }, { "memWrites",   0x3D0 }, { "memUpgrades", 0x3D8 },
+    /* 006 main-memory traffic. Appended, never inserted: show() indexes this table positionally.
+     * memAcqPerm was memUpgrades before 005 - old logs say memUpgrades=. */
+    { "memReads",    0x3C8 }, { "memWrites",   0x3D0 }, { "memAcqPerm",  0x3D8 },
     { "memRelClean", 0x3E0 }, { "L2_Cycles",   0x3E8 },
 };
 /* Positional indices into REGS, used by show(). Keep in step with the table above. */

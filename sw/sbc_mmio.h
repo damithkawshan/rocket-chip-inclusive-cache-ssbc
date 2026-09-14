@@ -44,7 +44,7 @@
                                                      migration. 0=off (default)                       */
 #define SBC_L2_MEMREADS   (L2_CTRL_BASE + 0x3C8) /* R   outer AcquireBlock — blocks read from memory   */
 #define SBC_L2_MEMWRITES  (L2_CTRL_BASE + 0x3D0) /* R   outer ReleaseData — dirty blocks written       */
-#define SBC_L2_MEMUPGRADES (L2_CTRL_BASE + 0x3D8)/* R   outer AcquirePerm — permission only, no bytes  */
+#define SBC_L2_MEMACQPERM  (L2_CTRL_BASE + 0x3D8)/* R   outer AcquirePerm — whole-block write, no bytes (was MEMUPGRADES) */
 #define SBC_L2_MEMRELCLEAN (L2_CTRL_BASE + 0x3E0)/* R   outer Release, no data — clean eviction        */
 #define SBC_L2_CYCLES      (L2_CTRL_BASE + 0x3E8)/* R   free-running L2 clock, reset by SBC_StatsReset */
 

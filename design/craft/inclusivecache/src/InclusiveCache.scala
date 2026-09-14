@@ -189,9 +189,7 @@ class InclusiveCache(
     ctrls.zipWithIndex.foreach { case (ctrl, ci) =>
       val bank = if (ctrls.size > 1) ci else 0
       ctrl.module.io.sbc_stats := mods(bank).io.sbcStats
-      ctrl.module.io.l2Accesses := mods(bank).io.l2Accesses  // SBC 004: free-running, both configs
-      ctrl.module.io.l2Hits     := mods(bank).io.l2Hits
-      ctrl.module.io.perfStats  := mods(bank).io.perfStats   // SBC 006: memory traffic + cycles
+      ctrl.module.io.perfStats := mods(bank).io.perfStats   // SBC 005: every monitoring counter
     }
     mods.zipWithIndex.foreach { case (sched, i) =>
       val ctrlOpt = if (ctrls.size > 1) ctrls.lift(i) else ctrls.headOption

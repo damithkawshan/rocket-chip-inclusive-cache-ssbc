@@ -50,9 +50,9 @@ static void sbc_summary(void) {
            (unsigned long)sbc_rd(SBC_SECMISS),    (unsigned long)sbc_rd(SBC_SECPERM),
            (unsigned long)sbc_rd(SBC_L2_ACCESSES),(unsigned long)sbc_rd(SBC_L2_HITS));
     /* 006 gate G5: memReads must equal the [SBC] OUTER-A AcquireBlock tally in the same run. */
-    printf("[SBC-MEM] memReads=%lu memWrites=%lu memUpgrades=%lu memRelClean=%lu cycles=%lu\n",
+    printf("[SBC-MEM] memReads=%lu memWrites=%lu memAcqPerm=%lu memRelClean=%lu cycles=%lu\n",
            (unsigned long)sbc_rd(SBC_L2_MEMREADS),   (unsigned long)sbc_rd(SBC_L2_MEMWRITES),
-           (unsigned long)sbc_rd(SBC_L2_MEMUPGRADES),(unsigned long)sbc_rd(SBC_L2_MEMRELCLEAN),
+           (unsigned long)sbc_rd(SBC_L2_MEMACQPERM), (unsigned long)sbc_rd(SBC_L2_MEMRELCLEAN),
            (unsigned long)sbc_rd(SBC_L2_CYCLES));
 }
 

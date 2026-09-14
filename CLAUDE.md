@@ -84,7 +84,7 @@ the full table, the literature it comes from, and which counters follow it. This
 - **Hit rate = (primary + secondary hits) ÷ accesses.**
 - ⚠️ **`L2_Accesses` / `L2_Hits` and `SBC_SecHits` are legacy and do not follow these words** (every
   channel; upgrade misses and write-backs count as hits). Until coder/005 lands, the only exact number
-  is **misses = `L2_MemReads + L2_MemUpgrades`** — do not quote a hit rate.
+  is **misses = `L2_MemReads + L2_MemAcqPerm`** (was `L2_MemUpgrades`) — do not quote a hit rate.
 
 ## ⚠️ Build-phase leftovers — check these first
 
@@ -139,10 +139,7 @@ the last measurement, and report area both with and without it.**
 
 | Item | Costs FPGA area today? | Note |
 |---|---|---|
-| 12 SBC event counters + parked count (64-bit after task 006) | yes, ~830 FF | measurement only |
-| Memory-traffic counters + `L2_Cycles` (`enablePerfCounters`) | yes, in **both** builds | measurement only; the flag already exists |
-| `L2_Accesses` / `L2_Hits` (task 004) | yes, in both builds | always on; no flag yet |
-| Read-back registers: `SBC_SetSel`/`SetSat`, `ColdestSet`/`Level`, `AtAssoc`, `Status` | yes — `SetSat` and `AtAssoc` are 256-way selects | debug view only |
+| Every MMIO counter (`PerfCounters.scala`): 12 SBC events + parked count, `L2_Accesses`/`L2_Hits`, memory traffic + `L2_Cycles`; and the `SBC_SetSel`/`SetSat`/`AtAssoc`/`Status` bit 2 read-backs | yes, in both builds (~830 FF for the SBC events alone; `SetSat` and `AtAssoc` are 256-way selects) | measurement only. **One flag since task 005 commit 0:** `enablePerfCounters = false` removes all of it; the registers read 0. `ColdestSet`/`Level` stay — the cache uses those wires |
 | `SBC_BalanceSet` register + per-set `armed[]` | `armed[]` is already removed by synthesis when `sbcAutoMigrate = true`; the register write still exists | remove together with `sbcAutoMigrate` |
 | `SetCopyUnit` in the SBC-off build | yes, 240 LUT / 529 FF (measured) | guard it (tracker H1) — makes the baseline fair |
 | `sbcShadow` shadow checkers | no — FPGA configs set it `false` (would be ~123k FF) | sim only; keep for Verilator |
@@ -150,9 +147,9 @@ the last measurement, and report area both with and without it.**
 | `sbcForceDstSet`, `sbcGateStallCycles` | no hardware at defaults | test knobs; keep until L2 and L3 are closed |
 | `SBC_MigrateEnable` switch | 1 FF | **keep** — needed for the one-bitstream A/B |
 
-**After task 005, one flag covers the measurement rows:** `enablePerfCounters = false` removes every
-counter (rows 1–3), the read-back muxes (row 4) and the sampler; their registers read 0. Report area with
-the flag on and off.
+**One flag covers the measurement row (task 005 commit 0):** `enablePerfCounters = false` removes every
+counter and the read-back muxes (row 1), and after commit 3 the sampler; their registers read 0. Report
+area with the flag on and off.
 
 Not a removal but the biggest area lever: move the per-set tables (`sat`, `at`, `parkCount`, ~5,120 FF)
 from flip-flops to LUTRAM (`ai-documents/daily-summary/2026-09-08.md`).
@@ -264,7 +261,7 @@ knobs and the SBC enable flags:
 | `sbcAutoMigrate` | `false` | Migrate without a SW arm (ignores `armed[]`, so `SBC_BalanceSet` does nothing) |
 | `sbcForceDstSet` | `-1` | Debug: force every migration to this set (the only way to fill a set with parked lines) |
 | `sbcGateStallCycles` | `0` | Debug: widen the dst-fence window to reproduce the open `[born→gate]` bug |
-| `enablePerfCounters` | `true` | Outer-port memory-traffic counters (task 006). **Not** gated by `enableSetBalancing` |
+| `enablePerfCounters` | `true` | All measurement hardware (task 005): every MMIO counter (`PerfCounters.scala`) and the `SBC_SetSel`/`SetSat`/`Status` bit 2/`AtAssoc` read-backs. `false` = not built, those registers read 0. **Not** gated by `enableSetBalancing` |
 | `sbcShadow` | `true` in `WithInclusiveCache` | Sim-only shadow checkers that catch data corruption; forced off when SBC is off |
 
 Several of these exist only for debugging or measurement and may be removed in the optimization phase —
@@ -362,7 +359,7 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x3C0` | `SBC_MigrateEnable` | R/W, 1 bit, **default 0 (OFF)** — gates only the START of a new migration. Everything about an already-parked line (secondary search, serve-in-place, `dispRelease`/`dispDrop`, AT teardown) is unaffected, so flipping it off mid-run strands nothing. Saturation counters and the DSS keep running while off |
 | `0x3C8` | `L2_MemReads` | R, 64 — outer `AcquireBlock`: blocks read from main memory |
 | `0x3D0` | `L2_MemWrites` | R, 64 — outer `ReleaseData`: dirty blocks written to main memory |
-| `0x3D8` | `L2_MemUpgrades` | R, 64 — **renamed `L2_MemAcqPerm` in task 005.** Outer `AcquirePerm` (the requester overwrites the whole block): moves no bytes. **Not** the same as an upgrade miss (param `BtoT`, usually sent as `AcquireBlock`) |
+| `0x3D8` | `L2_MemAcqPerm` | R, 64 — **was `L2_MemUpgrades` before task 005; old logs say `memUpgrades=`.** Outer `AcquirePerm` (the requester overwrites the whole block): moves no bytes. **Not** the same as an upgrade miss (param `BtoT`, usually sent as `AcquireBlock`) |
 | `0x3E0` | `L2_MemRelClean` | R, 64 — outer `Release` without data: clean eviction, moves no bytes |
 | `0x3E8` | `L2_Cycles` | R, 64 — free-running L2/uncore clock. In the `SBC_StatsReset` list, so `sbc_read --zero -- cmd` yields exactly the cycles the child ran for |
 
@@ -371,7 +368,7 @@ depend on anyone's definition of "an access". Report reads and writes **separate
 SBC can trade one for the other (a parked dirty line that would have been dropped now gets written
 back) and a combined figure hides exactly that. Bytes moved = `(reads + writes) × blockBytes`.
 
-**Miss count in the terminology's sense** (see "Cache terminology" above) = `L2_MemReads + L2_MemUpgrades`:
+**Miss count in the terminology's sense** (see "Cache terminology" above) = `L2_MemReads + L2_MemAcqPerm`:
 every outer A message is exactly one data miss or upgrade miss. There is no exact access or hit count
 until coder/005 lands.
 

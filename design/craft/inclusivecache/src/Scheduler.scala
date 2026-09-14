@@ -38,10 +38,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC MMIO: SW-selected set index in, read-only stats out
     val sbcSatReadSet = Input(UInt(params.setBits.W))
     val sbcStats      = Output(new SBCStats(params.setBits, params.micro.satCounterBits))
-    // SBC 004: free-running L2 hit-rate counters (baseline stat, NOT gated by enableSetBalancing)
-    val l2Accesses    = Output(UInt(64.W))
-    val l2Hits        = Output(UInt(64.W))
-    // SBC 006: main-memory traffic + cycle counters (also NOT gated by enableSetBalancing)
+    // SBC 005: every monitoring counter (PerfCounters). Reads 0 when enablePerfCounters = false.
     val perfStats     = Output(new PerfCounterStats)
     // SBC MMIO: master switch (SBC_MigrateEnable). Gates only the start of a NEW migration.
     val migrateEnable = Input(Bool())
@@ -614,10 +611,6 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
     sbu.io.clear      := io.sbcReset
-    sbu.io.clearStats := io.sbcStatsReset
-    // SBC Phase 2: migration counter pulses (OR across MSHRs; the token keeps ≤1 in flight)
-    sbu.io.migAttempt := mshrs.map(_.io.migAttempt).reduce(_ || _)
-    sbu.io.migAbort   := mshrs.map(_.io.migAbort).reduce(_ || _)
     // SBC: a destination that refused a migration is blocked in the DSS. One-hot by the token.
     val migRejectOH = VecInit(mshrs.map(_.io.migRejectDst.valid))
     sbu.io.migReject.valid := migRejectOH.asUInt.orR
@@ -684,24 +677,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       }
     }
 
-    // SBC Phase 3 (002 C1): ask about the MSHR receiving a directory result, not about whatever is
-    // waiting at the port. Keying it to the port let an MSHR latch another set's partner, because
-    // `repeat` is a TAG test standing in for "did my SET change". directoryFanout is one-hot (the
-    // directory is single-ported) - the same property destQuery relies on.
-    sbu.io.secHit  := mshrs.map(_.io.secHit).reduce(_ || _)
-    sbu.io.secMiss := mshrs.map(_.io.secMiss).reduce(_ || _)
-    sbu.io.secPerm := mshrs.map(_.io.secPerm).reduce(_ || _)
-    // SBC (003 §10.5): the six new serve/eviction event pulses, same fan-in pattern.
-    sbu.io.secWrite    := mshrs.map(_.io.secWrite).reduce(_ || _)
-    sbu.io.secProbe    := mshrs.map(_.io.secProbe).reduce(_ || _)
+    // SBC (003 §10.5): parked-line erase pulses for parkCount. OR is exact: asserted one per cycle.
     sbu.io.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
     sbu.io.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
     // Which set the reclaimed parked line came from, so the sc counter decrements the right entry.
     val dispOH = VecInit(mshrs.map(m => m.io.dispRelease || m.io.dispDrop)).asUInt
     sbu.io.dispHome := Mux1H(dispOH, mshrs.map(_.io.dispHome))
     assert (PopCount(dispOH) <= 1.U, "SBC: two MSHRs reclaimed a parked line in one cycle")
-    sbu.io.secC        := mshrs.map(_.io.secC).reduce(_ || _)
-    sbu.io.homeBranch  := mshrs.map(_.io.homeBranch).reduce(_ || _)
+    // SBC Phase 3 (002 C1): ask about the MSHR receiving a directory result, not about whatever is
+    // waiting at the port. Keying it to the port let an MSHR latch another set's partner, because
+    // `repeat` is a TAG test standing in for "did my SET change". directoryFanout is one-hot (the
+    // directory is single-ported) - the same property destQuery relies on.
     sbu.io.assocQuery.valid   := directoryFanout.asUInt.orR
     sbu.io.assocQuery.bits    := Mux1H(directoryFanout, mshrs.map(_.io.status.bits.homeSet))
 
@@ -739,22 +725,30 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     io.sbcStats := 0.U.asTypeOf(new SBCStats(params.setBits, params.micro.satCounterBits))
   }
 
-  // SBC 004: free-running L2 hit-rate counters. Driven OUTSIDE the enableSetBalancing if/else above
-  // (which zeroes io.sbcStats when SBC is off) so they stay non-zero on VerilatorRocket8KL116KL2NoSbcConfig.
-  io.l2Accesses := directory.io.l2Accesses
-  io.l2Hits     := directory.io.l2Hits
-  // SBC: counter-only reset reaches the L2 totals too, ungated, so the SBC-off baseline resets identically.
-  directory.io.clearStats := io.sbcStatsReset
-
-  // SBC 006: main-memory traffic counters. Outside the enableSetBalancing gate on purpose - an
-  // SBC-on vs SBC-off comparison needs them counting identically in both builds.
+  // SBC 005: every monitoring counter. Outside the enableSetBalancing gate on purpose - an SBC-on vs
+  // SBC-off comparison needs the outer-port and lookup counters counting identically in both builds.
   if (params.micro.enablePerfCounters) {
     val perf = Module(new PerfCounters(params))
     perf.io.aFire      := io.out.a.fire
     perf.io.aOpcode    := io.out.a.bits.opcode
     perf.io.cFire      := sourceC.io.req.fire
     perf.io.cDirty     := sourceC.io.req.bits.dirty
+    perf.io.tap        := directory.io.tap
+    // MSHR pulses, OR-reduced as before. PerfCounters adds them, so PopCount can replace the OR here.
+    perf.io.sbc.migAttempt  := mshrs.map(_.io.migAttempt).reduce(_ || _)
+    perf.io.sbc.migAbort    := mshrs.map(_.io.migAbort).reduce(_ || _)
+    perf.io.sbc.migCommit   := mshrs.map(_.io.migCommit).reduce(_ || _)
+    perf.io.sbc.secHit      := mshrs.map(_.io.secHit).reduce(_ || _)
+    perf.io.sbc.secMiss     := mshrs.map(_.io.secMiss).reduce(_ || _)
+    perf.io.sbc.secPerm     := mshrs.map(_.io.secPerm).reduce(_ || _)
+    perf.io.sbc.secWrite    := mshrs.map(_.io.secWrite).reduce(_ || _)
+    perf.io.sbc.secProbe    := mshrs.map(_.io.secProbe).reduce(_ || _)
+    perf.io.sbc.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
+    perf.io.sbc.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
+    perf.io.sbc.secC        := mshrs.map(_.io.secC).reduce(_ || _)
+    perf.io.sbc.homeBranch  := mshrs.map(_.io.homeBranch).reduce(_ || _)
     perf.io.clearStats := io.sbcStatsReset
+    perf.io.clearSbc   := io.sbcReset
     io.perfStats       := perf.io.stats
   } else {
     io.perfStats := 0.U.asTypeOf(new PerfCounterStats)
