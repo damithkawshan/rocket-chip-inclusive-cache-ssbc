@@ -54,6 +54,30 @@ static void sbc_summary(void) {
            (unsigned long)sbc_rd(SBC_L2_MEMREADS),   (unsigned long)sbc_rd(SBC_L2_MEMWRITES),
            (unsigned long)sbc_rd(SBC_L2_MEMACQPERM), (unsigned long)sbc_rd(SBC_L2_MEMRELCLEAN),
            (unsigned long)sbc_rd(SBC_L2_CYCLES));
+    /* 005 commit 1: outcome counters that follow cache-terminology.md. */
+    printf("[SBC-OUTCOMES] accessA=%lu primaryHit=%lu secondaryHit=%lu probedHit=%lu dataMiss=%lu "
+           "upgradeMiss=%lu secondSearch=%lu secondaryMiss=%lu\n",
+           (unsigned long)sbc_rd(SBC_L2_ACCESSA),      (unsigned long)sbc_rd(SBC_L2_PRIMARYHIT),
+           (unsigned long)sbc_rd(SBC_L2_SECONDARYHIT), (unsigned long)sbc_rd(SBC_L2_PROBEDHIT),
+           (unsigned long)sbc_rd(SBC_L2_DATAMISS),     (unsigned long)sbc_rd(SBC_L2_UPGRADEMISS),
+           (unsigned long)sbc_rd(SBC_L2_SECONDSEARCH), (unsigned long)sbc_rd(SBC_L2_SECONDARYMISS));
+}
+
+/* C5: read the four outcome counters and accessA under L2_StatsHold, so they are one instant, and
+ * report "in progress" = accessA - (primaryHit+secondaryHit+dataMiss+upgradeMiss). TASK 005 T5: on
+ * this config (mshrs=7, secondary=33) that is bounded 0..38 fresh from reset, -38..38 after --zero. */
+static void report_inprogress(const char *case_name) {
+    sbc_wr(SBC_L2_STATSHOLD, 1);
+    uint64_t acc = sbc_rd(SBC_L2_ACCESSA);
+    uint64_t ph  = sbc_rd(SBC_L2_PRIMARYHIT);
+    uint64_t sh  = sbc_rd(SBC_L2_SECONDARYHIT);
+    uint64_t dm  = sbc_rd(SBC_L2_DATAMISS);
+    uint64_t um  = sbc_rd(SBC_L2_UPGRADEMISS);
+    sbc_wr(SBC_L2_STATSHOLD, 0);
+    uint64_t outcomes = ph + sh + dm + um;
+    long long inprog = (long long)acc - (long long)outcomes;
+    printf("[SBC-INPROGRESS] case=%s accessA=%lu outcomes=%lu inprogress=%lld\n",
+           case_name, (unsigned long)acc, (unsigned long)outcomes, inprog);
 }
 
 /* Hammer the hot set with loads, occasionally touching the cold set to keep it cold+resident.
@@ -255,12 +279,19 @@ int main(void) {
 
     int ok = 1;
     ok &= case_free_dst(0);         /* 2a: free destination way             */
+    report_inprogress("case_free_dst");
     ok &= case_full_clean_dst(1);   /* 2b: full clean destination           */
+    report_inprogress("case_full_clean_dst");
     ok &= case_dirty_victims(2);    /* skip-migrate: dirty hot victims      */
+    report_inprogress("case_dirty_victims");
     ok &= case_full_dirty_dst(3);   /* abort-dst: full dirty destination    */
+    report_inprogress("case_full_dirty_dst");
     ok &= case_reaccess_migrated(4);/* re-read displaced lines              */
+    report_inprogress("case_reaccess_migrated");
     ok &= case_hazard_rw(6);        /* RaW/WaR interlock stress             */
+    report_inprogress("case_hazard_rw");
     ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window (run last) */
+    report_inprogress("case_bankstore_saturation");
 
     sbc_summary();
     printf(ok ? "PASS: all migration corner cases data-correct (see [SBC] log)\n"

@@ -40,6 +40,12 @@
  * Association Table, which is what tells a parked line where it belongs. --reset-all checks
  * SBC_Parked and refuses rather than trusting the caller. For a routine counter window inside a
  * live SBC run, use --zero, never --reset-all.
+ *
+ * 005 commit 1: every read of the counters below is bracketed with L2_StatsHold (0x438) - set,
+ * read every register, clear - so all ~28 registers come from the SAME cycle instead of drifting
+ * across the ~microseconds an 8-byte-at-a-time devmem-style walk would otherwise take. SBC_Parked
+ * is a level, never held (holding it could freeze a stale value for good), so it is read outside
+ * the hold bracket, same as before.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +63,7 @@
 #define SBC_MIGRATEENABLE_OFF 0x3C0UL /* R/W: 1 = a new migration may start. Default 0 at reset. */
 #define SBC_RESET_OFF      0x358UL   /* W: zero ALL SBC state - UNSAFE while lines are parked */
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
+#define SBC_STATSHOLD_OFF  0x438UL   /* R/W: freeze every event counter (not SBC_Parked) */
 
 /* name and MMIO byte offset. Every counter is a 64-bit register in PerfCounters.scala, so a plain
  * 64-bit read and subtract is exact - no width mask, and no wrap in any realistic window. */
@@ -70,6 +77,10 @@ static const struct { const char *name; unsigned off; } REGS[] = {
      * memAcqPerm was memUpgrades before 005 - old logs say memUpgrades=. */
     { "memReads",    0x3C8 }, { "memWrites",   0x3D0 }, { "memAcqPerm",  0x3D8 },
     { "memRelClean", 0x3E0 }, { "L2_Cycles",   0x3E8 },
+    /* 005 commit 1: outcome counters that follow cache-terminology.md. Appended, never inserted. */
+    { "accessA",       0x3F0 }, { "primaryHit",    0x3F8 }, { "secondaryHit",  0x400 },
+    { "probedHit",     0x408 }, { "dataMiss",      0x410 }, { "upgradeMiss",   0x418 },
+    { "secondSearch",  0x420 }, { "secondaryMiss", 0x428 },
 };
 /* Positional indices into REGS, used by show(). Keep in step with the table above. */
 #define I_MIGRATIONS 0
@@ -80,13 +91,30 @@ static const struct { const char *name; unsigned off; } REGS[] = {
 #define I_MEMREADS   15
 #define I_MEMWRITES  16
 #define I_CYCLES     19
+#define I_ACCESSA       20
+#define I_PRIMARYHIT    21
+#define I_SECONDARYHIT  22
+#define I_PROBEDHIT     23
+#define I_DATAMISS      24
+#define I_UPGRADEMISS   25
+#define I_SECONDSEARCH  26
+#define I_SECONDARYMISS 27
 #define NREG (sizeof(REGS)/sizeof(REGS[0]))
 
 static volatile uint64_t *base;
 
+/* L2_StatsHold brackets every read of REGS[] except SBC_Parked's own tracking (which is never
+ * held). "On every exit path" here just means every snap() call - there is no early return inside
+ * the read loop for this to miss. */
+static void hold_set(void)   { base[SBC_STATSHOLD_OFF / 8] = 1; }
+static void hold_clear(void) { base[SBC_STATSHOLD_OFF / 8] = 0; }
+static int  hold_state(void) { return (int)(base[SBC_STATSHOLD_OFF / 8] & 1); }
+
 static void snap(uint64_t *v) {
+    hold_set();
     for (unsigned i = 0; i < NREG; i++)
         v[i] = base[REGS[i].off / 8];
+    hold_clear();
 }
 
 /* SBC_MigrateEnable exists in every build - Control.scala is not gated by enableSetBalancing - but
@@ -113,11 +141,44 @@ static void show(const char *tag, uint64_t *v) {
     printf("  migrate          : %s\n",
            !sbc_built() ? "n/a (SBC not built into this bitstream)" :
            migrate_state() ? "ON" : "OFF");
+    printf("  reads taken under: L2_StatsHold (0x438) - one instant for all registers\n");
+
+    /* 005: the terminology block (cache-terminology.md). L2_AccessA is 0 on a bitstream built
+     * before task 005 - no outcome block in that case, only the legacy lines below. */
+    uint64_t accA = v[I_ACCESSA], ph = v[I_PRIMARYHIT], sh2 = v[I_SECONDARYHIT], pb = v[I_PROBEDHIT];
+    uint64_t dm = v[I_DATAMISS], um = v[I_UPGRADEMISS], ss = v[I_SECONDSEARCH], sm2 = v[I_SECONDARYMISS];
+    if (accA) {
+        uint64_t outcomes = ph + sh2 + dm + um;
+        long long inprog = (long long)accA - (long long)outcomes;
+        printf("  ACCESSES          : %llu\n", (unsigned long long)accA);
+        printf("    primary hits    : %llu  (%.2f%%)\n",
+               (unsigned long long)ph, 100.0 * ph / accA);
+        printf("    secondary hits  : %llu  (%.2f%%)\n",
+               (unsigned long long)sh2, 100.0 * sh2 / accA);
+        printf("    data misses     : %llu  (%.2f%%)\n",
+               (unsigned long long)dm, 100.0 * dm / accA);
+        printf("    upgrade misses  : %llu  (%.2f%%)\n",
+               (unsigned long long)um, 100.0 * um / accA);
+        printf("    hit rate        : %.2f%%  (primary + secondary)\n",
+               100.0 * (ph + sh2) / accA);
+        printf("    probed hits     : %llu  (part of the hits)\n", (unsigned long long)pb);
+        if (ss)
+            printf("    second searches : %llu  (%.2f%% of accesses, %.2f%% of them hit)\n",
+                   (unsigned long long)ss, 100.0 * ss / accA, 100.0 * sh2 / ss);
+        else
+            printf("    second searches : 0\n");
+        printf("    in progress     : %lld  (accesses minus the four outcomes; "
+               "0..38 from reset, -38..38 after --zero)\n", inprog);
+        (void)sm2;
+    }
+
+    /* Legacy: directory lookups on every channel, not the terminology's access/hit. Kept for old
+     * numbers to stay comparable - do not quote these as a hit rate (cache-terminology.md). */
     uint64_t acc = v[I_ACCESSES], hit = v[I_HITS], sh = v[I_SECHITS], mig = v[I_MIGRATIONS];
     if (acc) {
-        printf("  primary hit rate : %llu/%llu = %.2f%%\n",
+        printf("  legacy lookup hit rate (primary)     : %llu/%llu = %.2f%%\n",
                (unsigned long long)hit, (unsigned long long)acc, 100.0 * hit / acc);
-        printf("  total hit rate   : %llu/%llu = %.2f%%  (primary + secondary)\n",
+        printf("  legacy lookup hit rate (primary+sec) : %llu/%llu = %.2f%%\n",
                (unsigned long long)(hit + sh), (unsigned long long)acc, 100.0 * (hit + sh) / acc);
     }
     if (mig)
@@ -146,6 +207,13 @@ int main(int argc, char **argv) {
     void *m = mmap(NULL, MAP_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, L2_CTRL_BASE);
     if (m == MAP_FAILED) { perror("mmap"); return 1; }
     base = (volatile uint64_t *)m;
+
+    /* If a prior run left the hold set (crashed mid-read, or someone else's script), clear it now
+     * rather than silently reading frozen counters for the rest of this run. */
+    if (hold_state()) {
+        fprintf(stderr, "sbc_read: warning: L2_StatsHold was already set at start - clearing it\n");
+        hold_clear();
+    }
 
     int cmd = 0, zero = 0, migsw = -1, reset_all = 0, force = 0;
     /* migsw: -1 = leave the switch alone, 0 = off, 1 = on */

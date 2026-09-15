@@ -204,6 +204,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val dispHome    = Output(UInt(params.setBits.W)) // ... and which set it was parked out of
     val secC        = Output(Bool())  // serve raised by a C-channel Release
     val homeBranch  = Output(Bool())  // this request found its own HOME line in BRANCH
+    // SBC 005: outcome pulses that follow cache-terminology.md (§3), kept separate from the legacy
+    // pulses above (those count every channel; these count inner-A only, per the TASK 005 §5.1 spec).
+    val acct = Output(new Bundle {
+      val primaryHit    = Bool()  // plan block, A branch: home hit, no upgrade needed
+      val secondSearch  = Bool()  // plan block, A branch: partner search armed
+      val secondaryHit  = Bool()  // search-result block: served from partner, enough permission
+      val probedHit     = Bool()  // a primary or secondary hit that also probed a client
+      val secondaryMiss = Bool()  // search-result block: partner searched, line not found
+    })
     // SBC Phase 3: another live MSHR already owns this MSHR's partner set. The search must wait, and
     // a set that was already owned can have its ways refilled while we look.
     //
@@ -362,6 +371,18 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.dispRelease := dispReleasePulse
   io.dispDrop    := dispDropPulse
   io.secC        := secCPulse
+  // SBC 005: outcome pulses (cache-terminology.md). Defaulted low, raised in the plan block and the
+  // search-result block below — see TASK 005 §5.1 for the exact trigger of each.
+  val acctPrimaryHit    = WireInit(false.B)
+  val acctSecondSearch  = WireInit(false.B)
+  val acctSecondaryHit  = WireInit(false.B)
+  val acctProbedHit     = WireInit(false.B)
+  val acctSecondaryMiss = WireInit(false.B)
+  io.acct.primaryHit    := acctPrimaryHit
+  io.acct.secondSearch  := acctSecondSearch
+  io.acct.secondaryHit  := acctSecondaryHit
+  io.acct.probedHit     := acctProbedHit
+  io.acct.secondaryMiss := acctSecondaryMiss
   // [1]: We cannot issue outer Acquire while holding blockB (=> outA can stall)
   // However, inB and outC are higher priority than outB, so s_release and s_pprobe
   // may be safely issued while blockB. Thus we must NOT try to schedule the
@@ -1389,6 +1410,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         // served is the 2e path made live. Counted here where secHit/secPerm already pulse.
         secWritePulse := req_needT
         secCPulse     := request.prio(2)
+        // SBC 005: secondary hit (cache-terminology.md) — inner-A only, and only when the parked
+        // line already carries enough permission (no AcquirePerm needed over it).
+        acctSecondaryHit := request.prio(0) && !request.control && !secNeedPerm
         inPlace := true.B
         // Re-point meta at the parked entry. Everything downstream - the probe client mask, the
         // Grant's way, final_meta_writeback - reads meta, so this one assignment is what makes the
@@ -1435,6 +1459,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           w_pprobeack      := false.B
           s_writeback      := false.B
           secProbePulse    := true.B  // SBC (003 §10.5): had to probe a client off before serving
+          acctProbedHit    := acctSecondaryHit  // SBC 005: secondary hit that also probed
         }
         if (params.micro.sbcDebug) {
           printf(p"[SBC] SEC-SERVE set=${request.set} partner=${pairSetReg} way=${io.directory.bits.secondaryWay} state=${secEntry.state} clients=${secEntry.clients} needT=${req_needT} needPerm=${secNeedPerm}\n")
@@ -1446,6 +1471,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       }
     } .otherwise {
       secMiss := true.B
+      // SBC 005: secondary miss (cache-terminology.md) — the second search ran and found nothing.
+      // Inner-A only; the assert below confirms C-channel never reaches here.
+      acctSecondaryMiss := request.prio(0) && !request.control
       // A C-channel request that missed its home row AND its partner is a line the cache does not
       // hold at all, which a voluntary Release should never be for. Keeps the strength that relaxing
       // `assert(new_meta.hit)` above gave up. Latent until 2e makes the C-path search reachable.
@@ -1490,6 +1518,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     meta := new_meta
     // SBC (003 §10.4a): count a home line found in BRANCH. Only on a real dir-read (not a repeat).
     when (io.directory.valid) { homeBranchPulse := new_meta.hit && (new_meta.state === BRANCH) }
+    // SBC 005 (C8 visibility): a repeat reload has no dir-read - new_meta is final_meta_writeback,
+    // whose hit bit a flush clears (:660). Sim-only, so a check can see which path a request took.
+    if (params.micro.sbcDebug) {
+      when (io.allocate.valid && io.allocate.bits.repeat) {
+        printf(p"[SBC] REPEAT set=${new_request.set} hit=${new_meta.hit}\n")
+      }
+    }
     probes_done := 0.U
     probes_toN := 0.U
     probes_noT := false.B
@@ -1611,6 +1646,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // victim at all, so evicting one here would be a wasted eviction we cannot take back.
       val willSearch = params.micro.enableSetBalancing.B && !new_meta.hit && pairLive &&
                        io.pairInfo.bits.mayHold
+      // SBC 005: outcome pulses (cache-terminology.md). This branch is already inner-A-only (the
+      // comment above says so); the explicit gate is TASK §5.1's defensive belt-and-braces.
+      val acctA = new_request.prio(0) && !new_request.control
+      acctPrimaryHit   := acctA && new_meta.hit && !(new_meta.state === BRANCH && new_needT)
+      acctSecondSearch := acctA && willSearch
       // Do we need an eviction?
       when (!new_meta.hit && new_meta.state =/= INVALID) {
         when (willSearch) {
@@ -1650,6 +1690,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
         w_pprobeacklast := false.B
         w_pprobeack := false.B
         s_writeback := false.B
+        acctProbedHit := acctPrimaryHit  // SBC 005: primary hit that also probed
       }
       // Do we need a grantack?
       when (new_request.opcode === AcquireBlock || new_request.opcode === AcquirePerm) {

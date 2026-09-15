@@ -151,6 +151,7 @@ class InclusiveCache(
       scheduler.io.sbcBalanceSet.bits  := 0.U
       scheduler.io.sbcReset := false.B // SBC: default; overridden below when a control port exists
       scheduler.io.sbcStatsReset := false.B // SBC: default; overridden below when a control port exists
+      scheduler.io.statsHold := false.B // SBC: default; overridden below when a control port exists
 
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
@@ -199,6 +200,7 @@ class InclusiveCache(
         sched.io.sbcBalanceSet := ctrl.module.io.sbc_balanceSet
         sched.io.sbcReset      := ctrl.module.io.sbc_reset
         sched.io.sbcStatsReset := ctrl.module.io.sbc_stats_reset
+        sched.io.statsHold     := ctrl.module.io.stats_hold
       }
     }
 

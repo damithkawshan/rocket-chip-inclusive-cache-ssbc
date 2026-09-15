@@ -61,11 +61,13 @@ definition here, change that copy in the same edit.
 TileLink permissions map onto the MSI model — None = Invalid, Branch = Shared, Trunk = Modified — which
 is why the simulator words carry over.
 
-## 4. Our counters against these words (2026-09-14)
+## 4. Our counters against these words (2026-09-14, updated 2026-09-16)
 
-**Until task 005 lands:** the only exact number is **misses = `L2_MemReads + L2_MemAcqPerm`** (was `L2_MemUpgrades`) — every
-outer A message is exactly one data miss or upgrade miss. **Do not quote a hit rate**: no counter today
-gives accesses or primary hits in these words.
+**Since task 005 commit 1 there is a counter for every word in the table** (`0x3F0`–`0x428`), so a hit
+rate can be quoted: (`L2_PrimaryHit` + `L2_SecondaryHit`) ÷ `L2_AccessA`. Read them under `L2_StatsHold`
+(`0x438`) — `sbc_read` does. **Misses** are still also visible at the outer port as
+`L2_MemReads + L2_MemAcqPerm`, and that must equal `L2_DataMiss + L2_UpgradeMiss` exactly; it did in four
+board halves. A bitstream built before 2026-09-15 has none of these registers, and they read 0 there.
 
 | Counter | Follows the words? | What it really counts |
 |---|---|---|
@@ -76,7 +78,7 @@ gives accesses or primary hits in these words.
 | `SBC_SecProbe` | ≈ | Serves from the partner set that probed first — the parked half of probed hits, but it also includes upgrade misses |
 | `SBC_SecWrite` | 🐞 | Meant "serves that needed write". Also counts write-backs: C-channel `Release` / `ReleaseData` reuse the opcode numbers of `AcquireBlock` / `AcquirePerm` (6 and 7), so `needT()` is true for them. A counting mistake only — cache behaviour is not affected. Fix: task 005 |
 | `SBC_Aborted` | ⚠️ | Migrations aborted after they started **plus** migrations declined before they started. That is why "attempted" is smaller than "committed + aborted". Fix: task 005 adds `SBC_Declined` |
-| *Planned in task 005* | ✅ | One counter per term: `L2_AccessA`, `L2_PrimaryHit`, `L2_SecondaryHit`, `L2_ProbedHit`, `L2_DataMiss`, `L2_UpgradeMiss`, `L2_SecondSearch`, `L2_SecondaryMiss` |
+| **Landed in task 005 commit 1** | ✅ | One counter per term, `0x3F0`–`0x428`: `L2_AccessA`, `L2_PrimaryHit`, `L2_SecondaryHit`, `L2_ProbedHit`, `L2_DataMiss`, `L2_UpgradeMiss`, `L2_SecondSearch`, `L2_SecondaryMiss`. Read them under `L2_StatsHold` (`0x438`), as `sbc_read` does. Verified on the board 2026-09-15/16: accesses = the four outcomes exactly, misses = outer-port messages exactly, second searches = secondary hits + secondary misses exactly |
 
 ## 5. Not decided here
 

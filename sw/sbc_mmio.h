@@ -47,6 +47,16 @@
 #define SBC_L2_MEMACQPERM  (L2_CTRL_BASE + 0x3D8)/* R   outer AcquirePerm — whole-block write, no bytes (was MEMUPGRADES) */
 #define SBC_L2_MEMRELCLEAN (L2_CTRL_BASE + 0x3E0)/* R   outer Release, no data — clean eviction        */
 #define SBC_L2_CYCLES      (L2_CTRL_BASE + 0x3E8)/* R   free-running L2 clock, reset by SBC_StatsReset */
+/* 005 commit 1: outcome counters that follow cache-terminology.md, plus L2_StatsHold. */
+#define SBC_L2_ACCESSA       (L2_CTRL_BASE + 0x3F0) /* R   an inner-A request accepted (the access)     */
+#define SBC_L2_PRIMARYHIT    (L2_CTRL_BASE + 0x3F8) /* R   home line hit, enough permission             */
+#define SBC_L2_SECONDARYHIT  (L2_CTRL_BASE + 0x400) /* R   served from partner set, enough permission   */
+#define SBC_L2_PROBEDHIT     (L2_CTRL_BASE + 0x408) /* R   primary/secondary hit that also probed       */
+#define SBC_L2_DATAMISS      (L2_CTRL_BASE + 0x410) /* R   outer A, param != BtoT                       */
+#define SBC_L2_UPGRADEMISS   (L2_CTRL_BASE + 0x418) /* R   outer A, param == BtoT                       */
+#define SBC_L2_SECONDSEARCH  (L2_CTRL_BASE + 0x420) /* R   partner search armed                         */
+#define SBC_L2_SECONDARYMISS (L2_CTRL_BASE + 0x428) /* R   partner searched, line not found              */
+#define SBC_L2_STATSHOLD     (L2_CTRL_BASE + 0x438) /* R/W freeze every event counter (not SBC_Parked)  */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;

@@ -54,6 +54,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // SBC: SW counter-only reset pulse out (a write to SBC_StatsReset). Zeroes ONLY the event/hit
       // counters, never sat/AT/DSS/parkCount/SBC_Parked, so the SBC flow is untouched.
       val sbc_stats_reset = Output(Bool())
+      // 005 commit 1: L2_StatsHold out - freezes every event counter (not SBC_Parked) for an exact
+      // multi-register read.
+      val stats_hold = Output(Bool())
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -164,6 +167,13 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
       RegFieldDesc("SBC_MigrateEnable", "Master switch: gates only the START of a new migration. 0=off (default)"))
+    // 005 commit 1: L2_StatsHold. Removed with enablePerfCounters (§4.3) - reads 0 when off.
+    val sbcStatsHold: Bool = if (outer.micro.enablePerfCounters) RegInit(false.B) else false.B
+    io.stats_hold := sbcStatsHold
+    val sbcStatsHoldDesc = RegFieldDesc("L2_StatsHold",
+      "R/W: while 1, every event counter (not SBC_Parked) keeps its value")
+    val sbcStatsHoldField = if (outer.micro.enablePerfCounters) RegField(1, sbcStatsHold, sbcStatsHoldDesc)
+                            else RegField.r(1, sbcStatsHold, sbcStatsHoldDesc)
     // SBC 006: main-memory traffic. reads+writes is the headline; report the two SEPARATELY in every
     // result table - SBC can trade one for the other (a parked dirty line that would have been
     // dropped now gets written back) and a combined figure would hide exactly that.
@@ -182,6 +192,25 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("L2_Accesses", "Total primary directory lookups (hit+miss), free-running", volatile=true))
     val l2HitsField = RegField.r(64, io.perfStats.l2Hits,
       RegFieldDesc("L2_Hits", "Total primary hits, free-running", volatile=true))
+
+    // 005 commit 1: outcome counters that follow cache-terminology.md. Reads 0 when
+    // enablePerfCounters = false (io.perfStats is zeroed at the source in that build).
+    val l2AccessAField = RegField.r(64, io.perfStats.accessA,
+      RegFieldDesc("L2_AccessA", "An inner-A request accepted (the terminology's access)", volatile=true))
+    val l2PrimaryHitField = RegField.r(64, io.perfStats.primaryHit,
+      RegFieldDesc("L2_PrimaryHit", "Home line hit with enough permission - no outer A", volatile=true))
+    val l2SecondaryHitField = RegField.r(64, io.perfStats.secondaryHit,
+      RegFieldDesc("L2_SecondaryHit", "Served from the partner set with enough permission - no outer A", volatile=true))
+    val l2ProbedHitField = RegField.r(64, io.perfStats.probedHit,
+      RegFieldDesc("L2_ProbedHit", "A primary or secondary hit that also probed a client", volatile=true))
+    val l2DataMissField = RegField.r(64, io.perfStats.dataMiss,
+      RegFieldDesc("L2_DataMiss", "Outer A with param != BtoT", volatile=true))
+    val l2UpgradeMissField = RegField.r(64, io.perfStats.upgradeMiss,
+      RegFieldDesc("L2_UpgradeMiss", "Outer A with param == BtoT (BRANCH needs TRUNK)", volatile=true))
+    val l2SecondSearchField = RegField.r(64, io.perfStats.secondSearch,
+      RegFieldDesc("L2_SecondSearch", "The plan armed a search of the partner set", volatile=true))
+    val l2SecondaryMissField = RegField.r(64, io.perfStats.secondaryMiss,
+      RegFieldDesc("L2_SecondaryMiss", "Partner set searched, line not found", volatile=true))
 
     // SBC: arm migration for a source set (write-only). A write pulses io.sbc_balanceSet.
     val sbcBalanceSetField = RegField.w(sbcSetBits, RegWriteFn((ivalid, oready, data) => {
@@ -240,7 +269,16 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x3D0 -> Seq(l2MemWritesField),
       0x3D8 -> Seq(l2MemAcqPermField),
       0x3E0 -> Seq(l2MemRelCleanField),
-      0x3E8 -> Seq(l2CyclesField)
+      0x3E8 -> Seq(l2CyclesField),
+      0x3F0 -> Seq(l2AccessAField),
+      0x3F8 -> Seq(l2PrimaryHitField),
+      0x400 -> Seq(l2SecondaryHitField),
+      0x408 -> Seq(l2ProbedHitField),
+      0x410 -> Seq(l2DataMissField),
+      0x418 -> Seq(l2UpgradeMissField),
+      0x420 -> Seq(l2SecondSearchField),
+      0x428 -> Seq(l2SecondaryMissField),
+      0x438 -> Seq(sbcStatsHoldField)
     )
   }
 }

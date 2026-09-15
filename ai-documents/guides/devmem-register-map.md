@@ -40,9 +40,22 @@ Authoritative source: [`Control.scala`](../../design/craft/inclusivecache/src/Co
 | `0x3D8` | `devmem 0x20103D8 64` | `L2_MemAcqPerm` — outer `AcquirePerm` (whole-block write), no bytes. Was `L2_MemUpgrades` before task 005; old logs say `memUpgrades=` |
 | `0x3E0` | `devmem 0x20103E0 64` | `L2_MemRelClean` — clean eviction announced, no bytes |
 | `0x3E8` | `devmem 0x20103E8 64` | `L2_Cycles` — free-running L2 clock, zeroed by `0x3B8` |
+| `0x3F0` | `devmem 0x20103F0 64` | `L2_AccessA` — the terminology's access: one inner-A request, counted once |
+| `0x3F8` | `devmem 0x20103F8 64` | `L2_PrimaryHit` — home line hit with enough permission |
+| `0x400` | `devmem 0x2010400 64` | `L2_SecondaryHit` — served in place from the partner set (inner-A only) |
+| `0x408` | `devmem 0x2010408 64` | `L2_ProbedHit` — a primary or secondary hit that also probed a client |
+| `0x410` | `devmem 0x2010410 64` | `L2_DataMiss` — outer A, param ≠ `BtoT` |
+| `0x418` | `devmem 0x2010418 64` | `L2_UpgradeMiss` — outer A, param `BtoT` |
+| `0x420` | `devmem 0x2010420 64` | `L2_SecondSearch` — a partner-set search was armed |
+| `0x428` | `devmem 0x2010428 64` | `L2_SecondaryMiss` — partner set searched, line not there |
+| `0x438` | `devmem 0x2010438 32` | R/W — `L2_StatsHold`. 1 freezes every event counter (`L2_Cycles` included) so a multi-register read is one instant; 0 releases. `SBC_Parked` is a level and is never held. **Always set it back to 0** |
 
 With `enablePerfCounters = false` (task 005) every counter above and the read-backs `0x300`, `0x308`,
 `0x320` bit 2 and `0x398` read 0.
+
+Hit rate = (`0x3F8` + `0x400`) ÷ `0x3F0`; miss rate = (`0x410` + `0x418`) ÷ `0x3F0`. `sbc_read` prints
+both and brackets every read with `L2_StatsHold`, which raw `devmem` does not — a `devmem` walk over
+these registers samples them at different instants.
 
 Note: `0x340` (`SBC_BalanceSet`) is write-only and **dead in Phase 2** — see below.
 

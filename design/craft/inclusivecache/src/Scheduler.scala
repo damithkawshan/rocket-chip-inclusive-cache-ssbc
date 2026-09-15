@@ -48,6 +48,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val sbcReset      = Input(Bool())
     // SBC MMIO: SW counter-only reset pulse in (a write to SBC_StatsReset)
     val sbcStatsReset = Input(Bool())
+    // 005 commit 1: L2_StatsHold. Freezes every event counter (not SBC_Parked) for an exact
+    // multi-register read.
+    val statsHold     = Input(Bool())
   })
 
   val sourceA = Module(new SourceA(params))
@@ -404,6 +407,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
                    !(dstSetConflict && !request.bits.prio(2))
   val alloc_uses_directory = request.valid && request_alloc_cases
 
+  // 005 commit 1: L2_AccessA (cache-terminology.md) - an inner-A request accepted this cycle.
+  // Outside the enableSetBalancing block on purpose (unlike isDemandA below, which is inside it) so
+  // this counts identically whether SBC is built or not.
+  val accessA = request.valid && request.ready && request.bits.prio(0) && !request.bits.control
+
   if (params.micro.enableSetBalancing) {
     // SBC (003, bug P1): the closing evidence for the C-channel head-of-line deadlock. If the fence
     // ever holds the C head for long, P1 is live. `alloc` separates the two halves: the queue/nest
@@ -726,30 +734,55 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   }
 
   // SBC 005: every monitoring counter. Outside the enableSetBalancing gate on purpose - an SBC-on vs
-  // SBC-off comparison needs the outer-port and lookup counters counting identically in both builds.
+  // SBC-off comparison needs the outer-port, lookup and outcome counters counting identically in
+  // both builds.
   if (params.micro.enablePerfCounters) {
     val perf = Module(new PerfCounters(params))
     perf.io.aFire      := io.out.a.fire
     perf.io.aOpcode    := io.out.a.bits.opcode
+    perf.io.aParam     := io.out.a.bits.param
     perf.io.cFire      := sourceC.io.req.fire
     perf.io.cDirty     := sourceC.io.req.bits.dirty
     perf.io.tap        := directory.io.tap
-    // MSHR pulses, OR-reduced as before. PerfCounters adds them, so PopCount can replace the OR here.
-    perf.io.sbc.migAttempt  := mshrs.map(_.io.migAttempt).reduce(_ || _)
-    perf.io.sbc.migAbort    := mshrs.map(_.io.migAbort).reduce(_ || _)
-    perf.io.sbc.migCommit   := mshrs.map(_.io.migCommit).reduce(_ || _)
-    perf.io.sbc.secHit      := mshrs.map(_.io.secHit).reduce(_ || _)
-    perf.io.sbc.secMiss     := mshrs.map(_.io.secMiss).reduce(_ || _)
-    perf.io.sbc.secPerm     := mshrs.map(_.io.secPerm).reduce(_ || _)
-    perf.io.sbc.secWrite    := mshrs.map(_.io.secWrite).reduce(_ || _)
-    perf.io.sbc.secProbe    := mshrs.map(_.io.secProbe).reduce(_ || _)
-    perf.io.sbc.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
-    perf.io.sbc.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
-    perf.io.sbc.secC        := mshrs.map(_.io.secC).reduce(_ || _)
-    perf.io.sbc.homeBranch  := mshrs.map(_.io.homeBranch).reduce(_ || _)
+    perf.io.accessA    := accessA
+    // MSHR pulses: PopCount, never OR (TASK 005 §2.2 T1) - two MSHRs can raise the same pulse in one
+    // cycle (§2.3), and OR would silently lose one of them.
+    perf.io.sbc.migAttempt  := PopCount(VecInit(mshrs.map(_.io.migAttempt)))
+    perf.io.sbc.migAbort    := PopCount(VecInit(mshrs.map(_.io.migAbort)))
+    perf.io.sbc.migCommit   := PopCount(VecInit(mshrs.map(_.io.migCommit)))
+    perf.io.sbc.secHit      := PopCount(VecInit(mshrs.map(_.io.secHit)))
+    perf.io.sbc.secMiss     := PopCount(VecInit(mshrs.map(_.io.secMiss)))
+    perf.io.sbc.secPerm     := PopCount(VecInit(mshrs.map(_.io.secPerm)))
+    perf.io.sbc.secWrite    := PopCount(VecInit(mshrs.map(_.io.secWrite)))
+    perf.io.sbc.secProbe    := PopCount(VecInit(mshrs.map(_.io.secProbe)))
+    perf.io.sbc.dispRelease := PopCount(VecInit(mshrs.map(_.io.dispRelease)))
+    perf.io.sbc.dispDrop    := PopCount(VecInit(mshrs.map(_.io.dispDrop)))
+    perf.io.sbc.secC        := PopCount(VecInit(mshrs.map(_.io.secC)))
+    perf.io.sbc.homeBranch  := PopCount(VecInit(mshrs.map(_.io.homeBranch)))
+    // 005 commit 1: outcome pulses (cache-terminology.md), same PopCount rule.
+    perf.io.outcome.primaryHit    := PopCount(VecInit(mshrs.map(_.io.acct.primaryHit)))
+    perf.io.outcome.secondSearch  := PopCount(VecInit(mshrs.map(_.io.acct.secondSearch)))
+    perf.io.outcome.secondaryHit  := PopCount(VecInit(mshrs.map(_.io.acct.secondaryHit)))
+    perf.io.outcome.probedHit     := PopCount(VecInit(mshrs.map(_.io.acct.probedHit)))
+    perf.io.outcome.secondaryMiss := PopCount(VecInit(mshrs.map(_.io.acct.secondaryMiss)))
     perf.io.clearStats := io.sbcStatsReset
     perf.io.clearSbc   := io.sbcReset
+    perf.io.hold       := io.statsHold
     io.perfStats       := perf.io.stats
+
+    // 005 §5.2 (C4): sim-only checks that the §2.3 "No" pulses really are ≤1 MSHR per cycle. If one
+    // fires, the §2.3 analysis is wrong - report it, do not silence it.
+    def atMostOne(f: MSHR => Bool, name: String) =
+      assert (PopCount(VecInit(mshrs.map(f))) <= 1.U, s"SBC: two MSHRs raised $name in one cycle")
+    atMostOne(_.io.secHit,     "secHit")
+    atMostOne(_.io.secMiss,    "secMiss")
+    atMostOne(_.io.secPerm,    "secPerm")
+    atMostOne(_.io.secWrite,   "secWrite")
+    atMostOne(_.io.secC,       "secC")
+    atMostOne(_.io.secProbe,   "secProbe")
+    atMostOne(_.io.homeBranch, "homeBranch")
+    atMostOne(_.io.migAttempt, "migAttempt")
+    atMostOne(_.io.migCommit,  "migCommit")
   } else {
     io.perfStats := 0.U.asTypeOf(new PerfCounterStats)
   }

@@ -83,8 +83,10 @@ the full table, the literature it comes from, and which counters follow it. This
 - **Hit = no outer A message. Miss = an outer A message.** Nothing else decides it.
 - **Hit rate = (primary + secondary hits) ÷ accesses.**
 - ⚠️ **`L2_Accesses` / `L2_Hits` and `SBC_SecHits` are legacy and do not follow these words** (every
-  channel; upgrade misses and write-backs count as hits). Until coder/005 lands, the only exact number
-  is **misses = `L2_MemReads + L2_MemAcqPerm`** (was `L2_MemUpgrades`) — do not quote a hit rate.
+  channel; upgrade misses and write-backs count as hits). **Since coder/005 commit 1 there are exact
+  counters** — `L2_AccessA`, `L2_PrimaryHit`, `L2_SecondaryHit`, `L2_DataMiss`, `L2_UpgradeMiss`
+  (`0x3F0`–`0x428`) — so quote hit rates from those. On this platform the legacy rate happens to sit only
+  0.4–4.4 points off, because Rocket's L1 drops clean victims silently, but it is still wrong by definition.
 
 ## ⚠️ Build-phase leftovers — check these first
 
@@ -362,6 +364,21 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x3D8` | `L2_MemAcqPerm` | R, 64 — **was `L2_MemUpgrades` before task 005; old logs say `memUpgrades=`.** Outer `AcquirePerm` (the requester overwrites the whole block): moves no bytes. **Not** the same as an upgrade miss (param `BtoT`, usually sent as `AcquireBlock`) |
 | `0x3E0` | `L2_MemRelClean` | R, 64 — outer `Release` without data: clean eviction, moves no bytes |
 | `0x3E8` | `L2_Cycles` | R, 64 — free-running L2/uncore clock. In the `SBC_StatsReset` list, so `sbc_read --zero -- cmd` yields exactly the cycles the child ran for |
+| `0x3F0` | `L2_AccessA` | R, 64 — **the terminology's access** (task 005): one inner-A request accepted, counted once |
+| `0x3F8` | `L2_PrimaryHit` | R, 64 — home line hit with enough permission (no outer A) |
+| `0x400` | `L2_SecondaryHit` | R, 64 — served in place from the partner set with enough permission (no outer A). Inner-A only, unlike `SBC_SecHits` |
+| `0x408` | `L2_ProbedHit` | R, 64 — a primary or secondary hit that also probed an L1 client. Near 0 on one core |
+| `0x410` | `L2_DataMiss` | R, 64 — outer A with param ≠ `BtoT` |
+| `0x418` | `L2_UpgradeMiss` | R, 64 — outer A with param `BtoT`. 0 while `BRANCH reachability … b=false` |
+| `0x420` | `L2_SecondSearch` | R, 64 — the plan armed a search of the partner set |
+| `0x428` | `L2_SecondaryMiss` | R, 64 — the partner set was searched and the line was not there |
+| `0x438` | `L2_StatsHold` | R/W, 1 bit, default 0 — while 1 every event counter (including `L2_Cycles`) keeps its value, so ~28 registers can be read as one instant. `SBC_Parked` is a level and is **never** held. Clears still work. Removed with `enablePerfCounters` |
+
+**Hit rate is now exact:** hit rate = (`L2_PrimaryHit` + `L2_SecondaryHit`) ÷ `L2_AccessA`, miss rate =
+(`L2_DataMiss` + `L2_UpgradeMiss`) ÷ `L2_AccessA`. Identities that must hold, and did on the board in four
+A/B halves: accesses = the four outcomes exactly; `L2_DataMiss + L2_UpgradeMiss = L2_MemReads +
+L2_MemAcqPerm` exactly; `L2_SecondSearch = L2_SecondaryHit + L2_SecondaryMiss` (+ searches that ended as
+upgrade misses). Read them with `sbc_read`, which brackets every read with `L2_StatsHold`.
 
 **The headline metric is `L2_MemReads + L2_MemWrites`** — measured at the outer port, so it does not
 depend on anyone's definition of "an access". Report reads and writes **separately** in every table:
