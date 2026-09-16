@@ -145,4 +145,61 @@ only, source-mapped to `Scheduler.scala:460`. Image archived as
 `fpga/bitstream_storage/FPGASingleRocketVCU118L18K64K16WL2ConfigSBC-preferEvictable-experiment-2026-09-16.bit`.
 The milestone image it replaces is archived byte-identical as `…-c0c1c2-breakeven-2026-09-16.bit`.
 
-_(board numbers filled in after the session)_
+Session `chipyard/scripts/logs/board_session_20260916-221525.log`, 22:15–23:26, same omnetpp
+fixed-work command as the tag's run, both halves `workload rc=0`, both reached the simulation time limit.
+
+**Within-boot comparison** (ON vs OFF in the same boot — the only comparison that cancels boot drift):
+
+| ON vs OFF, same boot | tag (c2) | experiment |
+|---|---:|---:|
+| `memReads + memWrites` | +0.352% | **+0.072%** |
+| `memReads` (= data misses) | +0.399% (+1,332,782) | **+0.032%** (+106,969) |
+| `memWrites` | +0.127% | +0.265% |
+| `L2_Cycles` | +0.853% | **+0.411%** |
+| hit rate | −0.116 pts | −0.209 pts |
+| `L2_AccessA` | +0.046% | −0.603% |
+
+| ON half | tag (c2) | experiment |
+|---|---:|---:|
+| `SBC_Migrations` | 4,312,348 | 3,353,354 (−22%) |
+| `L2_SecondaryHit` | 649,606 | 705,154 (+8.5%) |
+| secondary hits per migration | 0.151 | **0.210** (+39%) |
+| second-search hit rate | 0.359% | 0.382% |
+| `SBC_DispRelease` | 652 | 4,057 |
+| `SBC_SecWrite` | 1,385 | 11,693 |
+| reuse share of migrations | 82.9% | 78.5% |
+
+### 8.3 Reading it
+
+**Every outer-port metric moved the right way.** Excess memory reads fell 12× (+1.33 M → +0.11 M),
+combined traffic overhead fell ~5× (+0.35% → +0.07%), cycle overhead roughly halved (+0.85% → +0.41%).
+These are the headline metrics (CLAUDE.md): measured at the outer port, independent of how an access is
+defined.
+
+**Migration quality improved, as the hypothesis predicts.** Fewer migrations (−22%) produced *more*
+secondary hits (+8.5%): 0.151 → 0.210 per migration. A random victim is a better migration candidate
+than the lowest-numbered clean line. Guests are also written to far more often after being served
+(`SecWrite` 8×, `DispRelease` 6×) — the dirty-guest writeback path is now exercised thousands of times,
+still with no assert and a clean `rc=0`.
+
+**§6's worry partly materialized on the board, though not in simulation.** Migrations did drop 22%.
+It did not cost secondary hits, so it is not the explanation for the improvement.
+
+**The hit rate went the other way (−0.116 → −0.209 pts), and that is a denominator artefact, not a
+contradiction.** The ON half issued 0.60% *fewer* L1 requests than its OFF half (it was +0.05% at the
+tag). Absolute data misses fell; the ratio rose only because the access count fell more. This is exactly
+why the outer-port counts are the headline metric and hit rate is not.
+
+**Three reasons this is not yet a result to quote as a win:**
+
+1. **It still does not beat the plain L2.** +0.07% traffic and +0.41% cycles are still overheads — SBC
+   is now closer to parity, not past it.
+2. **The effect is the same size as the boot-to-boot drift.** The OFF halves of the two sessions — same
+   RTL behaviour with migration off — differ by +0.17% traffic, +0.27% cycles, +0.38% accesses. Earlier
+   sessions agreed to ~0.1%. The improvement (≈0.28% traffic, ≈0.44% cycles) is of that order.
+3. **One run each.** The within-boot deltas have never been repeated, so their own run-to-run spread is
+   unknown.
+
+**Status:** direction positive on every metric that matters, magnitude inside the noise floor. By §7's
+own rule ("worse or flat → revert") this is borderline. The change is still **uncommitted** pending a
+decision; a repeat of this session on the same archived bitstream is the cheap tie-breaker.
