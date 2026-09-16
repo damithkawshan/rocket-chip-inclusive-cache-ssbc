@@ -1,6 +1,6 @@
 # Coder report 007 — put the paper's placement and eviction rules back
 
-**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commits 0 and 1 landed, both gates green
+**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commits 0, 1 and 2 landed, all gates green
 
 > Filled in as the work happens, not at the end.
 
@@ -21,7 +21,7 @@ _(one sentence per commit as it lands)_
 |---|---|---|---|
 | 0 | `1486d4a` | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 1 | `f885382` | guests can be evicted | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet; **SBC-off build bit-identical** |
-| 2 | | a migration may reuse a guest slot | |
+| 2 | _(pending commit)_ | a migration may reuse a guest slot | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 3 | | teardown | |
 | 4 | | cap guests per pairing | |
 
@@ -132,6 +132,7 @@ _The only per-change evidence there is — there is no runtime switch._
 | start (`sbc-start-2026-09-16`) | not readable (F1) | 8,661 | 140,118 | 12,158 | 163,976 | 48.15% |
 | 0 exact counts | 18 | 8,354 | 154,723 | 13,773 | 171,605 | 49.55% |
 | 1 guests evictable | 5 | 17,431 | 177,331 | 4,196 | 150,219 | **54.71%** |
+| 2 reuse a guest slot | 4 | 20,108 | 192,218 | 3,788 | 136,773 | **58.90%** |
 | 1 guests evictable | | | | | | |
 | 2 reuse a guest slot | | | | | | |
 | 3 teardown | | | | | | |
@@ -173,6 +174,34 @@ the size and the direction of the move. The board A/B after commit 4 is still wh
 
 **The parked identity is now exact:** `17,431 − 1 − 17,425 = 5`, and `SBC_Parked` reads exactly 5. Commit
 0's off-by-one was read skew, as stated.
+
+## Commit 2 (C2) — what the gate showed
+
+**Gate:** 7/7 on both configs, `sbc_migrate_switch_test` T1–T4, 0 asserts, no shadow-checker output. No
+corruption from a migration overwriting a guest as its destination victim.
+
+**The switch test is the real evidence here, not the stress test — it is short, deterministic, and
+reproduced the pre-C2 numbers exactly through commits 0 and 1.** Same hammer, same destination set:
+
+| | commits 0–1 (and the original baseline) | after C2 |
+|---|---:|---:|
+| T3: migrations / parked | 2 / 2 | **47** / 2 |
+| T4: migrations / parked | 3 / 3 | **48** / 3 |
+
+Migrations rose 16–24×, and parked did **not move**. That is the accounting working exactly as intended:
+once the one destination set filled with guests, migrations used to stall (no home line left to take);
+now they take a guest's slot instead, the migration commits, and one guest leaves as one arrives - net
+zero on `parkCount` and `SBC_Parked` alike. Implied reuse share here: 45 of 47 commits (`47 − 2 −
+dispRelease(0) − dispDrop(0)`).
+
+The stress test moved the same direction, more noisily (cross-build, F2 applies): migrations 17,431 →
+20,108 while `dispDrop` fell 17,425 → 5,645 and `parked` stayed low (5 → 4) - consistent with most new
+commits now being reuses.
+
+**No hardware exists to read the reuse rate directly.** TASK §3's "no new register" is read here as
+covering a new monitoring counter, not only a policy switch - a new register still needs a new MMIO
+offset and address-map/header changes, which is exactly the kind of addition §3 is trying to avoid. The
+switch-test arithmetic above is offered as the substitute evidence.
 
 ## Findings (reported, not fixed)
 
@@ -239,6 +268,11 @@ from `migration_stress_test` at all (F1), so the "start" row of the numbers tabl
 retrospectively. From commit 1 on it is fine.
 
 **Otherwise commit 0: nothing wrong.**
+
+**Commit 2: nothing wrong.** §5's two read sites (`Directory.scala` `evictableOH`, `MSHR.scala:1468-1470`
+`dstEvictable`) and the `allowDisplacedVictim` design matched as described. The `reusedGuestSlot` bit
+TASK §5 asks for is named `migCommitReuse` on the wire (the MSHR's own register is `migDstReuse`) - kept
+close to the existing `migCommit` naming rather than introducing a new term.
 
 **Commit 1, §4 — the line reference has moved and the replacement snippet drops a safety net.** The
 victim mux is at `Directory.scala:211-221`, not `216-226`; the content matched. §4's replacement ends at

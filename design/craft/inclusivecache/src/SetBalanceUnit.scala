@@ -77,6 +77,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
       val kind = UInt(2.W)
       val src  = UInt(params.setBits.W)
       val dst  = UInt(params.setBits.W)
+      // SBC (007 C2): this migration overwrote an older guest of the SAME source (1:1 pinning), so
+      // one guest left as one arrived - parkCount must not move.
+      val reusedGuest = Bool()
     }))
     // SBC Phase 1: SW arm pulse from MMIO SBC_BalanceSet (1-cycle valid+set).
     val arm = Flipped(Valid(UInt(params.setBits.W)))
@@ -210,7 +213,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   }
   // Per-set version. Commit and erase can name DIFFERENT sets in one cycle, so these are two
   // independent updates, not an if/else - unless they name the same set, where they cancel.
-  val parkInc = migrateCommit
+  val parkInc = migrateCommit && !io.commit.bits.reusedGuest
   val parkDec = parkErase
   val incSet  = io.commit.bits.src
   val decSet  = io.dispHome

@@ -439,6 +439,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.preferInvalid   := mshr_uses_directory_for_dread && schedule.dread.bits.preferInvalid
   directory.io.read.bits.internalRead    := mshr_uses_directory_for_dread && schedule.dread.bits.internalRead
   directory.io.read.bits.secondarySearch := mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch
+  // SBC (007 C2): only the migration destination probe may take a parked way as its victim. The
+  // alloc-side read below raises preferEvictable too, and must never carry this.
+  directory.io.read.bits.allowDisplacedVictim := mshr_uses_directory_for_dread &&
+                                                schedule.dread.bits.allowDisplacedVictim
   // SBC Phase 2: a demand miss to a hot migration-source set prefers a clean, client-free victim
   // so the migrate-on-eviction gate in the MSHR finds an eligible line.
   // SBC Phase 2b (Bug A fix): the 2nd dir-read (the dstSet probe) must ALSO prefer an evictable way,
@@ -743,6 +747,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
             sbu.io.commit.bits.src === Mux1H(migCommit, mshrs.map(_.io.status.bits.homeSet)),
             "SBC: migration committed from a row that is not its own home set")
     sbu.io.commit.bits.dst  := Mux1H(migCommit, mshrs.map(_.io.status.bits.dstSet))
+    sbu.io.commit.bits.reusedGuest := Mux1H(migCommit, mshrs.map(_.io.migCommitReuse))
     if (params.micro.sbcDebug) {
       when (sbu.io.commit.valid) {
         printf(p"[SBC][SCHED] MIG-COMMIT srcSet=${sbu.io.commit.bits.src} dstSet=${sbu.io.commit.bits.dst}\n")
@@ -769,6 +774,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     perf.io.sbc.migAttempt  := PopCount(VecInit(mshrs.map(_.io.migAttempt)))
     perf.io.sbc.migAbort    := PopCount(VecInit(mshrs.map(_.io.migAbort)))
     perf.io.sbc.migCommit   := PopCount(VecInit(mshrs.map(_.io.migCommit)))
+    perf.io.sbc.migCommitReuse := PopCount(VecInit(mshrs.map(_.io.migCommitReuse)))
     perf.io.sbc.secHit      := PopCount(VecInit(mshrs.map(_.io.secHit)))
     perf.io.sbc.secMiss     := PopCount(VecInit(mshrs.map(_.io.secMiss)))
     perf.io.sbc.secPerm     := PopCount(VecInit(mshrs.map(_.io.secPerm)))

@@ -75,6 +75,10 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
   val busyWays = UInt(params.cache.ways.W)
   // SBC Phase 3: match a DISPLACED way by tag - the mirror of the normal hit, which excludes them.
   val secondarySearch = Bool()
+  // SBC (007 C2): let `preferEvictable` offer a parked way as the victim. TRUE ONLY on the migration
+  // DESTINATION probe - a source read must never pick a guest, because migrating one a second time
+  // breaks the AT, which records one hop only.
+  val allowDisplacedVictim = Bool()
 }
 
 class DirectoryResult(params: InclusiveCacheParameters) extends DirectoryEntry(params)
@@ -164,6 +168,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val internalRead = params.dirReg(RegEnable(io.read.bits.internalRead, ren), ren1)
   val busyWays = params.dirReg(RegEnable(io.read.bits.busyWays, ren), ren1)
   val secondarySearch = params.dirReg(RegEnable(io.read.bits.secondarySearch, ren), ren1)
+  val allowDisplacedVictim = params.dirReg(RegEnable(io.read.bits.allowDisplacedVictim, ren), ren1)
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
 
@@ -181,8 +186,10 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // "never evicted" - destinations settled at 1 home line and 15 guests. The paper evicts by recency.
   val lfsrVictimOH   = victimWayOHLFSR
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
-  // writeback), no clients (no probe), not displaced. The migration source read prefers one.
-  val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
+  // writeback), no clients (no probe). SBC (007 C2): on the DESTINATION probe a parked way qualifies
+  // too - the paper's displacement evicts D's LRU line, guest or home alike (section 3.3).
+  val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && (!w.displaced || allowDisplacedVictim) &&
+                                         !w.dirty && !w.clients.orR).reverse)
   // SBC (003 Stage 2c): the way-lock. Until serve-in-place, one-MSHR-per-set (Scheduler.scala:214-215)
   // meant victim selection was never contested - a second request to a busy set queued behind the
   // owner and never got its own MSHR. That rule is keyed on homeSet, so an MSHR serving in place

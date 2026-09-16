@@ -54,6 +54,9 @@ class SBCEventPulses(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val migAttempt  = UInt(log2Ceil(params.mshrs + 1).W)
   val migAbort    = UInt(log2Ceil(params.mshrs + 1).W)
   val migCommit   = UInt(log2Ceil(params.mshrs + 1).W)
+  // 007 C2: the subset of migCommit that reused a guest slot - counted by SBC_Migrations like any
+  // other commit, but it must not raise the parked LEVEL (one guest left as one arrived).
+  val migCommitReuse = UInt(log2Ceil(params.mshrs + 1).W)
   val secHit      = UInt(log2Ceil(params.mshrs + 1).W)
   val secMiss     = UInt(log2Ceil(params.mshrs + 1).W)
   val secPerm     = UInt(log2Ceil(params.mshrs + 1).W)
@@ -233,7 +236,7 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     val parked  = RegInit(0.U(log2Ceil(params.cache.sets * params.cache.ways + 1).W))
     // 007 c0: both sides are PopCounts and can be >1 in one cycle, so move by the arithmetic, not
     // by one. Collapsing them to booleans subtracted 1 for 2 erases, so the level drifted UPWARD.
-    val parkInc = p.migCommit
+    val parkInc = p.migCommit - p.migCommitReuse
     val parkDec = p.dispRelease +& p.dispDrop
     parked := Mux(parkDec > parked +& parkInc, 0.U, parked +& parkInc - parkDec)
 

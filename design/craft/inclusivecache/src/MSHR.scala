@@ -186,6 +186,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val migAttempt = Output(Bool())
     val migAbort   = Output(Bool())
     val migCommit  = Output(Bool())
+    // SBC (007 C2): this commit reused an older guest's slot, so one guest left as one arrived and
+    // the parked count must NOT be incremented for it.
+    val migCommitReuse = Output(Bool())
     // SBC: the destination set this MSHR probed and found unusable. Blocks it in the DSS so the
     // next migration picks a different set.
     val migRejectDst = Valid(UInt(params.setBits.W))
@@ -281,6 +284,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migrating        = RegInit(false.B) // this MSHR owns an in-flight migration
   val migDstSet        = Reg(UInt(params.setBits.W))
   val migDstWay        = Reg(UInt(params.wayBits.W))
+  val migDstReuse      = Reg(Bool())      // 007 C2: the dst way we took held a guest, not a home line
   val migSrcWay        = Reg(UInt(params.wayBits.W))
   val s_dread          = RegInit(true.B)  // schedule the 2nd dir-read (dstSet, preferInvalid)
   val w_dread          = RegInit(true.B)  // waiting for the 2nd dir-read result
@@ -358,6 +362,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.migAttempt := migAttempt
   io.migAbort   := migAbort
   io.migCommit  := migCommit
+  io.migCommitReuse := migCommit && migDstReuse
   io.migRejectDst.valid := migRejectDst
   io.migRejectDst.bits  := migDstSet
   // SBC (003 §10.5): event pulses, defaulted low and raised in the serve block / armEviction below.
@@ -604,6 +609,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.preferInvalid   := !doSearch  // 2b: prefer a free dst way
   io.schedule.bits.dread.bits.preferEvictable := !doSearch  // 2b: else a clean evictable one
   io.schedule.bits.dread.bits.internalRead    := true.B     // neither is a demand access
+  io.schedule.bits.dread.bits.allowDisplacedVictim := !doSearch  // 007 C2: dst probe only, never a source read
   io.schedule.bits.dread.bits.secondarySearch := doSearch
   // The way-lock mask is computed by the Scheduler for whichever row the read port actually takes,
   // so this lane does not carry one.
@@ -1494,10 +1500,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // fenced at allocation (Scheduler dstSetConflict → allocReady), so no other MSHR can be on it during
     // the copy — a collision can no longer reach here.
     val dstFree      = io.directory.bits.state === INVALID
+    // SBC (007 C2): a parked way qualifies. Clean and client-free still required - taking a DIRTY or
+    // client-held guest needs a real Release at the guest's home address, which is not built (L5).
     val dstEvictable = io.directory.bits.state =/= INVALID && !io.directory.bits.dirty &&
-                       !io.directory.bits.clients.orR && !io.directory.bits.displaced
+                       !io.directory.bits.clients.orR
     when (dstFree || dstEvictable) {
       migDstWay   := io.directory.bits.way
+      migDstReuse := dstEvictable && io.directory.bits.displaced
       s_copy      := false.B  // now run: copy → dir-write #1 (displaced) → dir-write #2 (refill)
       w_copy      := false.B
       s_dmeta     := false.B
