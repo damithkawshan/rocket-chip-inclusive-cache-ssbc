@@ -21,7 +21,7 @@ _(one sentence per commit as it lands)_
 |---|---|---|---|
 | 0 | `1486d4a` | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 1 | `f885382` | guests can be evicted | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet; **SBC-off build bit-identical** |
-| 2 | _(pending commit)_ | a migration may reuse a guest slot | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
+| 2 | `060e96d` | a migration may reuse a guest slot | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 3 | | teardown | |
 | 4 | | cap guests per pairing | |
 
