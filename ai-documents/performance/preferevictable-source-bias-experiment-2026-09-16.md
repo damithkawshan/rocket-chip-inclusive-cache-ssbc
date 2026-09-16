@@ -110,4 +110,39 @@ misread as "the bias mattered" when it was really "fewer migrations happened."
 
 ## 8. Result
 
-_(filled in after the run)_
+### 8.1 Verilator gate (2026-09-16 21:31) — green
+
+`migration_stress_test` 7/7 on both configs, `sbc_migrate_switch_test` T1–T4, 0 asserts, both shadow
+checkers quiet. Logs: `sw/verilator_logs/*_preferEvictable-experiment/`.
+
+The SBC-off build came out **bit-identical** to commits 1 and 2 again (26,249,306 simulation cycles), so
+the build environment is stable and this cross-build comparison carries more signal than F2 alone would
+suggest.
+
+| `migration_stress_test`, SBC on | commit 2 | experiment |
+|---|---:|---:|
+| hit rate | 58.90% | **59.34%** |
+| `L2_PrimaryHit` | 192,218 | 192,820 |
+| `L2_SecondaryHit` | 3,788 | 4,646 |
+| `L2_DataMiss` | 136,773 | 135,300 |
+| `SBC_Migrations` | 20,108 | 20,343 |
+| `SBC_Attempted` / `SBC_Aborted` | 40,121 / 20,175 | 40,634 / 20,470 |
+| `SBC_Parked` end | 4 | 4 |
+
+**The §6 worry did not show up.** Migrations were essentially unchanged (20,108 → 20,343), so a random
+victim did not starve migration — probe-then-migrate (`cbb3837`) is doing the eligibility work this term
+was originally added for. That makes the hit-rate move attributable to the victim choice rather than to
+a migration-rate change riding along.
+
+Direction: +0.44 points hit rate, −1,473 data misses. Small, one run, simulation — the board decides.
+
+### 8.2 Board A/B
+
+**Build state:** bitstream elaborated 21:54 from tag `sbc-007-c2-breakeven-2026-09-16` plus the one-line
+change in §5, **uncommitted** (throwaway until the result is in). Verified in the elaborated
+`InclusiveCacheBankScheduler.sv`: `io_read_bits_preferEvictable` is driven by the destination-probe term
+only, source-mapped to `Scheduler.scala:460`. Image archived as
+`fpga/bitstream_storage/FPGASingleRocketVCU118L18K64K16WL2ConfigSBC-preferEvictable-experiment-2026-09-16.bit`.
+The milestone image it replaces is archived byte-identical as `…-c0c1c2-breakeven-2026-09-16.bit`.
+
+_(board numbers filled in after the session)_
