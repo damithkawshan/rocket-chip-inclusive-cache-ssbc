@@ -6,6 +6,17 @@ Tracker items (see [../README.md](../README.md)): L8 pairings never end, M4 two-
 heat counter on a partner hit, M12–M14 (the checks and the fair variant proposed below).
 Code references checked against the RTL on 2026-09-14.
 
+> **Update 2026-09-16 — two lines below are now corrected, and the fix is proposed in
+> [fix-plan-follow-the-paper-2026-09-16.md](fix-plan-follow-the-paper-2026-09-16.md).**
+> The paper's own pages 3–5 were read from the PDF (the transcription had skipped Figures 2 and 3):
+> 1. **§2 rule 4 is not a defect.** "A pinned source ignores how hot its destination has become" is
+>    exactly what the paper does, and §3.2 says it measured the alternative as *worse*.
+> 2. **§5's fair variant is not sufficient.** With random replacement, letting guests compete equally
+>    settles at `g/K = A/(A + M_D)` — still about half the set. The fix plan adds an occupancy cap of
+>    about 2, which is the paper's own measured steady state (2.15 lines per pairing).
+> Also settled: the heat-counter question (M11) — we already match the paper on the half that decides
+> anything. The rest of this document stands.
+
 ## Short answer
 
 I agree it isn't the cache size. It also isn't the workload or the cost of the migration hardware. The cause is a **fixed point built into our eviction rules**:

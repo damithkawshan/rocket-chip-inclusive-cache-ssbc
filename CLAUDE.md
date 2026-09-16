@@ -22,9 +22,11 @@ live in `ai-documents/`.
 > 1. **L8 — pairings never end.** Nothing in the RTL clears an AT pairing except `SBC_Reset`. Confirm on
 >    the board: after an SBC run, sweep `SBC_SetSel` over all sets — is every set paired? Does
 >    `SBC_Parked` only ever rise? (tracker M12, M13)
-> 2. **M11 — heat counter on a partner hit.** RTL: home set +1, partner unchanged (the search is
->    `internalRead`). Paper §3.3 + Fig 2: the partner's counter goes **down**; the home-set rule is
->    unclear. Settle it from a longer version of the paper or the authors before changing the RTL.
+> 2. ~~**M11 — heat counter on a partner hit.**~~ **SETTLED 2026-09-16 — our RTL is right, no change.**
+>    Read from the paper PDF (Figures 2 and 3, which the transcription skipped): the home set goes **+1**
+>    on a native miss even when the partner search hits, and the **partner** goes −1. We do the home half;
+>    the partner half changes no decision while two sets are paired.
+>    `ai-documents/performance/fix-plan-follow-the-paper-2026-09-16.md` §0a.
 >
 > Details and how to check: `ai-documents/README.md` (box at the top).
 
@@ -51,6 +53,10 @@ live in `ai-documents/`.
 - **Start here on 2026-09-15:** [ai-documents/performance/why-sbc-loses-2026-09-15.md](ai-documents/performance/why-sbc-loses-2026-09-15.md)
   — unverified analysis: a fixed point in our eviction rules parks ~47% of the cache at any size. Run its
   §6 board checks first (tracker M12, M13).
+- **Proposed fix (2026-09-16, waiting on a decision):** [ai-documents/performance/fix-plan-follow-the-paper-2026-09-16.md](ai-documents/performance/fix-plan-follow-the-paper-2026-09-16.md)
+  — the paper read from the PDF, then four rule changes (guests evictable · a move may reuse a guest slot ·
+  teardown · a cap of ~2 guests per pairing) behind **one runtime register**, plus one prerequisite: the
+  `parkCount` fan-in in `Scheduler.scala:689-693` is a latent wrong-set decrement (tracker M16).
 - The Phase 1 / Phase 2 sections further down are **history** — right for their phase, not the current status.
 
 ### Remote
@@ -118,7 +124,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | G5 | ~70–80% of migration attempts abort on the board | Wasted probes and directory reads | stale `clients` bit; `acquireBeforeRelease = true` never tried |
 | G6 | Random (LFSR) replacement, not LRU as in the paper; small 8 KB L1 | The paper's "a moved line gets a head start" became "a moved line is never evicted" | `Directory.scala` |
 | G7 | SBU logic is 60 levels deep; its per-set tables are flip-flops | Timing and area cost | `SetBalanceUnit.scala`, `DSS.scala` |
-| G8 | **Open question — ⚠️ verify this week (M11).** On a partner hit our RTL does home +1, partner unchanged. The paper lowers the partner's counter (§3.3, Fig 2) but is unclear on the home counter | Unknown until settled. Do **not** change the RTL on the current reading | `Directory.scala:313-315` |
+| G8 | ~~Open question (M11)~~ **CLOSED 2026-09-16: not a gap.** Home +1 on a native miss matches the paper (Fig 2/3); the missing partner −1 changes no decision while paired | none | `Directory.scala:313-315` |
 | G9 | **Hypothesis (2026-09-15, unverified):** a move may only overwrite a *home* line in the destination (`dstEvictable` needs `!displaced`); destinations evict home lines first; pairs never end (L8) → each pair settles at 1 home + 15 moved lines | ~47% of the cache parked at any size (measured 480/1024 and 1903/4096); primary hit rate roughly halves | `ai-documents/performance/why-sbc-loses-2026-09-15.md`; `MSHR.scala:1469-1470`, `Directory.scala:217-226` |
 
 ### Bug patterns that keep coming back (details: `ai-documents/bugs/bug-fix-log.md`)
@@ -354,7 +360,7 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x388` | `SBC_SecC` | R, 64 — serves raised by a C-channel Release |
 | `0x390` | `SBC_HomeBranch` | R, 64 — requests that found their own HOME line in BRANCH |
 | `0x398` | `SBC_AtAssoc` | R — AT[sel]: bits[7:0]=assocSet, bit8=sd |
-| `0x3A0` | `SBC_Parked` | R, 64 — live parked (displaced) lines currently resident |
+| `0x3A0` | `SBC_Parked` | R, 64 — live parked (displaced) lines currently resident. **Exact since task 007 commit 0** — it moves by the PopCounts, so two erases in one cycle subtract two; before that it subtracted one and drifted upward |
 | `0x3A8` | `L2_Accesses` | R — **legacy:** directory lookups on every channel (includes write-backs and flushes, leaves out repeats) — **not** the terminology's access. Free-running, always active (SBC on or off), **not** reset by SBC_Reset |
 | `0x3B0` | `L2_Hits` | R — **legacy:** directory hits on every channel (upgrade misses and write-backs count as hits, secondary hits as misses) — do not quote it as a hit rate |
 | `0x3B8` | `SBC_StatsReset` | W — write any value to zero **only** the event/hit counters (the 12 SBC counters + `L2_Accesses`/`L2_Hits` + the five 006 counters below). Leaves `sat`/`armed`/AT/DSS/`parkCount`/`nParked` untouched, so the migration flow keeps running — the safe per-window reset (unlike `SBC_Reset`) |

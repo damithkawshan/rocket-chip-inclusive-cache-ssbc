@@ -13,13 +13,14 @@ Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in secti
 >      of moved lines.
 >    - How to check on the board: after an SBC run, look at every set — is every set paired? During a
 >      run, watch the number of moved lines — does it only ever go up?
-> 2. **How the heat counter should change when a moved line is found in the partner set.** Our code
->    raises the home set's heat and leaves the partner set's heat alone.
->    - The paper clearly lowers the **partner** set's heat (its Figure 2). It does not clearly say what
->      happens to the **home** set's heat.
->    - How to check: look for a longer version of the paper, or ask the authors. Then decide.
+> 2. ~~**How the heat counter should change when a moved line is found in the partner set.**~~
+>    **SETTLED 2026-09-16 — no code change needed.** The paper's own Figures 2 and 3 were read from the
+>    PDF: the home set's heat goes **up** on a native miss even when the partner search hits, and the
+>    **partner's** heat goes down. We do the home half already, and the partner half never changes any
+>    decision while two sets are paired. Evidence and reasoning:
+>    [fix-plan-follow-the-paper-2026-09-16.md](performance/fix-plan-follow-the-paper-2026-09-16.md) section 0.
 >
-> When both are checked, update the two matching rows in the tracker and remove this box.
+> When item 1 is checked, update its row in the tracker and remove this box.
 
 **Doc labels**
 - 🟢 **Use now**
@@ -47,12 +48,18 @@ Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in secti
   - it takes **32% to 51% longer**
   - it goes to main memory **2.5 to 7 times more often**
   - each setup was measured once, not repeated yet ([details](performance/fpga-ab-baseline-2026-09-11.md), section 4)
-- **Must check this week:** set pairs never break up, and how the heat counter should change when a
-  moved line is found in the partner set — see the box at the top.
+- **Must check this week:** set pairs never break up — see the box at the top. The heat-counter question
+  is settled (2026-09-16).
 - **Start here on 2026-09-15:** [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) —
   an analysis, **not yet verified**, of why SBC loses where the paper wins. Its claim: three of our
   eviction rules plus pairings that never end leave about 47% of the cache full of moved lines, at any
   cache size. It also says Step 3 of the workplan needs rethinking. Its two board tests come first.
+- **Proposed fix, waiting on your decision (2026-09-16):**
+  [fix-plan-follow-the-paper-2026-09-16.md](performance/fix-plan-follow-the-paper-2026-09-16.md) — read the
+  paper itself, then four small rule changes that put us back on the paper's placement and eviction
+  behaviour: moved lines can be evicted, a move may reuse a moved-line slot, pairings end, and a cap of
+  about 2 moved lines per pairing (the paper's own steady state). One switch register, one image. It
+  replaces step 3 of the workplan.
 - **Hit and miss words are now fixed (2026-09-14):** [guides/cache-terminology.md](guides/cache-terminology.md).
   Use them in every report. Until task 005 is done, **do not quote a hit rate** — the old counters mix
   in messages that are not real requests. The number of misses is already exact.
@@ -110,17 +117,18 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M1 | Same-work speed test on the board, feature on vs off | ✅ 2026-09-13 | 3 tests: 32–51% slower, 2.5–7× more trips to memory |
 | M2 | Repeat each test 3 times | 🔴 | every number so far comes from one run |
 | M3 | Watch moved lines pile up for one hour | 🔴 | workplan step 2 |
-| M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | 🔴 | workplan step 3 — **under review**: the 2026-09-15 analysis predicts the "first slot" fix does almost nothing (see M14) |
+| M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | ⛔ replaced 2026-09-16 | folded into the fix plan: the "first slot" fallback disappears on its own once moved lines can be evicted. See [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) C1 |
 | M5 | Count hits honestly (task 005) | 🔴 next | needed before quoting any hit rate. The words are fixed: [cache-terminology.md](guides/cache-terminology.md) |
 | M6 | 64-bit counters | 🟡 | ✅ saved and passing in simulation 2026-09-14 (`06fcca8`). Still owed: a new FPGA image — build one image after task 005 |
 | M7 | Is the cache's cycle counter the same clock as the CPU? | 🔴 | the on/off comparison is fair either way |
 | M8 | The "moves attempted" counter does not add up | 🟡 cause found 2026-09-14 | the "aborted" count also includes moves that were turned down before they started, and two in the same cycle count once. Fix is in task 005 |
 | M9 | Check that changed moved lines are always saved, never lost | 🔴 | cheap to check, bad if wrong |
 | M10 | Try the CPU-cache setting that makes it report lines it drops | 🔴 | never tried; should cut wasted move attempts |
-| M11 | ⚠️ **VERIFY THIS WEEK (due 09-18):** which heat counter a partner hit should change | 🔴 | our code: home +1, partner unchanged. Paper §3.3 + Figure 2: partner goes **down**; the home rule is unclear. Find a longer version of the paper or ask the authors |
+| M11 | Which heat counter a partner hit should change | ✅ settled 2026-09-16 | Read from the paper PDF (Figures 2 and 3): home **+1** on a native miss even when the partner search hits, partner **−1**. We match the home half; the partner half changes no decision while paired. **No RTL change.** [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) section 0a |
 | M12 | Board check 1: after an SBC run, read every set — paired or not, and how hot | 🔴 | analysis §6 check 1. Predicts every set paired and destinations near maximum heat. **Also verifies L8** |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
-| M14 | Decide the fair version to test, before building M4's switches | 🔴 | analysis §5: moved lines compete equally for eviction; a move may replace an older moved line; end pairings; maybe a 1-bit "recently used" mark per slot |
+| M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
+| M16 | 🐞 The moved-line count can be decremented for the wrong set | 🔴 found 2026-09-16 | `Scheduler.scala:689-693` ORs the erase pulses and `Mux1H`es the home set: two at once decrement one wrong set. Harmless today, a **data bug** once pairings end on that count. Prerequisite P0 of the [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) |
 | M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
 
 ### 1d. Left over from the build phases — details in CLAUDE.md
@@ -134,7 +142,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | L5 | Move lines that have been written to | P3R | 🔴 | only unchanged lines can move today |
 | L6 | Stop moving lines from sets whose moved lines are never reused | P4 | 🔴 | not built |
 | L7 | Test "serve a moved line that needs write permission" | P3R | ⏭ | needs two cores; never happened in any run |
-| L8 | End a pairing once its moved lines are gone (teardown) | P4 | 🔴 | ⚠️ **VERIFY THIS WEEK (due 09-18).** Never built — every pairing lasts forever (found in the code 2026-09-14). Confirm on the board with M12 |
+| L8 | End a pairing once its moved lines are gone (teardown) | P4 | 🔴 | ⚠️ **VERIFY THIS WEEK (due 09-18).** Never built — every pairing lasts forever (found in the code 2026-09-14). Confirm on the board with M12. Design proposed: [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) C3 |
 
 ### 1e. Tidy-up — low priority, do during the improve phase
 
@@ -184,6 +192,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
 - 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
+- 🟢 [fix-plan-follow-the-paper-2026-09-16.md](performance/fix-plan-follow-the-paper-2026-09-16.md) — **the proposed fix**: what the paper actually does (read from the PDF), the four rule changes, one switch register, and what to run. Replaces step 3 of the workplan. Needs your decision.
 - 🟢 [workplan-parked-occupancy-2026-09-11.md](performance/workplan-parked-occupancy-2026-09-11.md) — **the current plan**: why SBC is slower, and three steps to find out. Step 3 under review.
 - 📘 [omnetpp-differential-2026-09-10.md](performance/omnetpp-differential-2026-09-10.md) — first board test (fixed time, not fixed work). Its moved-line analysis still holds.
 - 📘 [destination-side-blocker.md](performance/destination-side-blocker.md) — why most moves were refused at the target set (2026-08-24).
