@@ -9,6 +9,9 @@ sw/verilator_logs
 # Research data (large, regenerated per run)
 results/
 
+# FPGA bitstream archive (large binaries, regenerated per build)
+sbc_bit_archive_2026_sep/
+
 # Python caches
 **/__pycache__/
 *.pyc
