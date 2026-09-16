@@ -80,10 +80,10 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     }))
     // SBC Phase 1: SW arm pulse from MMIO SBC_BalanceSet (1-cycle valid+set).
     val arm = Flipped(Valid(UInt(params.setBits.W)))
-    // SBC (003 §10.5): displaced-eviction pulses (OR-reduced across MSHRs), for parkCount.
-    val dispHome    = Input(UInt(params.setBits.W))  // which set the reclaimed parked line came from
-    val dispRelease = Input(Bool())
-    val dispDrop    = Input(Bool())
+    // SBC (003 §10.5, 007 c0): one parked-line erase per cycle, arbitrated in the Scheduler so no
+    // event is lost and none is charged to the wrong set. The release/drop split lives in PerfCounters.
+    val dispHome  = Input(UInt(params.setBits.W))  // which set the reclaimed parked line came from
+    val dispErase = Input(Bool())
     // SBC: destination-reject feedback (the probed dst set had no free or evictable way). Feeds the
     // DSS block list only — it must NOT touch `sat`, which also drives source/HOT selection.
     val migReject  = Flipped(Valid(UInt(params.setBits.W)))
@@ -176,7 +176,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   io.migrateResp.destSet := Mux(dIsSource, dEntry.assocSet, dssPick)
 
   // ---- SBC Phase 1: AT commit (step 7). The event counters and SBC_Parked live in PerfCounters. --
-  val parkErase = io.dispRelease || io.dispDrop
+  val parkErase = io.dispErase
   // Paper section 2.3 "sc" bit, as a per-source-set count of lines currently parked in the partner.
   // A count rather than a bare bit because we have no cheap "OR of the d bits" read of the partner
   // row; under strict 1:1 pinning every line parked out of s sits in exactly one partner, so this is

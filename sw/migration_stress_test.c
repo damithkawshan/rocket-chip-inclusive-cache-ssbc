@@ -61,6 +61,11 @@ static void sbc_summary(void) {
            (unsigned long)sbc_rd(SBC_L2_SECONDARYHIT), (unsigned long)sbc_rd(SBC_L2_PROBEDHIT),
            (unsigned long)sbc_rd(SBC_L2_DATAMISS),     (unsigned long)sbc_rd(SBC_L2_UPGRADEMISS),
            (unsigned long)sbc_rd(SBC_L2_SECONDSEARCH), (unsigned long)sbc_rd(SBC_L2_SECONDARYMISS));
+    /* 007 commit 0: the parked level and the two erase counters. parked is a level, so it is read
+     * outside L2_StatsHold on purpose. At rest parked == migrations - dispRelease - dispDrop. */
+    printf("[SBC-PARK] parked=%lu dispRelease=%lu dispDrop=%lu\n",
+           (unsigned long)sbc_rd(SBC_PARKED), (unsigned long)sbc_rd(SBC_DISPRELEASE),
+           (unsigned long)sbc_rd(SBC_DISPDROP));
 }
 
 /* C5: read the four outcome counters and accessA under L2_StatsHold, so they are one instant, and

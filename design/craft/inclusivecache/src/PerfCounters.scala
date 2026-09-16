@@ -231,10 +231,11 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     // A level, not an event: never held, never cleared by clearStats/clearSbc's `when` below except
     // its own arithmetic. A commit and an erase in one cycle cancel; never below 0.
     val parked  = RegInit(0.U(log2Ceil(params.cache.sets * params.cache.ways + 1).W))
-    val parkInc = p.migCommit =/= 0.U
-    val parkDec = p.dispRelease =/= 0.U || p.dispDrop =/= 0.U
-    when (parkInc && !parkDec)                        { parked := parked + 1.U }
-    .elsewhen (!parkInc && parkDec && parked =/= 0.U) { parked := parked - 1.U }
+    // 007 c0: both sides are PopCounts and can be >1 in one cycle, so move by the arithmetic, not
+    // by one. Collapsing them to booleans subtracted 1 for 2 erases, so the level drifted UPWARD.
+    val parkInc = p.migCommit
+    val parkDec = p.dispRelease +& p.dispDrop
+    parked := Mux(parkDec > parked +& parkInc, 0.U, parked +& parkInc - parkDec)
 
     // SBC_Reset while lines are parked orphans them - the AT is their only home-set record.
     assert (!io.clearSbc || parked === 0.U, "SBC_Reset issued while lines are still parked")

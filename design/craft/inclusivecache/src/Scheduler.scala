@@ -619,11 +619,31 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
     sbu.io.clear      := io.sbcReset
-    // SBC: a destination that refused a migration is blocked in the DSS. One-hot by the token.
-    val migRejectOH = VecInit(mshrs.map(_.io.migRejectDst.valid))
-    sbu.io.migReject.valid := migRejectOH.asUInt.orR
-    sbu.io.migReject.bits  := Mux1H(migRejectOH, mshrs.map(_.io.migRejectDst.bits))
-    assert (PopCount(migRejectOH) <= 1.U)
+    // SBC (007 c0): hold one event per MSHR and grant one per cycle. OR-ing the pulses and Mux1H-ing
+    // the set numbers loses an event and names the bitwise OR of two set indices - a set that lost
+    // nothing. A held event is at most `mshrs` cycles late, which is the safe direction for both users.
+    def grantOnePerCycle(req: Seq[Bool], set: Seq[UInt], what: String): (Bool, UInt) = {
+      val pend    = RegInit(VecInit(Seq.fill(req.size)(false.B)))
+      val held    = Reg(Vec(req.size, UInt(params.setBits.W)))
+      val grantOH = PriorityEncoderOH(pend.asUInt)   // 0 when nothing is pending
+      val grant   = pend.asUInt.orR
+      for (i <- req.indices) {
+        when (req(i))          { pend(i) := true.B; held(i) := set(i) }
+        .elsewhen (grantOH(i)) { pend(i) := false.B }
+        // The one remaining way to lose an event: a second one while the slot is full and not being
+        // freed. An MSHR cannot do that - its eviction sequence is far longer than the grant delay.
+        assert (!(req(i) && pend(i) && !grantOH(i)), s"SBC: $what event lost, slot still full")
+      }
+      assert (PopCount(grantOH) <= 1.U, s"SBC: two $what grants in one cycle")
+      assert (!grant || (grantOH & pend.asUInt).orR, s"SBC: $what granted with nothing pending")
+      (grant, Mux1H(grantOH, held))
+    }
+
+    // SBC: a destination that refused a migration is blocked in the DSS. One per cycle, own set.
+    val (migRejectGrant, migRejectSet) =
+      grantOnePerCycle(mshrs.map(_.io.migRejectDst.valid), mshrs.map(_.io.migRejectDst.bits), "migReject")
+    sbu.io.migReject.valid := migRejectGrant
+    sbu.io.migReject.bits  := migRejectSet
     io.sbcStats       := sbu.io.stats
 
     // SBC Phase 2: migrate advice for the demand-allocating set. The SBU reports the source set is
@@ -685,13 +705,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       }
     }
 
-    // SBC (003 §10.5): parked-line erase pulses for parkCount. OR is exact: asserted one per cycle.
-    sbu.io.dispRelease := mshrs.map(_.io.dispRelease).reduce(_ || _)
-    sbu.io.dispDrop    := mshrs.map(_.io.dispDrop).reduce(_ || _)
-    // Which set the reclaimed parked line came from, so the sc counter decrements the right entry.
-    val dispOH = VecInit(mshrs.map(m => m.io.dispRelease || m.io.dispDrop)).asUInt
-    sbu.io.dispHome := Mux1H(dispOH, mshrs.map(_.io.dispHome))
-    assert (PopCount(dispOH) <= 1.U, "SBC: two MSHRs reclaimed a parked line in one cycle")
+    // SBC (003 §10.5, 007 c0): parked-line erase for parkCount, one per cycle with its own home set.
+    // PerfCounters keeps counting the raw pulses (PopCount) - only this path is arbitrated.
+    val (dispGrant, dispSet) =
+      grantOnePerCycle(mshrs.map(m => m.io.dispRelease || m.io.dispDrop), mshrs.map(_.io.dispHome), "parked-erase")
+    sbu.io.dispErase := dispGrant
+    sbu.io.dispHome  := dispSet
     // SBC Phase 3 (002 C1): ask about the MSHR receiving a directory result, not about whatever is
     // waiting at the port. Keying it to the port let an MSHR latch another set's partner, because
     // `repeat` is a TAG test standing in for "did my SET change". directoryFanout is one-hot (the
