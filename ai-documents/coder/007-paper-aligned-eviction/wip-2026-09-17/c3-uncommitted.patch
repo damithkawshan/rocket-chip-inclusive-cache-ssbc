@@ -1,0 +1,205 @@
+diff --git a/design/craft/inclusivecache/src/MSHR.scala b/design/craft/inclusivecache/src/MSHR.scala
+index 6e500b3..35afb1e 100644
+--- a/design/craft/inclusivecache/src/MSHR.scala
++++ b/design/craft/inclusivecache/src/MSHR.scala
+@@ -305,6 +305,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
+   // SBC Phase 3 (002 C1): io.pairInfo is broadcast to every MSHR but keyed to whichever one gets the
+   // directory result, so it describes OUR set exactly when io.directory.valid.
+   val pairLive          = io.directory.valid && io.pairInfo.valid && io.pairInfo.bits.isSrc
++  // SBC (007 C3, N2): on a search answer, our pairing no longer matches the one latched when the search
++  // was issued - a teardown landed in between. Distrust the answer; a miss is safe (nothing is parked).
++  val pairStale         = pairValidReg =/= io.pairInfo.valid ||
++                          (pairValidReg && (pairSetReg =/= io.pairInfo.bits.set || pairIsSrcReg =/= io.pairInfo.bits.isSrc))
+   val searchedReg       = RegInit(false.B)   // C3: did this request ask its partner?
+   val txnCtr            = RegInit(0.U(8.W))  // 003 Stage 9: bumped at every allocate (see MSHRStatus)
+ 
+@@ -1062,7 +1066,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
+   // the partner's row. Permission is handled the way a home hit handles it - probe, or acquire perm -
+   // never by throwing the line away. Only an MMIO flush still declines, and that stays unsupported.
+   val willServe = params.micro.enableSetBalancing.B && io.directory.bits.secondaryHit &&
+-                  !request.control
++                  !request.control && !pairStale
+   migResumeWantW := migResumeCycle && resumeWant && !willServe
+ 
+   // SBC (003 Stage 2b): THE ASSESS CHAIN, factored so the plan block and the search resume arm
+@@ -1377,6 +1381,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
+   when (io.directory.valid && searching && !w_ssearch) {
+     w_ssearch := true.B
+     searching := false.B
++    if (params.micro.enableSetBalancing) {
++      // 007 C3 N2: the race is handled (willServe is false, so it is a miss); this only reports it.
++      assert (!pairStale, "SBC(007 N2): pairing torn down while a search was in flight - served as a miss")
++    }
+     // SBC (003 Stage 2b): the decision we deferred is due now. Same Scala def as the plan block, so
+     // both call sites arm bit-identical state. In 2b every outcome still needs the home way (a hit
+     // erases the parked copy and falls through to the fetch), so this runs unconditionally; 2e is
+@@ -1389,7 +1397,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
+       when (!willServe) { armEviction(meta, migResumeWantW, request.set) }
+     }
+     val secTip = io.directory.bits.secondaryEntry.state === TIP
+-    when (io.directory.bits.secondaryHit) {
++    when (io.directory.bits.secondaryHit && !pairStale) {
+       if (params.micro.sbcShadow) {
+         // The partner set answered with a parked line. If it did not come from US, the pairing or the
+         // search key is wrong and we are about to serve another set's data.
+diff --git a/design/craft/inclusivecache/src/Scheduler.scala b/design/craft/inclusivecache/src/Scheduler.scala
+index 4afaed7..c88b7a3 100644
+--- a/design/craft/inclusivecache/src/Scheduler.scala
++++ b/design/craft/inclusivecache/src/Scheduler.scala
+@@ -608,6 +608,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
+     println(s"[SBC][elab] BRANCH reachability: p=$brP m=$brM r=$brR b=${brR || brP} (b false => secPerm=0 is correct)")
+     sbu.io.dirTap     := directory.io.tap
+     sbu.io.migrateEnable := io.migrateEnable
++    sbu.io.anyMigrating  := anyMigrating
+     sbu.io.satReadSet := io.sbcSatReadSet
+     sbu.io.arm        := io.sbcBalanceSet
+     sbu.io.clear      := io.sbcReset
+diff --git a/design/craft/inclusivecache/src/SetBalanceUnit.scala b/design/craft/inclusivecache/src/SetBalanceUnit.scala
+index fd8292a..787e8f5 100644
+--- a/design/craft/inclusivecache/src/SetBalanceUnit.scala
++++ b/design/craft/inclusivecache/src/SetBalanceUnit.scala
+@@ -93,6 +93,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
+     // SBC: MMIO master switch (SBC_MigrateEnable). Gates only the START of a new migration; every
+     // already-parked line keeps being searched, served, written back and evicted exactly as before.
+     val migrateEnable = Input(Bool())
++    // SBC (007 C3, N1): a migration is in flight in this bank. Teardown waits for it to finish.
++    val anyMigrating = Input(Bool())
+     // SBC reset: SW pulse from MMIO SBC_Reset — zeroes saturation, armed, the AT and the DSS.
+     val clear = Input(Bool())
+     // MMIO
+@@ -225,6 +227,35 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
+   }
+   assert (!parkInc || parkCount(incSet) <= params.cache.ways.U,
+           "SBC: more lines parked out of one set than the partner has ways")
++
++  // ---- SBC (007 C3): teardown. Paper 3.4: a pairing breaks when the source's last guest leaves. ----
++  // Queued in a 1-deep slot, drained only while no migration is in flight (N1), and re-checked when it
++  // drains: a commit in the meantime may have parked a new guest, and clearing then would orphan it.
++  val decHitsZero = parkDec && !(parkInc && incSet === decSet) && parkCount(decSet) === 1.U
++  val tdPend      = RegInit(false.B)
++  val tdSet       = Reg(UInt(params.setBits.W))
++  val tdPartner   = at(tdSet).assocSet
++  val tdDrain     = tdPend && !io.anyMigrating && !migrateCommit
++  val tdStillDue  = parkCount(tdSet) === 0.U && at(tdSet).valid && !at(tdSet).sd
++  when (tdDrain) {
++    tdPend := false.B
++    when (tdStillDue) {
++      at(tdSet).valid     := false.B
++      at(tdPartner).valid := false.B
++    }
++  }
++  // A trigger may take the slot on the cycle it drains; one that finds it occupied is dropped - the pair
++  // simply stays until that source's count empties again.
++  val tdAccept = decHitsZero && (!tdPend || tdDrain)
++  when (tdAccept) { tdPend := true.B; tdSet := decSet }
++  assert (!migrateCommit || io.anyMigrating, "SBC(007 N1): a migration committed while anyMigrating was low")
++  assert (!(tdDrain && tdStillDue) || (at(tdPartner).valid && at(tdPartner).sd && at(tdPartner).assocSet === tdSet),
++          "SBC(007 C3): teardown partner does not point back (1:1 broken)")
++  if (params.micro.sbcDebug) {
++    when (tdDrain &&  tdStillDue) { printf(p"[SBC] TEARDOWN src=${tdSet} dst=${tdPartner}\n") }
++    when (tdDrain && !tdStillDue) { printf(p"[SBC] TEARDOWN-CANCEL src=${tdSet}\n") }
++    when (decHitsZero && !tdAccept) { printf(p"[SBC] TEARDOWN-DROP src=${decSet} pending=${tdSet}\n") }
++  }
+   // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
+   io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
+ 
+@@ -236,6 +267,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
+     // TODO(phase3): once the AT is wired into the live secondary-search/teardown path, clearing it
+     // while displaced lines still exist would orphan them (the AT is their home-set recovery info).
+     at.foreach    (_ := 0.U.asTypeOf(new ATEntry(params)))
++    tdPend := false.B
+   }
+ 
+   // Read-only stats for MMIO.
+diff --git a/sw/migration_stress_test.c b/sw/migration_stress_test.c
+index 274c242..0e13ec3 100644
+--- a/sw/migration_stress_test.c
++++ b/sw/migration_stress_test.c
+@@ -273,6 +273,75 @@ static int case_bankstore_saturation(int cold_set) {
+     return ok;
+ }
+ 
++/* Case 8 — TEARDOWN (task 007 C3). A pairing must break when its source's last guest leaves.
++ * Form a pairing, write every source line (the parked ones are served in place and turn into DIRTY
++ * guests), then flood ONLY the partner with fresh misses until the source<->partner pairing is gone
++ * from both AT entries. Checks the pairing itself, not "unpaired": a flooded partner turns hot and
++ * may legitimately start migrating elsewhere the moment it is free. Every written line must read back. */
++#define TD_TAG0   4096        /* fresh tags - no earlier case touched these addresses */
++#define TD_NSRC   16          /* > ways, so the source keeps missing and migrating */
++#define TD_BUILD  4000        /* bound on source loads to form a pairing */
++#define TD_DRAIN  4000        /* bound on partner misses to empty it */
++
++static void at_entry(int s, int *valid, int *sd, int *assoc) {
++    sbc_wr(SBC_SETSEL, (uint64_t)s);
++    uint64_t as = sbc_rd(SBC_ATASSOC);
++    *valid = (int)((sbc_rd(SBC_STATUS) >> 2) & 1);
++    *sd    = (int)((as >> 8) & 1);
++    *assoc = (int)(as & 0xFF);
++}
++
++static int case_teardown(void) {
++    if (!(sbc_rd(SBC_STATUS) & 1)) { printf("case_teardown: SKIP (SBC not built)\n"); return 1; }
++#ifdef SBC_MIGRATE_OFF
++    printf("case_teardown: SKIP (migration off)\n");
++    return 1;
++#endif
++    int v, sd, as, src = -1, dst = -1;
++    /* 1. form a pairing on the first set that is not already a destination (destinations never source) */
++    for (int s = 0; s < L2_SETS && src < 0; s++) {
++        at_entry(s, &v, &sd, &as);
++        if (v && sd) continue;
++        for (int it = 0; it < TD_BUILD; it++) {
++            sink += do_ld(set_addr(s, TD_TAG0 + it % TD_NSRC));
++            if ((it & 0x3F) == 0x3F) {
++                at_entry(s, &v, &sd, &as);
++                if (v && !sd) { src = s; dst = as; break; }
++            }
++        }
++    }
++    if (src < 0) { printf("case_teardown: FAIL (no pairing formed)\n"); return 0; }
++
++    /* 2. write every source line: parked ones are served in place and become dirty guests */
++    uint64_t g[TD_NSRC];
++    for (int t = 0; t < TD_NSRC; t++) {
++        g[t] = 0x7EA2D00DULL ^ ((uint64_t)t << 20);
++        do_st(set_addr(src, TD_TAG0 + t), g[t]);
++    }
++
++    /* 3. leave the source alone; flood only the partner until the src<->dst pairing is gone */
++    int gone = 0, n = 0, sv = 0, ssd = 0, sas = 0, dv = 0, dsd = 0, das = 0;
++    for (; n < TD_DRAIN && !gone; n++) {
++        sink += do_ld(set_addr(dst, TD_TAG0 + TD_NSRC + n));
++        if ((n & 0xF) == 0xF) {
++            at_entry(src, &sv, &ssd, &sas);
++            at_entry(dst, &dv, &dsd, &das);
++            gone = !(sv && !ssd && sas == dst) && !(dv && dsd && das == src);
++        }
++    }
++
++    /* 4. every written line must read back - home lines and dirty guests written back alike */
++    int data_ok = 1;
++    for (int t = 0; t < TD_NSRC; t++)
++        if (do_ld(set_addr(src, TD_TAG0 + t)) != g[t]) data_ok = 0;
++
++    printf("case_teardown (007 C3): src=%d dst=%d pairing_gone=%s after %d partner misses "
++           "src(v=%d sd=%d assoc=%d) dst(v=%d sd=%d assoc=%d) data=%s: %s\n",
++           src, dst, gone ? "yes" : "NO", n, sv, ssd, sas, dv, dsd, das,
++           data_ok ? "ok" : "BAD", (gone && data_ok) ? "PASS" : "FAIL");
++    return gone && data_ok;
++}
++
+ int main(void) {
+     printf("==== SBC migration stress test (HOT_SET=%d, ways=%d) ====\n", HOT_SET, L2_WAYS);
+ 
+@@ -295,8 +364,10 @@ int main(void) {
+     report_inprogress("case_reaccess_migrated");
+     ok &= case_hazard_rw(6);        /* RaW/WaR interlock stress             */
+     report_inprogress("case_hazard_rw");
+-    ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window (run last) */
++    ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window */
+     report_inprogress("case_bankstore_saturation");
++    ok &= case_teardown();          /* 007 C3: pairing breaks when the last guest leaves */
++    report_inprogress("case_teardown");
+ 
+     sbc_summary();
+     printf(ok ? "PASS: all migration corner cases data-correct (see [SBC] log)\n"

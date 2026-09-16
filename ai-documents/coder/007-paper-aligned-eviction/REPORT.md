@@ -1,8 +1,38 @@
 # Coder report 007 — put the paper's placement and eviction rules back
 
-**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commits 0, 1 and 2 landed, all gates green
+**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — c0–c2 + random-source-victim landed; **C3 blocked by B7-1, 256 KB blocked by B7-2** (see RESUME HERE)
 
 > Filled in as the work happens, not at the end.
+
+## ▶ RESUME HERE — state at end of 2026-09-17 (02:50)
+
+**Two blockers, both OPEN in `ai-documents/bugs/bug-fix-log.md`:**
+
+1. **B7-1 (finding F7) — stale `dispHome`.** A reclaimed guest is charged to the wrong set, so a source's
+   `parkCount` never goes down. Teardown (C3) can never fire, the cap (C4) would lock sources out forever,
+   and `mayHold` is stuck true (likely most of the board's wasted searches). Pre-existing, found by
+   T-TEARDOWN. **Fix is designed, not built** (bug log has it). **Do this first.**
+2. **B7-2 — combinational loop at 256 KB.** Vivado DRC `LUTLP-1` refused the 256 KB bitstream of `251c9d7`.
+   The pre-007 256 KB build and the c0–c2 64 KB build were both clean. Cause unknown; do not bypass it.
+
+**Tree state (branch `sbc-sampling`, HEAD `251c9d7` = tag `sbc-007-c2-breakeven-2026-09-16`):**
+
+| Item | State |
+|---|---|
+| C3 RTL (`MSHR.scala`, `SetBalanceUnit.scala`, `Scheduler.scala`) + case 8 in `sw/migration_stress_test.c` | **uncommitted** in the working tree; gate FAILED (B7-1). Snapshot: `wip-2026-09-17/c3-uncommitted.patch` |
+| C4 | **not applied.** Staged, dry-run-verified patch: `wip-2026-09-17/apply_c4.py` (`DRY=1` to check, run without it to apply). Adds a config to the **chipyard** repo's `RocketConfigs.scala` |
+| `sw/sbc_guest_cap_test.c` (T-CAP) | **untracked**, compiles. Snapshot in `wip-2026-09-17/` |
+| 256 KB bitstream | **none** — build failed (B7-2). tmux session `sbc256` still open |
+| ⚠️ `fpga/bitstream_storage/…256K16WL2ConfigSBC-random-source-evict-2026-09-17.bit` | **MISLABELLED — byte-identical to the OLD pre-007 image** (`cmp` confirmed). It was archived after the failed build. Do not program it; delete or rename |
+
+**Order for the next session:**
+1. Fix B7-1 in `MSHR.scala` (on top of the uncommitted C3).
+2. Re-run the commit-3 gate (`SBC_LABEL=007-c3`). Expect case 8 PASS, `TEARDOWN` printfs, a big drop in `L2_SecondSearch`.
+3. Commit B7-1 and C3 as two commits.
+4. Apply C4 (`apply_c4.py`), gate + T-CAP on `VerilatorRocket8KL116KL2GuestCap1Config`.
+5. Investigate B7-2 before any new 256 KB bitstream. The 64 KB builds were clean, so a 64 KB board A/B of
+   B7-1 + C3 (+ C4) does not wait on B7-2 — and it is the likeliest result for the supervisor, since B7-1
+   should remove most wasted searches.
 
 ## Summary
 
@@ -133,8 +163,7 @@ _The only per-change evidence there is — there is no runtime switch._
 | 0 exact counts | 18 | 8,354 | 154,723 | 13,773 | 171,605 | 49.55% |
 | 1 guests evictable | 5 | 17,431 | 177,331 | 4,196 | 150,219 | **54.71%** |
 | 2 reuse a guest slot | 4 | 20,108 | 192,218 | 3,788 | 136,773 | **58.90%** |
-| 1 guests evictable | | | | | | |
-| 2 reuse a guest slot | | | | | | |
+| + random source victim (experiment, kept) | 4 | 20,343 | 192,820 | 4,646 | 135,300 | **59.34%** |
 | 3 teardown | | | | | | |
 | 4 cap | | | | | | |
 
@@ -328,6 +357,41 @@ effect is about the size of the boot-to-boot drift between the two sessions' OFF
 **Decision (user, 2026-09-17):** kept without a repeat run. Committed as the new baseline; tag
 `sbc-007-c2-breakeven-2026-09-16` moved onto it.
 
+## Commit 3 (C3) — teardown
+
+**2026-09-17.** Built from tag `sbc-007-c2-breakeven-2026-09-16` (`251c9d7`). Chisel edited only after the
+256 KB bitstream build had reached Vivado, so none of this is in that bitstream.
+
+**What landed.**
+
+| File | Change |
+|---|---|
+| `SetBalanceUnit.scala` | detect `parkCount(src)` going 1 → 0; queue it in a 1-deep slot; drain only while no migration is in flight (**N1**) and not in a commit cycle; **re-check `parkCount == 0` when it drains**; clear `at(src)` and `at(partner)`. Asserts: a commit never happens with `anyMigrating` low; the partner points back. `sbcDebug` printfs `TEARDOWN` / `TEARDOWN-CANCEL` / `TEARDOWN-DROP` are the only teardown counts (no new register, TASK §3) |
+| `Scheduler.scala` | `sbu.io.anyMigrating := anyMigrating` |
+| `MSHR.scala` | **N2**: `pairStale` compares the pairing latched when the search was issued with the live one when the answer arrives. Stale → `willServe` false and the whole hit branch skipped, so it counts as a secondary miss and the eviction goes ahead. Sim assert reports it |
+| `sw/migration_stress_test.c` | new case 8, T-TEARDOWN (below) |
+
+**Why the hit branch is skipped, not just `willServe`.** A stale answer can match a guest parked by a
+*different* source after the partner was re-paired, and the existing `homeShadow` assert inside the hit
+branch would then fire on a correctly handled event.
+
+**Why N2's "treat as a miss" is safe.** A search from source S only runs on S's own A-channel MSHR, and
+there is one per set, so no migration from S can commit while S is searching. So if S's pairing changed
+during the search, it was torn down, which only happens at `parkCount(S) == 0`: nothing of S's is parked.
+
+**T-TEARDOWN** (case 8, stock config, runs in every gate): hammer a set until it reads as a source, read
+its partner from `SBC_AtAssoc`, write every source line (the parked ones are served in place and become
+dirty guests), then flood only the partner with fresh misses until the source↔partner pairing is gone from
+both AT entries, and re-read every written line. SKIPs on NoSbc and under `SBC_MIGRATE_OFF`.
+
+**Gate: FAILED — stopped on the new case, not on RTL correctness.** Cases 1–7 PASS, 0 RTL asserts, both
+shadow checkers quiet, none of the new N1/N2/teardown asserts fired. **Case 8 FAILED**: pairing 4↔0 still
+present on both entries after 4,000 partner misses, data correct. The test's non-zero exit stopped
+`run_sbc.sh`, so the NoSbc runs and the switch test did not run. **Zero `TEARDOWN`, `TEARDOWN-CANCEL` or
+`TEARDOWN-DROP` lines in the whole run** across 19,998 migrations and 5,415 guest reclaims: the source's
+count never went 1 → 0. Cause is finding F7 (a pre-existing bug), not the teardown logic. C3 RTL left
+uncommitted in the tree; commit 4 not applied.
+
 ## Findings (reported, not fixed)
 
 - **F1 — `migration_stress_test` never read `SBC_Parked`.** `sbc_summary()` printed the counters,
@@ -372,6 +436,32 @@ effect is about the size of the boot-to-boot drift between the two sessions' OFF
 - **F5 — C1 costs secondary hits, 70% of them.** Not a defect; worth the thinker seeing the size of it,
   because it is the mechanism C4's cap is meant to balance: guests that live longer are found more often,
   guests that die fast are not found at all. C1 alone moves all the way to the "die fast" end.
+- **F7 — a reclaimed guest is charged to the WRONG set in `parkCount`. Pre-existing (since 003 §10.5), found
+  by T-TEARDOWN.** A destination-home MSHR evicting a guest calls `armEviction(new_meta, …)` in its **plan
+  cycle** (`MSHR.scala` ~1683), and `dispReleasePulse`/`dispDropPulse` fire in that cycle. But
+  `io.dispHome := lineHome`, and `lineHome` is built from `meta.displaced`, `pairValidReg`,
+  `pairIsSrcReg` and `pairSetReg` — **all registers written in that same cycle** (`meta := new_meta`,
+  and the pairing latch). So `dispHome` is computed from the *previous* transaction. The previous victim is
+  almost never a guest, so `lineHome` falls back to `request.set` = the destination itself: the decrement
+  lands on the destination (already 0, clamped) and the source's `parkCount` **never decrements**. It
+  saturates at `ways` and stays there. Bug pattern #1 in CLAUDE.md ("reading a register in the same cycle
+  it is written"). The Release address uses `lineHome` later, once the registers have settled, so data and
+  shadow checkers are unaffected — only the per-set count is wrong. `SBC_Parked` is global and has no set
+  index, so it stays exact.
+  **Consequences:** (1) C3 teardown can never fire. (2) C4's cap reads the same count: once a source hits
+  the cap it would be refused **forever** — the staged commit-4 patch must not be applied before this is
+  fixed. (3) `mayHold` (the paper's "sc" bit) is stuck true for every source that has ever migrated, so the
+  second search runs on every miss even with nothing parked. **This is very likely a large share of the
+  board's 180.7 M searches / 0.36% search hit rate** — the "guests die too fast to be found" reading was
+  at least partly a stuck bit. Needs a board run to confirm.
+- **F8 — the 256 KB bitstream of `251c9d7` fails Vivado DRC with a combinational loop (bug log B7-2).**
+  16 LUTs through `sinkC/c_q`, `mshrs_*/request_tag`, `mshrs_*/bad_grant`, `mshrs_3/migDstSet[7]`,
+  `directory/request_set[7]`, `requests/request_tag`. Absent at 256 KB before 007 and at 64 KB after c0–c2.
+- **F6 — `sw/sip_common.h` `park_n()` comment describes the rule commit 1 deleted.** It says "displaced
+  ways are last-resort victims, so they persist while the fresh natives absorb the eviction". Since C1 a
+  guest is an ordinary victim, so the top-up no longer protects parked lines the way the comment claims.
+  The serve-in-place tests that rely on `park_n()` should be re-run under the new rules before their
+  results are trusted again. Comment not changed (outside this task).
 - **F3 — CLAUDE.md's `SBC_Aborted` row is stale.** It says "two declines/aborts in one cycle count once
   (OR fan-in) — coder/005 fixes". Task 005 commit 0 already did it: `perf.io.sbc.migAbort` is a
   `PopCount` over the MSHRs (`Scheduler.scala`, the PerfCounters wiring block). The row should now say
@@ -393,6 +483,25 @@ from `migration_stress_test` at all (F1), so the "start" row of the numbers tabl
 retrospectively. From commit 1 on it is fine.
 
 **Otherwise commit 0: nothing wrong.**
+
+**Commit 3, §6 N1 — "hold it in a 1-deep pending register and retry" can orphan a guest.** Sequence: S's
+last guest is evicted (`parkCount(S)` → 0, teardown queued); a migration from S is already in flight, so
+the teardown waits; that migration commits and parks a *new* guest in D (`parkCount(S)` → 1); the migration
+ends and the queued teardown drains, clearing a pairing that now has a live guest. That guest's home set is
+recovered from the AT, so its eventual writeback goes to the wrong address. **Built instead:** the drain
+re-checks `parkCount == 0` and cancels if not (`TEARDOWN-CANCEL`). It also refuses to drain in a commit
+cycle, independently of `anyMigrating`, so the two AT writes can never race.
+
+**Commit 3, §8 T-TEARDOWN — two changes to the test as written.**
+1. *"Both must report unpaired" is not a valid pass condition.* Flooding the partner with misses makes it
+   hot, and once the pairing breaks it may start migrating elsewhere at once, so it reads as paired again on
+   a correct design. The test checks that the specific source↔partner pairing is gone from both entries.
+2. *No `sbcForceDstSet`.* The partner is discovered from `SBC_AtAssoc`, so the case runs on the stock
+   config inside every gate instead of needing its own build.
+
+**Commit 3, §6 N2 — the reporting assert makes a handled event fail the gate.** The race is handled by
+design (served as a miss), but an assert stops the simulation and the gate requires 0 asserts. Built as
+written; if it fires, that is a real race and I will report it rather than turn it into a printf.
 
 **Commit 2: nothing wrong.** §5's two read sites (`Directory.scala` `evictableOH`, `MSHR.scala:1468-1470`
 `dstEvictable`) and the `allowDisplacedVictim` design matched as described. The `reusedGuestSlot` bit

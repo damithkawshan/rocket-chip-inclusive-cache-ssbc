@@ -14,7 +14,8 @@ Quick index:
 - **Phase 2** — Bug A (preferEvictable wiring), Bug B (copy_wsafe race), Dst-collision (illegal
   inner-D), Displaced accumulation (bricked set); plus `s_verify` disabled, Q3 rejected.
 - **Found in 003** — P1 ✅, P2 ✅, P5 ✅ (closed by deletion), P6 ✅, P7 ✅; A5.1 / A5.2 🟡 live RTL facts, not the corruption.
-- **Open** — residual `[born→gate]` sub-window (latent, do not pre-build).
+- **Open** — residual `[born→gate]` sub-window (latent, do not pre-build); **B7-1 stale `dispHome`**
+  (found 2026-09-17 by task 007 T-TEARDOWN); **B7-2 combinational loop at 256 KB** (Vivado DRC, 2026-09-17).
 
 ---
 
@@ -160,6 +161,56 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 ---
 
 ## 🔴 Open bugs (must not be forgotten)
+
+### 🔴 B7-1 — a reclaimed guest is charged to the WRONG set in `parkCount` (stale-register read)
+- **Found:** 2026-09-17, task 007 commit-3 gate, by the new T-TEARDOWN case. **Pre-existing** — present since
+  003 §10.5 added `dispHome`; not caused by task 007. Full write-up: coder/007 REPORT finding **F7**.
+- **Symptom:** `migration_stress_test` case 8 (`case_teardown`) FAIL — pairing 4↔0 still present on both
+  AT entries after 4,000 partner misses; data correct. **Zero** `TEARDOWN` / `TEARDOWN-CANCEL` /
+  `TEARDOWN-DROP` printfs in the whole run (19,998 migrations, 5,415 guest reclaims). Cases 1–7 PASS, 0 RTL
+  asserts, shadows quiet. Log: `sims/verilator/output/chipyard.harness.TestHarness.VerilatorRocket8KL116KL2Config/migration_stress_test.{log,out}`
+  (not collected — `run_sbc.sh` stopped on the test's exit code).
+- **Cause:** a destination-home MSHR evicting a guest calls `armEviction(new_meta, …)` in its **plan cycle**
+  (`MSHR.scala` ~1683); `dispReleasePulse`/`dispDropPulse` fire in that cycle. `io.dispHome := lineHome`, and
+  `lineHome` = `Mux(meta.displaced && pairValidReg && !pairIsSrcReg, pairSetReg, request.set)` — `meta` and
+  the three pair registers are **written in that same cycle** (`meta := new_meta` ~1535; pairing latch
+  ~1373). So `dispHome` is the *previous* transaction's answer. The previous victim is almost never a guest
+  → `lineHome` = `request.set` = the destination → the decrement lands on the destination (0, clamped). The
+  source's `parkCount` never decrements; it saturates at `ways`. Bug pattern #1 in CLAUDE.md.
+- **Why nothing else caught it:** the Release/probe address uses `lineHome` *later*, after the registers
+  settle, so data and both shadow checkers are fine. `SBC_Parked` has no set index, so it stays exact. The
+  saturating increment keeps the `parkCount <= ways` assert quiet, and the SBU comment explicitly accepted
+  "drift high = only a wasted search" — true until teardown (C3) and the cap (C4) read the count.
+- **Consequences:** (1) C3 teardown can never fire. (2) C4's cap would refuse a source **forever** once it
+  reaches the cap — do NOT apply the staged C4 patch before this fix. (3) `mayHold` (sc bit) is stuck true
+  for every source that ever migrated → the second search runs on every miss even with nothing parked —
+  **likely a large part of the board's 180.7 M searches / 0.36% search hit rate.** Confirm on the board.
+- **Proposed fix (not built):** compute the home set from the same fresh data the pulse uses — `m.displaced`
+  and the pairing live on a directory result, latched otherwise (the `pairValidNow`/`pairSetNow` pattern
+  already in `MSHR.scala` ~1247) — set it inside `armEviction` next to the pulse and drive `io.dispHome`
+  from that. ~6 lines, `MSHR.scala` only. Verify with the commit-3 gate: T-TEARDOWN should PASS and
+  `TEARDOWN` printfs appear; `L2_SecondSearch` should fall sharply.
+
+### 🔴 B7-2 — combinational loop: 256 KB bitstream refused by Vivado DRC
+- **Found:** 2026-09-17 02:41, 256 KB build of `251c9d7` (tag `sbc-007-c2-breakeven-2026-09-16`, config
+  `FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled`). Log:
+  `chipyard/fpga/build-logs/FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled-20260917-021836.log` line 7953.
+- **Symptom:** synth, opt, place and route all complete; `write_bitstream` stops on
+  `ERROR: [DRC LUTLP-1] Combinatorial Loop Alert: 16 LUT cells form a combinatorial loop`. One net:
+  `…/inclusive_cache_bank_sched/directory/wipeCount_reg[8]_1`. Cells include `sinkC/c_q/ram_ext`,
+  `mshrs_{0..4}/…request_tag[17]`, `mshrs_{2,3,4}/bad_grant`, **`mshrs_3/migDstSet[7]`**,
+  `directory/request_set[7]`, `requests/request_tag[17]`. No `.bit` produced.
+- **What is known:** NOT present in the pre-007 256 KB build (`…-20260915-101358.log`, bitstream OK) nor in
+  the c0–c2 **64 KB** build (`…64K16WL2ConfigSBC-20260916-171412.log`, bitstream OK). `migDstSet[7]` only
+  exists with 8 set bits, so it is width-dependent. The nets sit in the `dstClaim` / `allocReady` /
+  `io.allocate.bits` family that `MSHR.scala` already warns "closes a combinational loop".
+- **Not known:** which change introduced it (c0, c1, c2, or the random-source-victim change), and whether it
+  is a real loop or a structural false loop created by LUT packing. **Do not** add
+  `ALLOW_COMBINATORIAL_LOOPS` before that is known.
+- **Next:** get the full cell list (`report_drc` on the post-route checkpoint in the build `obj/` dir), trace
+  the loop, and bisect at 256 KB if needed (`sbc-start-2026-09-16`, `1486d4a`, `f885382`, `060e96d`,
+  `47db9c5`). A post-synth `report_drc` avoids a full place-and-route per step.
+
 
 ### Residual `[born → gate]` sub-window (do NOT pre-build)
 - **What:** the migrant reserves `dstSet` only at its *gate* (`dstValid`), a few cycles after the MSHR

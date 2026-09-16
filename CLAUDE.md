@@ -30,6 +30,16 @@ live in `ai-documents/`.
 >
 > Details and how to check: `ai-documents/README.md` (box at the top).
 
+- **▶ START HERE (next session after 2026-09-17):** the "RESUME HERE" box at the top of
+  [ai-documents/coder/007-paper-aligned-eviction/REPORT.md](ai-documents/coder/007-paper-aligned-eviction/REPORT.md).
+  Two OPEN blockers in `ai-documents/bugs/bug-fix-log.md`: **B7-1** — a reclaimed guest is charged to the
+  wrong set (stale-register read of `dispHome`), so `parkCount` never decrements, teardown never fires and
+  `mayHold` is stuck true (likely most of the board's wasted second searches); fix designed, not built.
+  **B7-2** — the 256 KB bitstream fails Vivado DRC with a combinational loop; cause unknown, do not bypass.
+  Task 007 commit 3 is **uncommitted** in the tree; commit 4 is staged, not applied.
+- **Best board result so far (tag `sbc-007-c2-breakeven-2026-09-16`, 64 KB omnetpp):** SBC vs plain L2 went
+  from +53% cycles / 2.73x memory traffic (old rules) to **+0.41% / +0.07%** — the loss is fixed, SBC is near
+  parity but does not yet win.
 - **Main branch: `sbc-paper-aligned`** (tracks `origin/sbc-paper-aligned`) — treat it as the project's main line.
 - **Testing branch: `sbc-sampling`** — local only, cut from `sbc-paper-aligned` at `d8671cf`.
   **Plan: merge `sbc-sampling` back into `sbc-paper-aligned`** (not done yet).
