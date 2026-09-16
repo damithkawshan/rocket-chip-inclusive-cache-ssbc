@@ -1,6 +1,6 @@
 # Coder report 007 — put the paper's placement and eviction rules back
 
-**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commit 0 gated, green
+**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commit 0 landed (`1486d4a`), gate green
 
 > Filled in as the work happens, not at the end.
 
@@ -19,7 +19,7 @@ _(one sentence per commit as it lands)_
 
 | # | SHA | What | Gate result |
 |---|---|---|---|
-| 0 | _(pending commit)_ | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
+| 0 | `1486d4a` | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 1 | | guests can be evicted | |
 | 2 | | a migration may reuse a guest slot | |
 | 3 | | teardown | |
@@ -33,7 +33,7 @@ _(one sentence per commit as it lands)_
 | `SetBalanceUnit.scala` | the two erase inputs `dispRelease`/`dispDrop` become one `dispErase` — after arbitration the two are indistinguishable, and the SBU only ever OR-ed them (`parkErase`) |
 | `PerfCounters.scala` | `SBC_Parked` level moves by `migCommit` / `dispRelease + dispDrop` (PopCounts), clamped at 0, instead of by ±1 on a boolean |
 | `sw/migration_stress_test.c` | one new `[SBC-PARK] parked= dispRelease= dispDrop=` line in `sbc_summary()` — see finding F1 |
-| `CLAUDE.md` | `SBC_Parked` register row: says it is exact from this commit |
+| `CLAUDE.md` | `SBC_Parked` register row: says it is exact from this commit. It rode in with the thinker's own uncommitted 2026-09-16 doc edits in `fea9353`, one commit earlier, on the user's instruction — not with the code as TASK §9 would have it |
 
 **Where the pending registers live.** TASK §2.1 says "each MSHR holds its erase event". They are in the
 Scheduler's existing `if (params.micro.enableSetBalancing)` block instead — same structure, same
