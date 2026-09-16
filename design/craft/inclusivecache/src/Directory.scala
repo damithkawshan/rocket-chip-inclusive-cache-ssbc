@@ -176,32 +176,13 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // SBC: prefer invalid, else the plain LFSR victim (preferInvalid makes "destination set full?"
   // a precise test).
   val invalidWayOH   = Cat(ways.map(_.state === INVALID).reverse)
-  val nonDisplacedOH = Cat(ways.map(!_.displaced).reverse)
-  // SBC: a parked line is LAST PRIORITY for eviction - masked out of the random-victim tier, so it is
-  // only taken when no native way is available (tier 5 below).
-  //
-  // This mask was removed once before because it QUARANTINED displaced lines - unable to hit AND
-  // unable to be evicted, so a partner set clogged. Both halves of that are gone: serve-in-place lets
-  // a parked line hit (003 Stage 9a), and tiers 4-5 below reclaim one whenever no native way is free.
-  // So this protects them without making them immortal.
-  //
-  // Why: measured 2026-09-03, 15,073 of 15,074 parked lines were evicted before being reused - 0.44
-  // hits per park, against a break-even near 1.0. Paper section 2.2 inserts a displaced line as MRU
-  // for the same reason: it comes from a stressed set, so it needs MORE priority than the destination's
-  // own lines, not equal.
+  // SBC (007 C1): a parked line is an ORDINARY victim. Masking it out of the random tier was meant as
+  // the head start the paper gives an MRU insert, but under random replacement "last choice" became
+  // "never evicted" - destinations settled at 1 home line and 15 guests. The paper evicts by recency.
   val lfsrVictimOH   = victimWayOHLFSR
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
   // writeback), no clients (no probe), not displaced. The migration source read prefers one.
   val evictableOH    = Cat(ways.map(w => w.state =/= INVALID && !w.displaced && !w.dirty && !w.clients.orR).reverse)
-  // SBC: displaced-reclaim backstop. These two arms are now LIVE, not dead: the random tier is masked
-  // to native ways, so it yields nothing whenever the LFSR lands on a parked way or the row is all
-  // parked. Tier 4 then takes a native way, and tier 5 reclaims a parked one only when there is no
-  // native way left. That last arm is what keeps "least priority" from becoming "immortal".
-  // SBC (003 Stage 9b): this used to add "safe either way: a displaced entry is clean + client-free by
-  // construction, so the MSHR drops it silently". BOTH HALVES ARE NOW FALSE. A displaced victim is
-  // probed and released like any other line (armEviction's displaced branch); picking one here is
-  // ordinary, not free.
-  val displacedOH = ~nonDisplacedOH
   // SBC (003 Stage 2c): the way-lock. Until serve-in-place, one-MSHR-per-set (Scheduler.scala:214-215)
   // meant victim selection was never contested - a second request to a busy set queued behind the
   // owner and never got its own MSHR. That rule is keyed on homeSet, so an MSHR serving in place
@@ -211,14 +192,13 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val freeWays = ~busyWays
   val victimWayOH = Mux(preferInvalid && (invalidWayOH & freeWays).orR, PriorityEncoderOH(invalidWayOH & freeWays),
                     Mux(preferEvictable && (evictableOH & freeWays).orR, PriorityEncoderOH(evictableOH & freeWays),
-                    Mux((lfsrVictimOH & nonDisplacedOH & freeWays).orR, lfsrVictimOH & nonDisplacedOH & freeWays,
-                    Mux((nonDisplacedOH & freeWays).orR, PriorityEncoderOH(nonDisplacedOH & freeWays),
-                    Mux((displacedOH & freeWays).orR, PriorityEncoderOH(displacedOH & freeWays),
+                    Mux((lfsrVictimOH & freeWays).orR, lfsrVictimOH & freeWays,
+                    Mux(freeWays.orR, PriorityEncoderOH(freeWays),
                     // Last resort: no free way at all. Unreachable - at most two ways in a row are
                     // locked (the row's own MSHR, and one serving in place from its partner) - and the
                     // assert below says so. Falling back to the unmasked pick keeps victimWayOH
                     // one-hot rather than zero, so the PopCount assert stays a real check.
-                    PriorityEncoderOH(nonDisplacedOH | displacedOH))))))
+                    PriorityEncoderOH(~0.U(params.cache.ways.W))))))
   val victimWay = OHToUInt(victimWayOH)
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone

@@ -105,7 +105,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | # | Leftover | Why it matters | Where |
 |---|---|---|---|
 | L1 | The copy self-check (`s_verify`) was removed and never rebuilt | **Bug risk:** on the FPGA nothing checks that a migration copy landed correctly; only the sim shadow checker does. **Moved to the last phase** (2026-09-14) | `SetCopyUnit.scala` |
-| L2 | Last-resort eviction of parked lines was proven only in a forced test | **Bug risk:** untested on real traffic | `Directory.scala:221` |
+| L2 | Eviction of parked lines was proven only in a forced test | **Bug risk:** since task 007 C1 (2026-09-16) it is no longer last-resort — parked lines are evicted routinely, so this path is under real load for the first time. The sim-only nets are `MSHR.scala:513` (home-set recovery) and `:758` (Release address) | `Directory.scala` victim mux |
 | L3 | One latent timing window (`[born→gate]`) | **Bug risk:** never reproduced; `sbcGateStallCycles` exists to hunt it | `bug-fix-log.md` |
 | L4 | Task 003 GATE 5 never signed off | **Bug risk:** 6 of its 12 cases never proved their event; the two-core cases never ran. **Moved to the last phase** (2026-09-14) | `coder/003` |
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
@@ -117,8 +117,8 @@ the full table, the literature it comes from, and which counters follow it. This
 
 | # | Cause | Effect | Where |
 |---|---|---|---|
-| G1 | Parked lines are the last choice for eviction | They pile up (825 → 1,804 in one board session) and crowd out home lines | `Directory.scala:219-221` (workplan Problem A) |
-| G2 | When the random pick lands on a parked line, eviction takes the **first** home line | Eviction stops being random on ~44% of evictions | `Directory.scala:220` (workplan Problem B) |
+| G1 | ~~Parked lines are the last choice for eviction~~ **REMOVED 2026-09-16 (task 007 C1)** — a parked line is now an ordinary candidate in the random victim tier | was: they pile up (825 → 1,804 in one board session) and crowd out home lines | `Directory.scala` victim mux |
+| G2 | ~~When the random pick lands on a parked line, eviction takes the **first** home line~~ **REMOVED 2026-09-16 (task 007 C1)** — the tier that did this is deleted, not fixed; the random pick no longer needs a fallback | was: eviction stopped being random on ~44% of evictions | `Directory.scala` victim mux |
 | G3 | A parked line is found only by a second look, and only from its own home set | ~13× fewer hits per slot than a home line | design limit |
 | G4 | One migration at a time | Throughput ceiling at millions of migrations | `Scheduler.scala:271-282` |
 | G5 | ~70–80% of migration attempts abort on the board | Wasted probes and directory reads | stale `clients` bit; `acquireBeforeRelease = true` never tried |
@@ -288,8 +288,10 @@ always-on counters and MMIO registers (tasks 004/006) exist in every build.
 
 #### `DirectoryEntry.displaced` bit ([Directory.scala](design/craft/inclusivecache/src/Directory.scala))
 
-A single `displaced` bit has been added to `DirectoryEntry`. The hit-detection logic
-(line ~143) excludes displaced ways from satisfying demand lookups:
+A single `displaced` bit has been added to `DirectoryEntry`. **It no longer affects victim choice**
+(task 007 C1, 2026-09-16): the victim mux is `preferInvalid` → `preferEvictable` → random over every
+free way, and a parked line is an ordinary candidate. The bit still decides hit detection
+(line ~143), which excludes displaced ways from satisfying demand lookups:
 ```scala
 w.tag === tag && w.state =/= INVALID && !w.displaced && (...)
 ```

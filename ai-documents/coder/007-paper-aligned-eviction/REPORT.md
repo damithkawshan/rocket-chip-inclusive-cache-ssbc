@@ -1,6 +1,6 @@
 # Coder report 007 — put the paper's placement and eviction rules back
 
-**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commit 0 landed (`1486d4a`), gate green
+**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — commits 0 and 1 landed, both gates green
 
 > Filled in as the work happens, not at the end.
 
@@ -20,7 +20,7 @@ _(one sentence per commit as it lands)_
 | # | SHA | What | Gate result |
 |---|---|---|---|
 | 0 | `1486d4a` | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
-| 1 | | guests can be evicted | |
+| 1 | _(pending commit)_ | guests can be evicted | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet; **SBC-off build bit-identical** |
 | 2 | | a migration may reuse a guest slot | |
 | 3 | | teardown | |
 | 4 | | cap guests per pairing | |
@@ -131,6 +131,7 @@ _The only per-change evidence there is — there is no runtime switch._
 |---|---:|---:|---:|---:|---:|---:|
 | start (`sbc-start-2026-09-16`) | not readable (F1) | 8,661 | 140,118 | 12,158 | 163,976 | 48.15% |
 | 0 exact counts | 18 | 8,354 | 154,723 | 13,773 | 171,605 | 49.55% |
+| 1 guests evictable | 5 | 17,431 | 177,331 | 4,196 | 150,219 | **54.71%** |
 | 1 guests evictable | | | | | | |
 | 2 reuse a guest slot | | | | | | |
 | 3 teardown | | | | | | |
@@ -139,6 +140,39 @@ _The only per-change evidence there is — there is no runtime switch._
 Start row from `sw/verilator_logs/migration_stress_test_VerilatorRocket8KL116KL2Config_005-c1/`, which is
 a run of this exact tree (task 005 commit 1 = the tag). Hit rate = (primary + secondary) ÷ `accessA`
 (316,251) per `cache-terminology.md`.
+
+## Commit 1 (C1) — what the gate showed
+
+**Gate:** `migration_stress_test` 7/7 on both configs, `sbc_migrate_switch_test` T1–T4, 0 asserts, no
+shadow-checker output. The switch test again reproduced the baseline exactly (`2 → 3`, `211 → 399`).
+
+**The SBC-off build came out bit-identical to commit 0** — same counters to the digit, same
+26,249,306 simulation cycles. That is the strongest form of TASK §9's "SBC-off build unchanged" check and
+it also calibrates the noise: when the Verilog does not change, the run does not change. (With SBC off no
+line is ever `displaced`, so the deleted mask folds away and the netlist is the same.)
+
+| | after c0 | after c1 | |
+|---|---:|---:|---|
+| hit rate | 49.55% | **54.71%** | +5.2 points |
+| `L2_PrimaryHit` | 154,723 | 177,331 | +14.6% |
+| `L2_SecondaryHit` | 13,773 | 4,196 | **−70%** |
+| `L2_DataMiss` | 171,605 | 150,219 | −12.5% |
+| `L2_MemReads` + `L2_MemWrites` | 213,023 | **176,443** | **−17.2%** |
+| `L2_Cycles` | 13,840,057 | 13,210,772 | −4.5% |
+| `SBC_Migrations` | 8,354 | 17,431 | 2.1× |
+| `SBC_Parked` at end | 18 | 5 | |
+| `dispRelease` / `dispDrop` | 0 / 8,337 | **1** / 17,425 | |
+
+**The trade is visible and it is the one the change predicts:** guests are evicted quickly now, so
+secondary hits collapse by 70% — but primary hits rise by more than that loss, and the headline metric
+(`memReads + memWrites`, measured at the outer port) falls 17%. Guests stopped crowding out home lines.
+
+**This is one run and it is a cross-build comparison**, which F2 says carries no signal on its own. What
+makes it worth something here is the NoSbc control being bit-identical across the same two builds, plus
+the size and the direction of the move. The board A/B after commit 4 is still what decides it.
+
+**The parked identity is now exact:** `17,431 − 1 − 17,425 = 5`, and `SBC_Parked` reads exactly 5. Commit
+0's off-by-one was read skew, as stated.
 
 ## Findings (reported, not fixed)
 
@@ -175,6 +209,15 @@ a run of this exact tree (task 005 commit 1 = the tag). Hit rate = (primary + se
 - **F2 — CLAUDE.md's new "Proposed fix" bullet still says "behind **one runtime register**".** TASK §3,
   written the same day, decided the opposite ("no new control register … do not build switchable
   variants"). Whoever reads CLAUDE.md first will expect a register that this task will not build.
+- **F4 — the dirty-guest writeback path is still, effectively, untested.** Commit 1 was expected to put
+  leftover **L2** under real load, and it did for the clean half: `dispDrop` doubled to 17,425. But
+  `dispRelease` — a *dirty* guest written back to memory at its recovered home address — fired **once**
+  in 26.5 M cycles, up from zero. A guest only becomes dirty if a writer is served in place, and
+  `SBC_SecWrite`/`SecPerm` stay ~0 on one core (leftover L7). So the riskiest single line in this design
+  has one execution behind it. It needs the two-core config, not more of this test.
+- **F5 — C1 costs secondary hits, 70% of them.** Not a defect; worth the thinker seeing the size of it,
+  because it is the mechanism C4's cap is meant to balance: guests that live longer are found more often,
+  guests that die fast are not found at all. C1 alone moves all the way to the "die fast" end.
 - **F3 — CLAUDE.md's `SBC_Aborted` row is stale.** It says "two declines/aborts in one cycle count once
   (OR fan-in) — coder/005 fixes". Task 005 commit 0 already did it: `perf.io.sbc.migAbort` is a
   `PopCount` over the MSHRs (`Scheduler.scala`, the PerfCounters wiring block). The row should now say
@@ -195,7 +238,16 @@ and deterministic and reproduced the baseline byte for byte through three builds
 from `migration_stress_test` at all (F1), so the "start" row of the numbers table can never be filled
 retrospectively. From commit 1 on it is fine.
 
-**Otherwise commit 0: nothing wrong.** Both quoted blocks (§2.1 `Scheduler.scala:689-694`, §2.2
+**Otherwise commit 0: nothing wrong.**
+
+**Commit 1, §4 — the line reference has moved and the replacement snippet drops a safety net.** The
+victim mux is at `Directory.scala:211-221`, not `216-226`; the content matched. §4's replacement ends at
+`PriorityEncoderOH(freeWays)`, which returns **zero** when `freeWays == 0` and would turn the
+`PopCount(victimWayOH) === 1` assert from a check into a failure. The existing final arm exists for
+exactly that reason, so it was kept: `Mux(freeWays.orR, PriorityEncoderOH(freeWays),
+PriorityEncoderOH(~0.U(ways.W)))`. Still a net deletion of the two category tiers, as §4 intends. The
+`freeWays.orR` assert that makes it unreachable is only elaborated when `enableSetBalancing` is true, so
+the SBC-off build would have had no net at all. Both quoted blocks (§2.1 `Scheduler.scala:689-694`, §2.2
 `PerfCounters.scala:233-237`) matched the tree character for character; the erase block actually starts
 one line earlier, at 688, which changes nothing. §2.1's claim that the SBU is the only consumer of the
 two erase inputs is correct — `parkErase` is their only use.
