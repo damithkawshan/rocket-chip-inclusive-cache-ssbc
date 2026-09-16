@@ -203,6 +203,78 @@ covering a new monitoring counter, not only a policy switch - a new register sti
 offset and address-map/header changes, which is exactly the kind of addition §3 is trying to avoid. The
 switch-test arithmetic above is offered as the substitute evidence.
 
+## Board run after commit 2 (FPGA, 2026-09-16) — the fix works, and SBC is now break-even
+
+Session `chipyard/scripts/logs/board_session_20260916-175311.log`. 64 KB L2
+(`FPGASingleRocketVCU118L18K64K16WL2ConfigSBC`), bitstream built 17:52 from the commit-2 tree, one
+boot, `-ab` (migrate OFF half then ON half), omnetpp `--sim-time-limit=0.002s`, both halves
+`workload rc=0` and both reached the simulation time limit, so this is fixed work.
+
+**The control holds.** The migrate-OFF half cannot be touched by C1 or C2 (nothing is ever a guest),
+and it reproduced the 2026-09-15/16 sessions to within 0.1%:
+
+| OFF half | 09-15/16 runs | this run |
+|---|---:|---:|
+| `L2_AccessA` | 1,017.6 M / 1,017.8 M | 1,018.5 M |
+| hit rate | 67.21% / 67.19% | 67.22% |
+| `memReads + memWrites` | 403.0 M / 403.2 M | 403.4 M |
+| `L2_Cycles` | 50.90 B / 50.88 B | 50.94 B |
+
+So the ON-half comparison below is valid.
+
+**What the four rule changes did to the ON half:**
+
+| ON half | old rules (09-15/16) | after c0+c1+c2 |
+|---|---:|---:|
+| hit rate | 35.17% / 34.74% | **67.11%** |
+| `L2_PrimaryHit` | 29.45% / 30.32% | 67.05% |
+| `L2_SecondaryHit` | 5.73% / 4.42% | 0.064% |
+| `memReads + memWrites` | 1,101.6 M / 1,090.6 M | **404.8 M** |
+| `L2_Cycles` | 77.93 B / 77.46 B | **51.37 B** |
+| `SBC_Parked` at end | 483 / 477 | **1** |
+| `SBC_Migrations` | 1.04 M / 0.83 M | 4.31 M |
+
+**The regression is gone.** Against the OFF half in the same boot: cycles **+53.1% → +0.85%**, memory
+traffic **2.73× → 1.004×**. The 47%-parked fixed point is gone with it — 483 lines → 1.
+
+**But SBC does not win. It is break-even to very slightly negative:**
+
+| ON vs OFF, same boot | |
+|---|---:|
+| hit rate | 67.11% vs 67.22% — **0.11 points worse** |
+| `memReads + memWrites` | 404.80 M vs 403.38 M — **+0.35%** |
+| `L2_Cycles` | 51.369 B vs 50.935 B — **+0.85%** |
+
+**The problem has inverted.** Guests used to never leave; now they leave almost immediately.
+`SBC_Parked` sits at 1–33 lines out of 1,024. The second search ran **180.7 M** times and hit
+**650 k** — a **0.36%** search hit rate, against 5.73%/4.42% of accesses under the old rules. Migration
+is now nearly free but also nearly pointless: the cost is paid in searches, and the payoff is gone
+because a guest is overwritten before anyone looks for it.
+
+**C2's reuse share, derived from the identity** `reuse = migrations − dispRelease − dispDrop − parked`:
+4,312,348 − 652 − 736,780 − 1 = **3,574,915 = 82.9% of all migrations reused a guest slot.** That is
+the first direct measurement of the C2 path, and it confirms the mechanism the switch test implied.
+
+**F4 is answered, and the prediction was right: `dispRelease = 652`.** The dirty-guest writeback
+path — one execution in its entire history before this — ran 652 times on a real workload with no
+assert, no corruption and a clean `workload rc=0`. Leftover **L2** now has real coverage. It is still
+only 0.09% of the 737,432 reclaims, so it is exercised, not stressed.
+
+### What this means for commits 3 and 4 (for the thinker, not a coder decision)
+
+- **C4's cap is very likely a no-op now.** The fix plan sized it to bring 15-of-16 guests per pairing
+  down to the paper's ~2.15. The measurement says we are already at roughly **1**. A cap of 2 would
+  almost never bind. Building it would be honest to the work order and change nothing.
+- **C3's teardown becomes high-frequency, not occasional.** With sources holding ~1 guest, `parkCount`
+  hits zero on close to every reclaim — on the order of **737 k teardowns** across this run, each
+  unpairing two sets that then re-enter the DSS. The fix plan modelled teardown against "pairs never
+  end"; the regime it will actually land in is "pairs barely last". That is still the paper's rule and
+  it is still worth building, but it is a much more dynamic change than the plan assumed, and N1's
+  "blocked by a live migration" path will be hit constantly.
+- **The lever that matters now points the other way.** The open question is no longer how to get
+  guests out; it is how to keep a guest resident long enough to be found. That is a design decision,
+  and it is outside this task.
+
 ## Findings (reported, not fixed)
 
 - **F1 — `migration_stress_test` never read `SBC_Parked`.** `sbc_summary()` printed the counters,
