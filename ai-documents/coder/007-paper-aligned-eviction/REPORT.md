@@ -275,6 +275,59 @@ only 0.09% of the 737,432 reclaims, so it is exercised, not stressed.
   guests out; it is how to keep a guest resident long enough to be found. That is a design decision,
   and it is outside this task.
 
+## Experiment (outside C1–C4): random victim on the source side — KEPT
+
+**2026-09-16.** Not a task-007 rule change: it removes a Phase 2 behaviour. Started from tag
+`sbc-007-c2-breakeven-2026-09-16`. Folded in here from a standalone `performance/` doc (commits
+`cacd961`, `838a649`, `acf9bec`); full history is in those commits.
+
+**What was wrong.** On a demand miss to a hot source set, the Scheduler raised `preferEvictable` on the
+directory read (`alloc_uses_directory && adviceMigrate`). The victim mux then returned the **first**
+clean, client-free way instead of a random one. So in a hot set, way 0 (if eligible) was evicted on every
+miss, while the plain L2 always evicts at random. It was added in Phase 2 to make migration possible at
+all (the low-p blocker); probe-then-migrate (`cbb3837`) later solved that a better way.
+
+**The change.** One line in `Scheduler.scala`: `preferEvictable` is now driven only by the migration
+destination probe. SBC evicts exactly the line the plain L2 would; migration only changes where that
+victim goes.
+
+**Verilator gate — green.** 7/7 on both configs, T1–T4, 0 asserts, shadows quiet. SBC-off build
+bit-identical again (26,249,306 cycles).
+
+| `migration_stress_test`, SBC on | commit 2 | experiment |
+|---|---:|---:|
+| hit rate | 58.90% | **59.34%** |
+| `L2_PrimaryHit` / `L2_SecondaryHit` | 192,218 / 3,788 | 192,820 / 4,646 |
+| `L2_DataMiss` | 136,773 | 135,300 |
+| `SBC_Migrations` | 20,108 | 20,343 |
+
+**Board A/B** — 64 KB, `board_session_20260916-221525.log`, same omnetpp fixed work, both halves
+`rc=0`. Image archived as `fpga/bitstream_storage/…64K16WL2ConfigSBC-preferEvictable-experiment-2026-09-16.bit`.
+
+| ON vs OFF, same boot | tag (c2) | experiment |
+|---|---:|---:|
+| `memReads + memWrites` | +0.352% | **+0.072%** |
+| `memReads` (= data misses) | +0.399% | **+0.032%** |
+| `L2_Cycles` | +0.853% | **+0.411%** |
+| hit rate | −0.116 pts | −0.209 pts |
+
+| ON half | tag (c2) | experiment |
+|---|---:|---:|
+| `SBC_Migrations` | 4,312,348 | 3,353,354 (−22%) |
+| `L2_SecondaryHit` | 649,606 | 705,154 (+8.5%) |
+| secondary hits per migration | 0.151 | **0.210** |
+| `SBC_DispRelease` | 652 | 4,057 |
+
+**Reading it.** Every outer-port metric moved the right way: extra memory traffic fell ~5×, extra cycles
+roughly halved. Fewer migrations produced more secondary hits, so a random victim is a better migration
+candidate. The hit rate moved the other way only because the ON half issued 0.60% fewer L1 requests — a
+denominator effect; absolute data misses fell. Limits: SBC still does not beat the plain L2, and the
+effect is about the size of the boot-to-boot drift between the two sessions' OFF halves (+0.17% traffic,
++0.27% cycles), from one run each.
+
+**Decision (user, 2026-09-17):** kept without a repeat run. Committed as the new baseline; tag
+`sbc-007-c2-breakeven-2026-09-16` moved onto it.
+
 ## Findings (reported, not fixed)
 
 - **F1 — `migration_stress_test` never read `SBC_Parked`.** `sbc_summary()` printed the counters,

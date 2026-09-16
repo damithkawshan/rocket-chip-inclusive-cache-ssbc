@@ -439,26 +439,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.preferInvalid   := mshr_uses_directory_for_dread && schedule.dread.bits.preferInvalid
   directory.io.read.bits.internalRead    := mshr_uses_directory_for_dread && schedule.dread.bits.internalRead
   directory.io.read.bits.secondarySearch := mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch
-  // SBC (007 C2): only the migration destination probe may take a parked way as its victim. The
-  // alloc-side read below raises preferEvictable too, and must never carry this.
+  // SBC (007 C2): only the migration destination probe may take a parked way as its victim - a source
+  // read must never pick a guest, because the AT records one hop only.
   directory.io.read.bits.allowDisplacedVictim := mshr_uses_directory_for_dread &&
                                                 schedule.dread.bits.allowDisplacedVictim
-  // SBC Phase 2: a demand miss to a hot migration-source set prefers a clean, client-free victim
-  // so the migrate-on-eviction gate in the MSHR finds an eligible line.
-  // SBC Phase 2b (Bug A fix): the 2nd dir-read (the dstSet probe) must ALSO prefer an evictable way,
-  // not just an invalid one. preferInvalid still wins when the dst set has a free way; when the dst
-  // set is full, preferEvictable lets the directory return a clean / client-free / non-displaced way
-  // we can silently overwrite. Without this term the dread fell back to the LFSR victim (usually
-  // dirty or client-held) on a full dst set, so every migration hit the ABORT-DST path — which is
-  // why zero migrations committed. The MSHR already requests preferEvictable on its dread bundle.
-  // SBC Phase 2.5b: `adviceMigrate` lost its destination-side terms when the destination moved to a
-  // live offer, so on its own it would raise this hint on evictions that then decline — perturbing
-  // victim selection away from baseline for no gain. AND in the offer to keep the hint as rare as it
-  // was before. It stays a hint either way (correctness never depends on it).
-  // SBC Phase 3: the `&& dstOfferValid` term is gone. After the advice/destination split that wire
-  // describes some OTHER MSHR's destination, so it says nothing about the allocating set. Hint only.
-  directory.io.read.bits.preferEvictable := (alloc_uses_directory && adviceMigrate) ||
-                                            (mshr_uses_directory_for_dread && schedule.dread.bits.preferEvictable)
+  // SBC: only the migration destination probe raises preferEvictable (Phase 2b Bug A: without it a full
+  // destination fell back to a dirty LFSR victim and every migration aborted). The demand-miss read no
+  // longer does (2026-09-16, 007 REPORT): it evicts at random, exactly as the plain L2 does.
+  directory.io.read.bits.preferEvictable := mshr_uses_directory_for_dread && schedule.dread.bits.preferEvictable
   // SBC (003 Stage 2c): the way-lock mask for the row this read is about. Purely a steer on the
   // victim Mux inside the Directory - it never gates a ready and never blocks a request, so it cannot
   // deadlock. Under strict 1:1 pinning a row has exactly one partner source, and there is one MSHR
