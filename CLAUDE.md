@@ -32,11 +32,12 @@ live in `ai-documents/`.
 
 - **▶ START HERE (next session after 2026-09-17):** the "RESUME HERE" box at the top of
   [ai-documents/coder/007-paper-aligned-eviction/REPORT.md](ai-documents/coder/007-paper-aligned-eviction/REPORT.md).
-  Two OPEN blockers in `ai-documents/bugs/bug-fix-log.md`: **B7-1** — a reclaimed guest is charged to the
-  wrong set (stale-register read of `dispHome`), so `parkCount` never decrements, teardown never fires and
-  `mayHold` is stuck true (likely most of the board's wasted second searches); fix designed, not built.
-  **B7-2** — the 256 KB bitstream fails Vivado DRC with a combinational loop; cause unknown, do not bypass.
-  Task 007 commit 3 is **uncommitted** in the tree; commit 4 is staged, not applied.
+  **B7-1 FIXED** (`c6a824c`: a reclaimed guest was charged to the wrong set, so teardown never fired and
+  `mayHold` stuck true) and task 007 **commit 3 (teardown) committed** (`744fabb`), gate green.
+  Open: **F9** in the REPORT — after teardown, aborted migrations rose 52% (unchecked guess: re-pairing onto
+  full or dirty destinations), so hold commit 4 until a 64 KB board A/B of `744fabb`. **B7-2** — the 256 KB
+  bitstream fails Vivado DRC with a combinational loop; cause unknown, do not bypass. Proposed before C4:
+  [performance/plru-plan-2026-09-17.md](ai-documents/performance/plru-plan-2026-09-17.md).
 - **Best board result so far (tag `sbc-007-c2-breakeven-2026-09-16`, 64 KB omnetpp):** SBC vs plain L2 went
   from +53% cycles / 2.73x memory traffic (old rules) to **+0.41% / +0.07%** — the loss is fixed, SBC is near
   parity but does not yet win.
@@ -575,7 +576,7 @@ Checklist: `ai-documents/tasks/code-cleanup-suggestions.md`. Ordered plan:
   `dirty`/`clients`/`displaced`.
 
 ## Conventions
-
+- when running something internally, give me the link of the log. so that I can track the status by myself as well. 
 - Package is `sifive.blocks.inclusivecache` (unchanged from upstream — keep it).
 - Scala is compiled with `-Xsource:2.11`; match the existing Chisel 3 idioms in neighboring files.
 - New synthesizable state must be **gated behind `enableSetBalancing` (or a new micro-parameter

@@ -129,6 +129,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | 🔴 found 2026-09-16 | `Scheduler.scala:689-693` ORs the erase pulses and `Mux1H`es the home set: two at once decrement one wrong set. Harmless today, a **data bug** once pairings end on that count. Prerequisite P0 of the [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) |
+| M17 | 🐞 Migrate advice can be checked against the wrong set | 🔴 found 2026-09-17, not verified in sim | A request popped from the per-MSHR queue latches `migAdvice` built from the incoming sink request's set (`Scheduler.scala` `migrateQuery.bits := request.bits.set`). Can start a migration from a set that is not at max. Also see [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 9–12: the other ways our heat counter differs from the paper |
 | M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
 
 ### 1d. Left over from the build phases — details in CLAUDE.md
@@ -164,7 +165,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 - 🟢 [../CLAUDE.md](../CLAUDE.md) — rules for working on this code, current status, build-phase leftovers.
 - 🟢 [coder/README.md](coder/README.md) — how the thinker and the coder hand work to each other.
-- 🟢 [guides/fpga-linux-run.md](guides/fpga-linux-run.md) — build the FPGA image, boot Linux on the board, read the counters.
+- 🟢 [guides/fpga-linux-run.md](guides/fpga-linux-run.md) — build the FPGA image, boot Linux on the board, read the counters. **Section 7: the full clean → build → archive → board A/B commands.**
 - 🟢 [guides/devmem-register-map.md](guides/devmem-register-map.md) — every counter and switch the cache exposes.
 - 🟢 [guides/priority-orders.md](guides/priority-orders.md) — who goes first when two parts of the cache want the same thing.
 - 🟢 [guides/cache-terminology.md](guides/cache-terminology.md) — **the words we use** for hit, miss, secondary hit and the rest, where they come from, and which counters follow them.
@@ -190,8 +191,10 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 ## 4. Speed and improvement — `performance/`
 
+- 🟢 [board-128kb-omnetpp-2026-09-17.md](performance/board-128kb-omnetpp-2026-09-17.md) — first 128 KB board A/B (tag `sbc-007-c2-breakeven` behaviour, no B7-1 fix): break-even, +0.16% memory traffic, +0.15% cycles; 7.9% of accesses pay a second search that almost never hits. Has the exact commands.
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
 - 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
+- 🟢 [plru-plan-2026-09-17.md](performance/plru-plan-2026-09-17.md) — **next step, before 007 C4:** switch the L2 victim choice from random to PLRU (15 bits per set), guests enter as most-recent, one runtime register for a same-image A/B. Waiting on decisions D1–D3.
 - 🟢 [fix-plan-follow-the-paper-2026-09-16.md](performance/fix-plan-follow-the-paper-2026-09-16.md) — **the proposed fix**: what the paper actually does (read from the PDF), the four rule changes, one switch register, and what to run. Replaces step 3 of the workplan. Needs your decision.
 - 🟢 [workplan-parked-occupancy-2026-09-11.md](performance/workplan-parked-occupancy-2026-09-11.md) — **the current plan**: why SBC is slower, and three steps to find out. Step 3 under review.
 - 📘 [omnetpp-differential-2026-09-10.md](performance/omnetpp-differential-2026-09-10.md) — first board test (fixed time, not fixed work). Its moved-line analysis still holds.
@@ -257,6 +260,7 @@ rocket-chip-inclusive-cache/
     │   └── code-cleanup-suggestions.md
     ├── coder/                             000 … 006, unchanged
     ├── performance/
+    │   ├── board-128kb-omnetpp-2026-09-17.md
     │   ├── fpga-ab-baseline-2026-09-11.md
     │   ├── why-sbc-loses-2026-09-15.md
     │   ├── workplan-parked-occupancy-2026-09-11.md
