@@ -305,6 +305,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 3 (002 C1): io.pairInfo is broadcast to every MSHR but keyed to whichever one gets the
   // directory result, so it describes OUR set exactly when io.directory.valid.
   val pairLive          = io.directory.valid && io.pairInfo.valid && io.pairInfo.bits.isSrc
+  // SBC (007 C3, N2): on a search answer, our pairing no longer matches the one latched when the search
+  // was issued - a teardown landed in between. Distrust the answer; a miss is safe (nothing is parked).
+  val pairStale         = pairValidReg =/= io.pairInfo.valid ||
+                          (pairValidReg && (pairSetReg =/= io.pairInfo.bits.set || pairIsSrcReg =/= io.pairInfo.bits.isSrc))
   val searchedReg       = RegInit(false.B)   // C3: did this request ask its partner?
   val txnCtr            = RegInit(0.U(8.W))  // 003 Stage 9: bumped at every allocate (see MSHRStatus)
 
@@ -1071,7 +1075,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // the partner's row. Permission is handled the way a home hit handles it - probe, or acquire perm -
   // never by throwing the line away. Only an MMIO flush still declines, and that stays unsupported.
   val willServe = params.micro.enableSetBalancing.B && io.directory.bits.secondaryHit &&
-                  !request.control
+                  !request.control && !pairStale
   migResumeWantW := migResumeCycle && resumeWant && !willServe
 
   // SBC (003 Stage 2b): THE ASSESS CHAIN, factored so the plan block and the search resume arm
@@ -1385,6 +1389,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   when (io.directory.valid && searching && !w_ssearch) {
     w_ssearch := true.B
     searching := false.B
+    if (params.micro.sbcDebug) {
+      // 007 C3 N2: the race is handled (willServe is false, so it is a miss); this only reports it. A printf,
+      // not an assert: with teardown live the race is normal traffic (007 REPORT, "F7 fix").
+      when (pairStale) {
+        printf(p"[SBC] SEC-STALE set=${request.set} searched=${pairSetReg} nowValid=${io.pairInfo.valid} nowSet=${io.pairInfo.bits.set}\n")
+      }
+    }
     // SBC (003 Stage 2b): the decision we deferred is due now. Same Scala def as the plan block, so
     // both call sites arm bit-identical state. In 2b every outcome still needs the home way (a hit
     // erases the parked copy and falls through to the fetch), so this runs unconditionally; 2e is
@@ -1397,7 +1408,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (!willServe) { armEviction(meta, migResumeWantW, request.set) }
     }
     val secTip = io.directory.bits.secondaryEntry.state === TIP
-    when (io.directory.bits.secondaryHit) {
+    when (io.directory.bits.secondaryHit && !pairStale) {
       if (params.micro.sbcShadow) {
         // The partner set answered with a parked line. If it did not come from US, the pairing or the
         // search key is wrong and we are about to serve another set's data.

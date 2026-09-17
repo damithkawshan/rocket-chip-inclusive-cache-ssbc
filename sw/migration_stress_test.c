@@ -273,6 +273,75 @@ static int case_bankstore_saturation(int cold_set) {
     return ok;
 }
 
+/* Case 8 — TEARDOWN (task 007 C3). A pairing must break when its source's last guest leaves.
+ * Form a pairing, write every source line (the parked ones are served in place and turn into DIRTY
+ * guests), then flood ONLY the partner with fresh misses until the source<->partner pairing is gone
+ * from both AT entries. Checks the pairing itself, not "unpaired": a flooded partner turns hot and
+ * may legitimately start migrating elsewhere the moment it is free. Every written line must read back. */
+#define TD_TAG0   4096        /* fresh tags - no earlier case touched these addresses */
+#define TD_NSRC   16          /* > ways, so the source keeps missing and migrating */
+#define TD_BUILD  4000        /* bound on source loads to form a pairing */
+#define TD_DRAIN  4000        /* bound on partner misses to empty it */
+
+static void at_entry(int s, int *valid, int *sd, int *assoc) {
+    sbc_wr(SBC_SETSEL, (uint64_t)s);
+    uint64_t as = sbc_rd(SBC_ATASSOC);
+    *valid = (int)((sbc_rd(SBC_STATUS) >> 2) & 1);
+    *sd    = (int)((as >> 8) & 1);
+    *assoc = (int)(as & 0xFF);
+}
+
+static int case_teardown(void) {
+    if (!(sbc_rd(SBC_STATUS) & 1)) { printf("case_teardown: SKIP (SBC not built)\n"); return 1; }
+#ifdef SBC_MIGRATE_OFF
+    printf("case_teardown: SKIP (migration off)\n");
+    return 1;
+#endif
+    int v, sd, as, src = -1, dst = -1;
+    /* 1. form a pairing on the first set that is not already a destination (destinations never source) */
+    for (int s = 0; s < L2_SETS && src < 0; s++) {
+        at_entry(s, &v, &sd, &as);
+        if (v && sd) continue;
+        for (int it = 0; it < TD_BUILD; it++) {
+            sink += do_ld(set_addr(s, TD_TAG0 + it % TD_NSRC));
+            if ((it & 0x3F) == 0x3F) {
+                at_entry(s, &v, &sd, &as);
+                if (v && !sd) { src = s; dst = as; break; }
+            }
+        }
+    }
+    if (src < 0) { printf("case_teardown: FAIL (no pairing formed)\n"); return 0; }
+
+    /* 2. write every source line: parked ones are served in place and become dirty guests */
+    uint64_t g[TD_NSRC];
+    for (int t = 0; t < TD_NSRC; t++) {
+        g[t] = 0x7EA2D00DULL ^ ((uint64_t)t << 20);
+        do_st(set_addr(src, TD_TAG0 + t), g[t]);
+    }
+
+    /* 3. leave the source alone; flood only the partner until the src<->dst pairing is gone */
+    int gone = 0, n = 0, sv = 0, ssd = 0, sas = 0, dv = 0, dsd = 0, das = 0;
+    for (; n < TD_DRAIN && !gone; n++) {
+        sink += do_ld(set_addr(dst, TD_TAG0 + TD_NSRC + n));
+        if ((n & 0xF) == 0xF) {
+            at_entry(src, &sv, &ssd, &sas);
+            at_entry(dst, &dv, &dsd, &das);
+            gone = !(sv && !ssd && sas == dst) && !(dv && dsd && das == src);
+        }
+    }
+
+    /* 4. every written line must read back - home lines and dirty guests written back alike */
+    int data_ok = 1;
+    for (int t = 0; t < TD_NSRC; t++)
+        if (do_ld(set_addr(src, TD_TAG0 + t)) != g[t]) data_ok = 0;
+
+    printf("case_teardown (007 C3): src=%d dst=%d pairing_gone=%s after %d partner misses "
+           "src(v=%d sd=%d assoc=%d) dst(v=%d sd=%d assoc=%d) data=%s: %s\n",
+           src, dst, gone ? "yes" : "NO", n, sv, ssd, sas, dv, dsd, das,
+           data_ok ? "ok" : "BAD", (gone && data_ok) ? "PASS" : "FAIL");
+    return gone && data_ok;
+}
+
 int main(void) {
     printf("==== SBC migration stress test (HOT_SET=%d, ways=%d) ====\n", HOT_SET, L2_WAYS);
 
@@ -295,8 +364,10 @@ int main(void) {
     report_inprogress("case_reaccess_migrated");
     ok &= case_hazard_rw(6);        /* RaW/WaR interlock stress             */
     report_inprogress("case_hazard_rw");
-    ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window (run last) */
+    ok &= case_bankstore_saturation(7); /* SLOW: max bank load over copy window */
     report_inprogress("case_bankstore_saturation");
+    ok &= case_teardown();          /* 007 C3: pairing breaks when the last guest leaves */
+    report_inprogress("case_teardown");
 
     sbc_summary();
     printf(ok ? "PASS: all migration corner cases data-correct (see [SBC] log)\n"

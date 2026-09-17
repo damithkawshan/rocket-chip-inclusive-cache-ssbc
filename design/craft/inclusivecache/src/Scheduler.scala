@@ -608,6 +608,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     println(s"[SBC][elab] BRANCH reachability: p=$brP m=$brM r=$brR b=${brR || brP} (b false => secPerm=0 is correct)")
     sbu.io.dirTap     := directory.io.tap
     sbu.io.migrateEnable := io.migrateEnable
+    sbu.io.anyMigrating  := anyMigrating
     sbu.io.satReadSet := io.sbcSatReadSet
     sbu.io.arm        := io.sbcBalanceSet
     sbu.io.clear      := io.sbcReset

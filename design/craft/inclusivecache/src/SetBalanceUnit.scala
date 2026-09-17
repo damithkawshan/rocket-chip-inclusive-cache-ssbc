@@ -93,6 +93,8 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // SBC: MMIO master switch (SBC_MigrateEnable). Gates only the START of a new migration; every
     // already-parked line keeps being searched, served, written back and evicted exactly as before.
     val migrateEnable = Input(Bool())
+    // SBC (007 C3, N1): a migration is in flight in this bank. Teardown waits for it to finish.
+    val anyMigrating = Input(Bool())
     // SBC reset: SW pulse from MMIO SBC_Reset — zeroes saturation, armed, the AT and the DSS.
     val clear = Input(Bool())
     // MMIO
@@ -228,6 +230,35 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // B7-1: a guest reclaim is granted at least a cycle after its commit, so its set always counts >= 1.
   assert (!parkDec || parkCount(decSet) =/= 0.U,
           "SBC(B7-1): a guest left a set with nothing parked - charged to the wrong set")
+
+  // ---- SBC (007 C3): teardown. Paper 3.4: a pairing breaks when the source's last guest leaves. ----
+  // Queued in a 1-deep slot, drained only while no migration is in flight (N1), and re-checked when it
+  // drains: a commit in the meantime may have parked a new guest, and clearing then would orphan it.
+  val decHitsZero = parkDec && !(parkInc && incSet === decSet) && parkCount(decSet) === 1.U
+  val tdPend      = RegInit(false.B)
+  val tdSet       = Reg(UInt(params.setBits.W))
+  val tdPartner   = at(tdSet).assocSet
+  val tdDrain     = tdPend && !io.anyMigrating && !migrateCommit
+  val tdStillDue  = parkCount(tdSet) === 0.U && at(tdSet).valid && !at(tdSet).sd
+  when (tdDrain) {
+    tdPend := false.B
+    when (tdStillDue) {
+      at(tdSet).valid     := false.B
+      at(tdPartner).valid := false.B
+    }
+  }
+  // A trigger may take the slot on the cycle it drains; one that finds it occupied is dropped - the pair
+  // simply stays until that source's count empties again.
+  val tdAccept = decHitsZero && (!tdPend || tdDrain)
+  when (tdAccept) { tdPend := true.B; tdSet := decSet }
+  assert (!migrateCommit || io.anyMigrating, "SBC(007 N1): a migration committed while anyMigrating was low")
+  assert (!(tdDrain && tdStillDue) || (at(tdPartner).valid && at(tdPartner).sd && at(tdPartner).assocSet === tdSet),
+          "SBC(007 C3): teardown partner does not point back (1:1 broken)")
+  if (params.micro.sbcDebug) {
+    when (tdDrain &&  tdStillDue) { printf(p"[SBC] TEARDOWN src=${tdSet} dst=${tdPartner}\n") }
+    when (tdDrain && !tdStillDue) { printf(p"[SBC] TEARDOWN-CANCEL src=${tdSet}\n") }
+    when (decHitsZero && !tdAccept) { printf(p"[SBC] TEARDOWN-DROP src=${decSet} pending=${tdSet}\n") }
+  }
   // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
   io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
 
@@ -239,6 +270,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     // TODO(phase3): once the AT is wired into the live secondary-search/teardown path, clearing it
     // while displaced lines still exist would orphan them (the AT is their home-set recovery info).
     at.foreach    (_ := 0.U.asTypeOf(new ATEntry(params)))
+    tdPend := false.B
   }
 
   // Read-only stats for MMIO.

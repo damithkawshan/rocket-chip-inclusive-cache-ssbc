@@ -1,6 +1,6 @@
 # Coder report 007 — put the paper's placement and eviction rules back
 
-**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — c0–c2 + random-source-victim landed; **C3 blocked by B7-1, 256 KB blocked by B7-2** (see RESUME HERE)
+**Date:** started 2026-09-16 · **Author:** coder session · **Status:** IN PROGRESS — c0–c3 + random-source-victim + F7 fix landed; C4 next; **256 KB blocked by B7-2** (see RESUME HERE)
 
 > Filled in as the work happens, not at the end.
 
@@ -11,19 +11,23 @@
 1. **B7-1 (finding F7) — stale `dispHome`.** A reclaimed guest is charged to the wrong set, so a source's
    `parkCount` never goes down. Teardown (C3) can never fire, the cap (C4) would lock sources out forever,
    and `mayHold` is stuck true (likely most of the board's wasted searches). Pre-existing, found by
-   T-TEARDOWN. **Fix is designed, not built** (bug log has it). **Do this first.**
+   T-TEARDOWN. **✅ FIXED 2026-09-17 (`c6a824c`) on the user's instruction; C3 committed after it; gate green**
+   — see "F7 fix" below C3.
 2. **B7-2 — combinational loop at 256 KB.** Vivado DRC `LUTLP-1` refused the 256 KB bitstream of `251c9d7`.
    The pre-007 256 KB build and the c0–c2 64 KB build were both clean. Cause unknown; do not bypass it.
 
-**Tree state (branch `sbc-sampling`, HEAD `251c9d7` = tag `sbc-007-c2-breakeven-2026-09-16`):**
+**Tree state (branch `sbc-sampling`; tag `sbc-007-c2-breakeven-2026-09-16` = `251c9d7`; F7 fix `c6a824c`, C3 the commit after it):**
 
 | Item | State |
 |---|---|
-| C3 RTL (`MSHR.scala`, `SetBalanceUnit.scala`, `Scheduler.scala`) + case 8 in `sw/migration_stress_test.c` | **uncommitted** in the working tree; gate FAILED (B7-1). Snapshot: `wip-2026-09-17/c3-uncommitted.patch` |
+| C3 RTL + case 8 in `sw/migration_stress_test.c` | ✅ **committed** after the F7 fix, gate `007-b71-c3` green. The `wip-2026-09-17/c3-uncommitted.patch` snapshot is now obsolete (it still has N2 as an assert) |
 | C4 | **not applied.** Staged, dry-run-verified patch: `wip-2026-09-17/apply_c4.py` (`DRY=1` to check, run without it to apply). Adds a config to the **chipyard** repo's `RocketConfigs.scala` |
 | `sw/sbc_guest_cap_test.c` (T-CAP) | **untracked**, compiles. Snapshot in `wip-2026-09-17/` |
 | 256 KB bitstream | **none** — build failed (B7-2). tmux session `sbc256` still open |
 | ⚠️ `fpga/bitstream_storage/…256K16WL2ConfigSBC-random-source-evict-2026-09-17.bit` | **MISLABELLED — byte-identical to the OLD pre-007 image** (`cmp` confirmed). It was archived after the failed build. Do not program it; delete or rename |
+
+**Update 2026-09-17 (later): items 1–3 below are DONE** — F7 fixed (`c6a824c`), C3 committed, gate green.
+Next is item 4.
 
 **Order for the next session:**
 1. Fix B7-1 in `MSHR.scala` (on top of the uncommitted C3).
@@ -52,7 +56,8 @@ _(one sentence per commit as it lands)_
 | 0 | `1486d4a` | exact parked counts | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 1 | `f885382` | guests can be evicted | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet; **SBC-off build bit-identical** |
 | 2 | `060e96d` | a migration may reuse a guest slot | ✅ 7/7 + 7/7, T1–T4, 0 asserts, shadows quiet |
-| 3 | | teardown | |
+| F7 | `c6a824c` | fix: a reclaimed guest is charged to its real home set (bug log B7-1) | ✅ gated together with C3 (not alone) |
+| 3 | _this commit_ | teardown (+ N2 as a printf, user decision) | ✅ 8/8 + 7/7, T1–T4, 0 asserts, shadows quiet |
 | 4 | | cap guests per pairing | |
 
 ## What commit 0 changed
@@ -164,8 +169,21 @@ _The only per-change evidence there is — there is no runtime switch._
 | 1 guests evictable | 5 | 17,431 | 177,331 | 4,196 | 150,219 | **54.71%** |
 | 2 reuse a guest slot | 4 | 20,108 | 192,218 | 3,788 | 136,773 | **58.90%** |
 | + random source victim (experiment, kept) | 4 | 20,343 | 192,820 | 4,646 | 135,300 | **59.34%** |
-| 3 teardown | | | | | | |
+| F7 fix + 3 teardown ⚠️ new test binary | 1 | 16,448 | 131,228 | 3,024 | 139,232 | **49.09%** |
 | 4 cap | | | | | | |
+
+⚠️ **The C3 row is not comparable with the rows above.** C3 added case 8 to the test, which changed the
+binary, and the **NoSbc control** (no SBC hardware at all) moved just as much: accesses 333,558 → 273,208,
+primary hits 198,205 → 136,124, hit rate 59.42% → 49.82%. So the 10-point drop is the new binary's L1
+behaviour, not SBC. Compare against the control of the same build instead:
+
+| SBC vs NoSbc, same build | hit rate | mem reads + writes | cycles |
+|---|---:|---:|---:|
+| c2 (`007-c2`) | 58.90% vs 59.42% (−0.52 pt) | 162,788 vs 161,258 (+0.95%) | 13,121,251 vs 13,060,661 (+0.46%) |
+| F7 fix + c3 (`007-b71-c3`) | 49.09% vs 49.82% (−0.73 pt) | 165,644 vs 164,036 (+0.98%) | 11,662,284 vs 11,589,360 (+0.63%) |
+
+The SBC run also includes case 8 (~815 accesses) that NoSbc skips. The sim is a function check, not a
+speed measure (F2); the board decides.
 
 Start row from `sw/verilator_logs/migration_stress_test_VerilatorRocket8KL116KL2Config_005-c1/`, which is
 a run of this exact tree (task 005 commit 1 = the tag). Hit rate = (primary + secondary) ÷ `accessA`
@@ -392,6 +410,70 @@ present on both entries after 4,000 partner misses, data correct. The test's non
 count never went 1 → 0. Cause is finding F7 (a pre-existing bug), not the teardown logic. C3 RTL left
 uncommitted in the tree; commit 4 not applied.
 
+## F7 fix (bug log B7-1) — built on the user's instruction, 2026-09-17
+
+F7 is pre-existing and outside TASK §9, so by the working rules it was only reported. **The user asked for
+it to be fixed** before C3 is committed, because C3 and C4 both read the count it corrupts.
+
+| File | Change |
+|---|---|
+| `MSHR.scala` | `pairValidNow` / `pairIsSrcNow` / `pairSetNow` moved from inside the SBC assert block up beside `lineHome` (same logic). New wire `dispHomeW` (default `lineHome`). In `armEviction`'s guest branch, beside the `dispRelease`/`dispDrop` pulse, `dispHomeW := Mux(pairValidNow && !pairIsSrcNow, pairSetNow, srcSet)` — the victim `m` and the live pairing, the same data the pulse uses. `io.dispHome := dispHomeW`. Shadow-only assert: that set equals the line's recorded `homeShadow` |
+| `SetBalanceUnit.scala` | assert that an erase never lands on a set whose count is 0 (the silent floor at 0 is what hid F7); count comment no longer says "too high is harmless" |
+
+Only one call site can fire the pulse: the plan cycle. The other `armEviction` call (search resume) runs
+only for a source, and a source's own row never holds guests. No new register, no switch, no change to data
+paths or to the Release address (that still uses `lineHome`, which is right once the registers settle).
+
+**Gate** (label `007-b71-c3`, tree = F7 fix + uncommitted C3). One gate covers both commits, because
+T-TEARDOWN is the only test that proves the fix; the fix-only commit is therefore not gated alone.
+
+**Gate: STOPPED on the C3 N2 reporting assert — nothing committed.** Stock config: cases 1–6 PASS, then
+`SBC(007 N2): pairing torn down while a search was in flight` (`mshrs_0`, `MSHR.scala:1394`, at 13,437,649,000
+ps, start of case 7). NoSbc and the switch test did not run.
+
+- **The F7 fix works:** `TEARDOWN` lines **1,288** (was **0** on the same test before the fix),
+  `TEARDOWN-CANCEL` 0, `TEARDOWN-DROP` 0, 2,600 guest reclaims. Neither new F7 assert fired (`homeShadow`
+  match, erase from an empty count).
+- **The N2 event is the race TASK §6 predicted, handled correctly.** Trace just before the assert:
+  `SEC-DEFER srcSet=1 partner=0` (set 1 starts a search of set 0) → another MSHR on set 0
+  `EVICT-DISPLACED-RECLAIM srcSet=0 srcWay=2` (set 1's last guest) → `TEARDOWN src=1 dst=0` → the search
+  read of set 0 → `EVICT-NORMAL srcSet=1` + `SEC-MISS set=1 partner=0`. Served as a miss, the victim evicted
+  normally, no shadow alarm. With teardown live this race is part of normal operation, not a corner.
+- **So the gate cannot go green with N2 as an `assert`** (predicted under "Where the work order is wrong").
+  Not changed: that is a work-order decision, asked of the user.
+
+**User decision (2026-09-17): N2 becomes a printf.** The handling is unchanged (stale → `willServe` false,
+hit branch skipped, served as a miss). The `assert` is replaced by an `sbcDebug`-only
+`[SBC] SEC-STALE set= searched= nowValid= nowSet=` printf, so the race is still counted from the log. This
+belongs to the C3 commit, not the F7 one.
+
+**Gate re-run (same label `007-b71-c3`): ✅ GREEN.**
+
+| Run | Result |
+|---|---|
+| stress, stock | **8/8 PASS**, 0 asserts, shadows quiet. T-TEARDOWN: `src=1 dst=7 pairing_gone=yes after 16 partner misses … data=ok` |
+| switch, stock | T1–T4 PASS (migrations 47, parked 2 at T3; frozen 48 → 48 at T4) |
+| stress, NoSbc | 7/7 PASS, case 8 SKIP (SBC not built) |
+| switch, NoSbc | SKIP (SBC not built), PASS |
+
+Stock printfs: `TEARDOWN` **2,460** (was 0), `TEARDOWN-CANCEL` 0, `TEARDOWN-DROP` 0, `SEC-STALE` **1**.
+Copies = commits = 16,448. `SBC_Parked` at end 1 (`dispRelease` 5, `dispDrop` 4,975).
+
+| Counter (stock) | c2 (`007-c2`) | F7 fix + c3 |
+|---|---:|---:|
+| `L2_AccessA` | 332,779 | 273,483 |
+| `L2_SecondSearch` | 64,335 (19.3% of accesses) | **44,410 (16.2%)** |
+| `L2_SecondaryHit` / search | 3,788 (5.9%) | 3,024 (6.8%) |
+| `SBC_Migrations` | 20,108 | 16,448 |
+
+Fewer searches per access and a higher search hit rate is the direction F7 predicted (`mayHold` is no
+longer stuck), but the binary changed too (see the numbers table), so this is a sign, not a measurement.
+
+Logs: `sw/verilator_logs/{migration_stress_test,sbc_migrate_switch_test}_VerilatorRocket8KL116KL2{,NoSbc}Config_007-b71-c3/`.
+
+Logs: `sims/verilator/output/chipyard.harness.TestHarness.VerilatorRocket8KL116KL2Config/migration_stress_test.{log,out}`
+(not collected — `run_sbc.sh` stopped on the exit code).
+
 ## Findings (reported, not fixed)
 
 - **F1 — `migration_stress_test` never read `SBC_Parked`.** `sbc_summary()` printed the counters,
@@ -502,6 +584,7 @@ cycle, independently of `anyMigrating`, so the two AT writes can never race.
 **Commit 3, §6 N2 — the reporting assert makes a handled event fail the gate.** The race is handled by
 design (served as a miss), but an assert stops the simulation and the gate requires 0 asserts. Built as
 written; if it fires, that is a real race and I will report it rather than turn it into a printf.
+**It fired once teardown worked (after the F7 fix); on the user's decision it is now a printf** — see "F7 fix".
 
 **Commit 2: nothing wrong.** §5's two read sites (`Directory.scala` `evictableOH`, `MSHR.scala:1468-1470`
 `dstEvictable`) and the `allowDisplacedVictim` design matched as described. The `reusedGuestSlot` bit
