@@ -183,9 +183,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   // Paper section 2.3 "sc" bit, as a per-source-set count of lines currently parked in the partner.
   // A count rather than a bare bit because we have no cheap "OR of the d bits" read of the partner
   // row; under strict 1:1 pinning every line parked out of s sits in exactly one partner, so this is
-  // the same predicate. Saturating both ends: every drift mode leaves it too HIGH, which only costs a
-  // wasted search. Too LOW would skip a search for a line that is really there, refetch it from DRAM
-  // and leave two copies - so the arithmetic below never decrements below zero.
+  // the same predicate. It must be EXACT: too HIGH blocks teardown and a stuck mayHold wastes searches
+  // (B7-1); too LOW would skip a search for a line that is really there and leave two copies. The
+  // floor at zero stays, but an erase from an empty count now asserts instead of hiding.
   val parkCount = RegInit(VecInit(Seq.fill(sets)(0.U((log2Ceil(params.cache.ways + 1)).W))))
   // A committed migration records its src<->dst pairing in the AT (read by Phase-3 secondary search).
   // It can't be unwound, so the write is unconditional (overwrite if already set).
@@ -225,6 +225,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   }
   assert (!parkInc || parkCount(incSet) <= params.cache.ways.U,
           "SBC: more lines parked out of one set than the partner has ways")
+  // B7-1: a guest reclaim is granted at least a cycle after its commit, so its set always counts >= 1.
+  assert (!parkDec || parkCount(decSet) =/= 0.U,
+          "SBC(B7-1): a guest left a set with nothing parked - charged to the wrong set")
   // Driven here, not up with the other assocResp fields, because Scala vals are not forward-referable.
   io.assocResp.mayHold := parkCount(io.assocQuery.bits) =/= 0.U
 

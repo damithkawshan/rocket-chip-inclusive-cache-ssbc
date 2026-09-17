@@ -423,6 +423,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     if (params.micro.enableSetBalancing)
       Mux(meta.displaced && pairValidReg && !pairIsSrcReg, pairSetReg, request.set)
     else request.set
+  // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
+  // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, so on a
+  // directory result the register still holds the PREVIOUS transaction's partner.
+  val pairValidNow = Mux(io.directory.valid, io.pairInfo.valid,       pairValidReg)
+  val pairIsSrcNow = Mux(io.directory.valid, io.pairInfo.bits.isSrc,  pairIsSrcReg)
+  val pairSetNow   = Mux(io.directory.valid, io.pairInfo.bits.set,    pairSetReg)
+  // SBC (B7-1): the set a reclaimed guest is charged to. `lineHome` is wrong on a plan cycle (`meta`
+  // and the pair registers are written that cycle), so armEviction overrides it next to the pulse.
+  val dispHomeW = WireInit(lineHome)
   // SBC Phase 3 (003): an eviction probe of a displaced victim is answered at the victim's HOME set,
   // which is not our row - so ProbeAck routing needs its own key. Keyed off the WAIT register, not
   // s_rprobe: s_rprobe retires when the probe issues, while the answer is still in flight.
@@ -432,7 +441,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.valid := request_valid
   io.status.bits.homeSet  := request.set
   io.status.bits.physSet  := physSet
-  io.dispHome := lineHome   // declared after lineHome on purpose: Scala vals are not forward-referable
+  io.dispHome := dispHomeW  // declared after dispHomeW on purpose: Scala vals are not forward-referable
   io.status.bits.probeSet := Mux(probingVictim, lineHome, request.set)
   io.status.bits.probeTag := Mux(probingVictim, meta.tag, request.tag)
   io.status.bits.probeAckPending := !w_rprobeacklast || !w_pprobeacklast
@@ -1134,6 +1143,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       }
       // SBC (003 §10.5): dirty parked victim -> ReleaseData (dispRelease); clean -> Release (dispDrop).
       when (m.dirty) { dispReleasePulse := true.B } .otherwise { dispDropPulse := true.B }
+      // SBC (B7-1): charge the guest from the same fresh data as the pulse - the victim `m` and the live pairing.
+      val guestHome = Mux(pairValidNow && !pairIsSrcNow, pairSetNow, srcSet)
+      dispHomeW := guestHome
+      if (params.micro.sbcShadow) {
+        assert (m.homeShadow.get === guestHome, "SBC(B7-1): reclaimed guest charged to a set that is not its home")
+      }
       if (params.micro.sbcDebug) {
         printf(p"[SBC] EVICT-DISPLACED-RECLAIM srcSet=${srcSet} srcWay=${m.way} clients=${m.clients} dirty=${m.dirty}\n")
       }
@@ -1237,16 +1252,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!migStartNow || migStartDst =/= physSet, "SBC: migration destination equals its own source set")
     // SBC Phase 3 (1f): a paired source may only ever spill into its own partner. No longer carved
     // out under sbcForceDstSet - forcedLegal in the SBU keeps 1:1 intact even when the destination is
-    // forced, so the SIP test runs with this net armed.
-    // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
-    // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, and the
-    // fast-path claim is gated on that same signal - so comparing against the register on a
-    // plan-time claim tested this transaction's destination against the PREVIOUS transaction's
-    // partner, and raised a false alarm. No data was ever wrong; the claim itself
-    // (`migOffer.bits`, sourced live from the AT) was always correct.
-    val pairValidNow = Mux(io.directory.valid, io.pairInfo.valid,       pairValidReg)
-    val pairIsSrcNow = Mux(io.directory.valid, io.pairInfo.bits.isSrc,  pairIsSrcReg)
-    val pairSetNow   = Mux(io.directory.valid, io.pairInfo.bits.set,    pairSetReg)
+    // forced, so the SIP test runs with this net armed. Uses the live pairing (pairSetNow, defined
+    // beside lineHome): the fast-path claim is gated on `io.directory.valid`, the cycle the register is
+    // written, so the register gave a false alarm here (003 P7).
     assert (!io.dstClaim.valid || !pairValidNow || !pairIsSrcNow || io.dstClaim.bits === pairSetNow,
             "SBC: paired source migrated outside its partner set")
     val migDeferCtr = RegInit(0.U(16.W))

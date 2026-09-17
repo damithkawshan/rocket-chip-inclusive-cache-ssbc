@@ -14,8 +14,9 @@ Quick index:
 - **Phase 2** — Bug A (preferEvictable wiring), Bug B (copy_wsafe race), Dst-collision (illegal
   inner-D), Displaced accumulation (bricked set); plus `s_verify` disabled, Q3 rejected.
 - **Found in 003** — P1 ✅, P2 ✅, P5 ✅ (closed by deletion), P6 ✅, P7 ✅; A5.1 / A5.2 🟡 live RTL facts, not the corruption.
-- **Open** — residual `[born→gate]` sub-window (latent, do not pre-build); **B7-1 stale `dispHome`**
-  (found 2026-09-17 by task 007 T-TEARDOWN); **B7-2 combinational loop at 256 KB** (Vivado DRC, 2026-09-17).
+- **Found in 007** — B7-1 ✅ stale `dispHome` (fixed 2026-09-17).
+- **Open** — residual `[born→gate]` sub-window (latent, do not pre-build); **B7-2 combinational loop at 256 KB**
+  (Vivado DRC, 2026-09-17).
 
 ---
 
@@ -162,7 +163,7 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 
 ## 🔴 Open bugs (must not be forgotten)
 
-### 🔴 B7-1 — a reclaimed guest is charged to the WRONG set in `parkCount` (stale-register read)
+### ✅ B7-1 — a reclaimed guest is charged to the WRONG set in `parkCount` (stale-register read)
 - **Found:** 2026-09-17, task 007 commit-3 gate, by the new T-TEARDOWN case. **Pre-existing** — present since
   003 §10.5 added `dispHome`; not caused by task 007. Full write-up: coder/007 REPORT finding **F7**.
 - **Symptom:** `migration_stress_test` case 8 (`case_teardown`) FAIL — pairing 4↔0 still present on both
@@ -185,11 +186,15 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   reaches the cap — do NOT apply the staged C4 patch before this fix. (3) `mayHold` (sc bit) is stuck true
   for every source that ever migrated → the second search runs on every miss even with nothing parked —
   **likely a large part of the board's 180.7 M searches / 0.36% search hit rate.** Confirm on the board.
-- **Proposed fix (not built):** compute the home set from the same fresh data the pulse uses — `m.displaced`
-  and the pairing live on a directory result, latched otherwise (the `pairValidNow`/`pairSetNow` pattern
-  already in `MSHR.scala` ~1247) — set it inside `armEviction` next to the pulse and drive `io.dispHome`
-  from that. ~6 lines, `MSHR.scala` only. Verify with the commit-3 gate: T-TEARDOWN should PASS and
-  `TEARDOWN` printfs appear; `L2_SecondSearch` should fall sharply.
+- **Fix (2026-09-17, on the user's instruction):** `pairValidNow`/`pairIsSrcNow`/`pairSetNow` moved up beside
+  `lineHome`; new wire `dispHomeW` is set inside `armEviction`'s guest branch, beside the pulse, from `m`
+  and the live pairing; `io.dispHome := dispHomeW`. Two nets so it cannot hide again: a shadow-only assert
+  that the charged set equals the line's `homeShadow`, and an SBU assert that an erase never lands on a
+  count of 0 (the silent floor is what hid it).
+- **Verified:** gate `007-b71-c3` (fix + task 007 C3): stock 8/8 PASS incl. T-TEARDOWN, NoSbc 7/7, switch
+  T1–T4, 0 asserts, shadows quiet. `TEARDOWN` printfs **2,460** (was 0), `L2_SecondSearch` 64,335 → 44,410.
+  The same gate first stopped on C3's N2 reporting assert — a handled race that only became reachable once
+  teardown worked; N2 is now a printf (user decision). Board effect on wasted searches: not measured yet.
 
 ### 🔴 B7-2 — combinational loop: 256 KB bitstream refused by Vivado DRC
 - **Found:** 2026-09-17 02:41, 256 KB build of `251c9d7` (tag `sbc-007-c2-breakeven-2026-09-16`, config
