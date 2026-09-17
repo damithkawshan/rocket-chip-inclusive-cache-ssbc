@@ -31,6 +31,11 @@ gate green. **Before item 4, read finding F9:** C3 may cost speed (aborted migra
 re-pairing after a teardown lands on full or dirty destinations). Recommended: a 64 KB board A/B of `744fabb`
 first, C4 after.
 
+**Board, 128 KB, `744fabb` (2026-09-17 14:19):** F7 fix confirmed (second searches 7.94% → 0.054% of
+accesses), but no speed gain (cycles +0.13%, a tie) and memory traffic worse (+0.16% → +0.65%, reads);
+abort rate 16% → 38% (F9). See "Board run after the F7 fix + C3". ⚠️ F10: that run's archive overwrote
+the no-fix 128 KB image.
+
 **Order for the next session:**
 1. Fix B7-1 in `MSHR.scala` (on top of the uncommitted C3).
 2. Re-run the commit-3 gate (`SBC_LABEL=007-c3`). Expect case 8 PASS, `TEARDOWN` printfs, a big drop in `L2_SecondSearch`.
@@ -476,6 +481,59 @@ Logs: `sw/verilator_logs/{migration_stress_test,sbc_migrate_switch_test}_Verilat
 Logs: `sims/verilator/output/chipyard.harness.TestHarness.VerilatorRocket8KL116KL2Config/migration_stress_test.{log,out}`
 (not collected — `run_sbc.sh` stopped on the exit code).
 
+## Board run after the F7 fix + C3 (FPGA, 128 KB, 2026-09-17)
+
+| | |
+|---|---|
+| Session log | `chipyard/scripts/logs/board_session_20260917-141914.log` (14:19–15:25) |
+| Build log | `chipyard/fpga/build-logs/FPGASingleRocketVCU118L18K128K16WL2ConfigSBC-20260917-134858.log` (13:48–14:18) |
+| RTL | **`744fabb`** = F7 fix `c6a824c` + C3 (+ everything up to the tag). Build started after both commits, no RTL edits in the tree; the C3 register `tdPend` is in `SetBalanceUnit.sv` |
+| Image | `fpga/generated-src/…128K16WL2ConfigSBC/obj/VCU118FPGATestHarness.bit` — ⚠️ archived under a name that overwrote the no-fix image, see F10 |
+| Method | one bitstream, OFF half then ON half; `520.omnetpp_r` ref `--sim-time-limit=0.002s` under `sbc_read --zero --`. Both halves `rc=0`, same stop point (event #1,185,546) = same work |
+| Compared with | the no-fix 128 KB run: `performance/board-128kb-omnetpp-2026-09-17.md` (03:37, C3 logic present but never firing) |
+
+**ON vs OFF, each inside its own image:**
+
+| | no-fix image | F7 fix + C3 (`744fabb`) |
+|---|---:|---:|
+| `L2_MemReads` | +0.053% | **+0.681%** |
+| `L2_MemWrites` | +0.560% | +0.541% |
+| reads + writes | +0.161% | **+0.651%** |
+| `L2_Cycles` | +0.148% | +0.125% |
+| `L2_AccessA` | −0.347% | +0.036% |
+| hit rate (OFF → ON) | 83.43% → 83.36% (−0.07 pt) | 83.42% → 83.31% (−0.11 pt) |
+
+**ON-half SBC counters:**
+
+| | no-fix image | F7 fix + C3 |
+|---|---:|---:|
+| `L2_SecondSearch` (share of accesses) | 77,949,702 (7.94%) | **533,511 (0.054%)** |
+| searches that found the line | 0.03% | **8.16%** |
+| `L2_SecondaryHit` | 23,141 | 43,545 |
+| `SBC_Migrations` | 130,982 | 109,531 |
+| attempted / aborted (abort rate) | 155,808 / 24,843 (16%) | 177,572 / 68,053 (**38%**) |
+| secondary hits per migration | 0.18 | 0.40 |
+| `SBC_DispRelease` / `SBC_DispDrop` | 148 / 36,738 | 126 / 34,116 |
+| `SBC_Parked` at end | 0 | 0 |
+
+Raw, `744fabb`. OFF: accessA 980,598,662 · primary 818,008,689 · data misses = reads 162,589,973 · writes
+44,117,976 · cycles 44,575,366,871. ON: accessA 980,948,132 · primary 817,207,879 · secondary 43,545 · data
+misses = reads 163,696,708 · writes 44,356,451 · cycles 44,631,252,130. Identities hold in both halves.
+
+**Reading it (one run each, not repeated):**
+- **The F7 fix works on the board.** Second searches fell ~146× (7.94% → 0.054% of accesses), and a search
+  now finds its line 8% of the time instead of 0.03%. Secondary hits nearly doubled, and hits per migration
+  went 0.18 → 0.40 (break-even is about 1.0). `mayHold` does its job.
+- **Speed did not improve.** Cycles +0.15% → +0.13%, inside the boot-to-boot drift (+0.27% at 64 KB). The
+  ~77 M directory reads no longer spent did not show up as fewer cycles.
+- **Memory traffic got worse: +0.16% → +0.65%, all of it reads** (~1.1 M extra DRAM reads; writes unchanged
+  at +0.54%). That is above the +0.17% drift between two OFF halves at 64 KB. Primary hits fell 0.8 M; the
+  43.5 k secondary hits are far too few to offset that. Caveat: the no-fix run's halves differed by 0.35%
+  in accesses; per access its reads were already +0.40%, so per access the change is +0.40% → +0.65%.
+  **Cause not investigated.**
+- **Aborts: 16% → 38% of attempts** — F9's simulation warning shows up on the board too.
+- **SBC still does not win.** Tie on cycles, slightly behind on memory traffic.
+
 ## Findings (reported, not fixed)
 
 - **F1 — `migration_stress_test` never read `SBC_Parked`.** `sbc_summary()` printed the counters,
@@ -577,6 +635,16 @@ Logs: `sims/verilator/output/chipyard.harness.TestHarness.VerilatorRocket8KL116K
   sim: run the current RTL with the c2 test binary (no case 8) to remove the binary confounder (not F2's noise).
   **Why it matters for C4:** if teardown does cost speed through re-pairing onto bad destinations, the cap
   makes pairings fill and end more often, so C4 could make it worse. Recommendation: hold C4 until (1).
+  **Board, 128 KB (not the 64 KB run asked for), 2026-09-17:** abort rate 16% → **38%** (aborted 24,843 →
+  68,053) and memory traffic ON vs OFF +0.16% → +0.65%, all in reads; cycles unchanged. Same direction as
+  the sim. Still a guess about the mechanism — see "Board run after the F7 fix + C3".
+- **F10 — the no-fix 128 KB image was overwritten in the archive.** `fpga/bitstream_storage/
+  FPGASingleRocketVCU118L18K128K16WL2ConfigSBC-random-source-evict-2026-09-17.bit` is byte-identical (`cmp`)
+  to the 14:18 build of `744fabb`; the 03:36 no-fix image archived under that name is gone. So
+  `performance/board-128kb-omnetpp-2026-09-17.md` §1–2 ("to repeat this run, program the archived file") now
+  points to a different image, and the name does not say it holds the F7 fix + C3. Same class of problem as
+  the mislabelled 256 KB archive. Not changed: renaming (e.g. `…-b71fix-teardown-744fabb-2026-09-17.bit`)
+  and the doc fix are the user's call; the no-fix image can be rebuilt from `251c9d7` if it is needed.
 - **F6 — `sw/sip_common.h` `park_n()` comment describes the rule commit 1 deleted.** It says "displaced
   ways are last-resort victims, so they persist while the fresh natives absorb the eviction". Since C1 a
   guest is an ordinary victim, so the top-up no longer protects parked lines the way the comment claims.
