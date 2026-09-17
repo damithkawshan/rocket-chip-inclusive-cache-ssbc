@@ -15,6 +15,8 @@
  *   ./sbc_read -- <cmd...>     snapshot, run cmd, snapshot again, print the DELTA (no reset needed)
  *   ./sbc_read --migrate=on    allow new migrations to start (SBC_MigrateEnable, 0x3C0)
  *   ./sbc_read --migrate=off   stop new migrations from starting
+ *   ./sbc_read --policy=plru   victim policy (L2_Replacement, 0x490): random (reset) or plru. Fails
+ *                              if the read-back differs - i.e. plru on a bitstream without the tracker
  *   ./sbc_read --reset-all     zero ALL SBC state (SBC_Reset, 0x358). Refuses while lines are
  *                              parked, because that would orphan them. --force overrides.
  *
@@ -64,6 +66,7 @@
 #define SBC_RESET_OFF      0x358UL   /* W: zero ALL SBC state - UNSAFE while lines are parked */
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
 #define SBC_STATSHOLD_OFF  0x438UL   /* R/W: freeze every event counter (not SBC_Parked) */
+#define L2_REPLACEMENT_OFF 0x490UL   /* R/W 008: 0 = random (reset), 1 = PLRU. Reads 0 if not built */
 
 /* name and MMIO byte offset. Every counter is a 64-bit register in PerfCounters.scala, so a plain
  * 64-bit read and subtract is exact - no width mask, and no wrap in any realistic window. */
@@ -122,6 +125,9 @@ static void snap(uint64_t *v) {
  * and read-back agrees while changing nothing, so report the switch as n/a rather than OFF. */
 static int sbc_built(void)     { return (int)(base[SBC_STATUS_OFF / 8] & 1); }
 static int migrate_state(void) { return (int)(base[SBC_MIGRATEENABLE_OFF / 8] & 1); }
+/* 008: a bitstream without the tracker reads 0 here, which is also what it does: random. */
+static int policy_state(void)  { return (int)(base[L2_REPLACEMENT_OFF / 8] & 1); }
+static const char *policy_name(void) { return policy_state() ? "plru" : "random"; }
 
 /* Block size from the config word at 0x000, so "bytes moved" cannot drift from the hardware.
  * RegFieldGroup packs its Seq from the LSB up: banks[7:0], ways[15:8], lgSets[23:16],
@@ -137,10 +143,11 @@ static void show(const char *tag, uint64_t *v) {
     printf("[%s]", tag);
     for (unsigned i = 0; i < NREG; i++)
         printf(" %s=%llu", REGS[i].name, (unsigned long long)v[i]);
-    printf("\n");
+    printf(" policy=%s\n", policy_name());   /* not numeric, so key=number parsers skip it */
     printf("  migrate          : %s\n",
            !sbc_built() ? "n/a (SBC not built into this bitstream)" :
            migrate_state() ? "ON" : "OFF");
+    printf("  policy           : %s\n", policy_name());
     printf("  reads taken under: L2_StatsHold (0x438) - one instant for all registers\n");
 
     /* 005: the terminology block (cache-terminology.md). L2_AccessA is 0 on a bitstream built
@@ -215,12 +222,14 @@ int main(int argc, char **argv) {
         hold_clear();
     }
 
-    int cmd = 0, zero = 0, migsw = -1, reset_all = 0, force = 0;
+    int cmd = 0, zero = 0, migsw = -1, reset_all = 0, force = 0, policy = -1;
     /* migsw: -1 = leave the switch alone, 0 = off, 1 = on */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--zero")) zero = 1;
         else if (!strcmp(argv[i], "--migrate=on"))  migsw = 1;
         else if (!strcmp(argv[i], "--migrate=off")) migsw = 0;
+        else if (!strcmp(argv[i], "--policy=random")) policy = 0;
+        else if (!strcmp(argv[i], "--policy=plru"))   policy = 1;
         else if (!strcmp(argv[i], "--reset-all")) reset_all = 1;
         else if (!strcmp(argv[i], "--force")) force = 1;
         else if (!strcmp(argv[i], "--")) { cmd = i + 1; break; }
@@ -228,7 +237,8 @@ int main(int argc, char **argv) {
             /* An unrecognised flag is almost always a typo (e.g. --migrate=1); running the child
              * with the switch left unchanged would silently measure the wrong thing. */
             fprintf(stderr, "sbc_read: unknown option '%s'\n"
-                    "usage: sbc_read [--zero] [--migrate=on|off] [--reset-all] [--force] [-- cmd ...]\n",
+                    "usage: sbc_read [--zero] [--migrate=on|off] [--policy=random|plru] [--reset-all] [--force]"
+                    " [-- cmd ...]\n",
                     argv[i]);
             return 2;
         }
@@ -270,6 +280,16 @@ int main(int argc, char **argv) {
         if (migrate_state() != migsw) {
             fprintf(stderr, "sbc_read: SBC_MigrateEnable read back %d after writing %d - aborting\n",
                     migrate_state(), migsw);
+            return 1;
+        }
+    }
+
+    /* 008: the victim policy. Safe to change at any time - every way is a legal victim. */
+    if (policy >= 0) {
+        base[L2_REPLACEMENT_OFF / 8] = (uint64_t)policy;
+        if (policy_state() != policy) {
+            fprintf(stderr, "sbc_read: L2_Replacement read back %d after writing %d - "
+                            "PLRU is not built into this bitstream. Aborting\n", policy_state(), policy);
             return 1;
         }
     }

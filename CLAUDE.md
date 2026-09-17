@@ -282,6 +282,7 @@ knobs and the SBC enable flags:
 | `sbcGateStallCycles` | `0` | Debug: widen the dst-fence window to reproduce the open `[born→gate]` bug |
 | `enablePerfCounters` | `true` | All measurement hardware (task 005): every MMIO counter (`PerfCounters.scala`) and the `SBC_SetSel`/`SetSat`/`Status` bit 2/`AtAssoc` read-backs. `false` = not built, those registers read 0. **Not** gated by `enableSetBalancing` |
 | `sbcShadow` | `true` in `WithInclusiveCache` | Sim-only shadow checkers that catch data corruption; forced off when SBC is off |
+| `plruReplacement` | `false` | Task 008: per-set tree PLRU (`Recency.scala`, rocket-chip `SetAssocLRU`, ways−1 bits per set) and the `L2_Replacement` register (`0x490`). `false` = not built, register reads 0 (random). **Not** gated by `enableSetBalancing` — the plain-L2 half needs it too |
 
 Several of these exist only for debugging or measurement and may be removed in the optimization phase —
 see "Can be removed in the optimization phase" under Build-phase leftovers.
@@ -300,8 +301,11 @@ always-on counters and MMIO registers (tasks 004/006) exist in every build.
 #### `DirectoryEntry.displaced` bit ([Directory.scala](design/craft/inclusivecache/src/Directory.scala))
 
 A single `displaced` bit has been added to `DirectoryEntry`. **It no longer affects victim choice**
-(task 007 C1, 2026-09-16): the victim mux is `preferInvalid` → `preferEvictable` → random over every
-free way, and a parked line is an ordinary candidate. The bit still decides hit detection
+(task 007 C1, 2026-09-16): the victim mux is `preferInvalid` → `preferEvictable` → the policy way over
+every free way → lowest free way, and a parked line is an ordinary candidate. The policy way is the LFSR
+way, or — when built with `plruReplacement` and `L2_Replacement = 1` — the row's PLRU way (task 008).
+The tracker learns from two touches only: every inner-A D grant, and every migration install (so a guest
+enters D as most recently used). The bit still decides hit detection
 (line ~143), which excludes displaced ways from satisfying demand lookups:
 ```scala
 w.tag === tag && w.state =/= INVALID && !w.displaced && (...)
@@ -392,6 +396,7 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x420` | `L2_SecondSearch` | R, 64 — the plan armed a search of the partner set |
 | `0x428` | `L2_SecondaryMiss` | R, 64 — the partner set was searched and the line was not there |
 | `0x438` | `L2_StatsHold` | R/W, 1 bit, default 0 — while 1 every event counter (including `L2_Cycles`) keeps its value, so ~28 registers can be read as one instant. `SBC_Parked` is a level and is **never** held. Clears still work. Removed with `enablePerfCounters` |
+| `0x490` | `L2_Replacement` | R/W, 1 bit, **default 0 = random**, 1 = PLRU (task 008). Safe to flip at any time; the tracker learns in both positions. **Not** cleared by `SBC_Reset`/`SBC_StatsReset`, not held. Absent (reads 0) unless `plruReplacement`. `sbc_read --policy=random\|plru` sets it and checks the read-back. `0x470`–`0x480` stay reserved for task 005 |
 
 **Hit rate is now exact:** hit rate = (`L2_PrimaryHit` + `L2_SecondaryHit`) ÷ `L2_AccessA`, miss rate =
 (`L2_DataMiss` + `L2_UpgradeMiss`) ÷ `L2_AccessA`. Identities that must hold, and did on the board in four

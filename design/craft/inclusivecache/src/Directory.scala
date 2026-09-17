@@ -103,6 +103,9 @@ class Directory(params: InclusiveCacheParameters) extends Module
     val result = Valid(new DirectoryResult(params))
     val ready  = Bool() // reset complete; can enable access
     val tap    = Valid(new DirectoryTap(params)) // SBC: result-aligned observation tap
+    // 008: PLRU touches in, and the L2_Replacement bit (1 = PLRU victim). Absent when plruReplacement = false.
+    val touch   = if (params.micro.plruReplacement) Some(Flipped(Vec(2, Valid(new RecencyTouch(params))))) else None
+    val usePlru = if (params.micro.plruReplacement) Some(Input(Bool())) else None
   })
 
   val codeBits = new DirectoryEntry(params).getWidth
@@ -185,6 +188,12 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // the head start the paper gives an MRU insert, but under random replacement "last choice" became
   // "never evicted" - destinations settled at 1 home line and 15 guests. The paper evicts by recency.
   val lfsrVictimOH   = victimWayOHLFSR
+  // 008: the policy tier - the LFSR way, or this row's PLRU way when L2_Replacement = 1. The LFSR keeps
+  // advancing either way, and the tracker keeps learning while random is selected.
+  val recency = if (params.micro.plruReplacement) Some(Module(new Recency(params))) else None
+  recency.foreach { r => r.io.touch := io.touch.get; r.io.querySet := set }
+  val policyOH = recency.map(r => Mux(io.usePlru.get, UIntToOH(r.io.victimWay, params.cache.ways), lfsrVictimOH))
+                        .getOrElse(lfsrVictimOH)
   // SBC Phase 1: a migration-eligible victim moves with no protocol work — valid, clean (no
   // writeback), no clients (no probe). SBC (007 C2): on the DESTINATION probe a parked way qualifies
   // too - the paper's displacement evicts D's LRU line, guest or home alike (section 3.3).
@@ -199,7 +208,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val freeWays = ~busyWays
   val victimWayOH = Mux(preferInvalid && (invalidWayOH & freeWays).orR, PriorityEncoderOH(invalidWayOH & freeWays),
                     Mux(preferEvictable && (evictableOH & freeWays).orR, PriorityEncoderOH(evictableOH & freeWays),
-                    Mux((lfsrVictimOH & freeWays).orR, lfsrVictimOH & freeWays,
+                    Mux((policyOH & freeWays).orR, policyOH & freeWays,
                     Mux(freeWays.orR, PriorityEncoderOH(freeWays),
                     // Last resort: no free way at all. Unreachable - at most two ways in a row are
                     // locked (the row's own MSHR, and one serving in place from its partner) - and the
@@ -302,6 +311,22 @@ class Directory(params: InclusiveCacheParameters) extends Module
   if (params.micro.sbcDebug) {
     when (ren2 && preferEvictable) {
       printf(p"[SBC] DIR-EVICT set=${set} evictableAvail=${evictableOH.orR} hit=${io.result.bits.hit} victimWay=${victimWay}\n")
+    }
+  }
+  // 008: every read that may use a victim. tier: 0 invalid, 1 evictable, 2 policy, 3 lowest free way.
+  // res = the way the result really names (differs from chosen only on the write-bypass tag match).
+  recency.foreach { r =>
+    if (params.micro.sbcDebug) {
+      val cyc = RegInit(0.U(64.W))
+      cyc := cyc + 1.U
+      val tier = Mux(preferInvalid && (invalidWayOH & freeWays).orR, 0.U,
+                 Mux(preferEvictable && (evictableOH & freeWays).orR, 1.U,
+                 Mux((policyOH & freeWays).orR, 2.U, 3.U)))
+      when (ren2 && !io.result.bits.hit) {
+        printf(p"[SBC] PLRU-VICTIM cyc=${cyc} set=${set} plruWay=${r.io.victimWay} chosen=${victimWay}" +
+               p" res=${io.result.bits.way} usePlru=${io.usePlru.get} tier=${tier} busy=${Binary(busyWays)}" +
+               p" internal=${internalRead}\n")
+      }
     }
   }
 

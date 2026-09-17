@@ -343,6 +343,9 @@ static int case_teardown(void) {
 }
 
 int main(void) {
+#ifdef L2_POLICY
+    sbc_set_policy();   /* 008 */
+#endif
     printf("==== SBC migration stress test (HOT_SET=%d, ways=%d) ====\n", HOT_SET, L2_WAYS);
 
 #ifndef SBC_MIGRATE_OFF

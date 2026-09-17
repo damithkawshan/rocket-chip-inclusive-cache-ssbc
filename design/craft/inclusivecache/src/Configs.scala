@@ -68,7 +68,9 @@ class WithInclusiveCache(
   sbcForceDstSet: Int = -1,
   sbcGateStallCycles: Int = 0,
   // 005: all measurement hardware (every MMIO counter, read-backs); on in both builds. false only for area.
-  enablePerfCounters: Boolean = true
+  enablePerfCounters: Boolean = true,
+  // 008: PLRU victim choice, selected at run time by L2_Replacement. Not tied to enableSetBalancing.
+  plruReplacement: Boolean = false
 ) extends Config((site, here, up) => {
   case InclusiveCacheKey => InclusiveCacheParams(
       sets = (capacityKB * 1024)/(site(CacheBlockBytes) * nWays * up(SubsystemBankedCoherenceKey, site).nBanks),
@@ -128,7 +130,8 @@ class WithInclusiveCache(
         migrationClearThreshold = if (migrationClearThreshold < 0) nWays else migrationClearThreshold,
         sbcForceDstSet = sbcForceDstSet,
         sbcGateStallCycles = sbcGateStallCycles,
-        enablePerfCounters = enablePerfCounters),
+        enablePerfCounters = enablePerfCounters,
+        plruReplacement = plruReplacement),
       l2Ctrl))
 
     def skipMMIO(x: TLClientParameters) = {

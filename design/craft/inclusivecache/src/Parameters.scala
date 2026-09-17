@@ -142,7 +142,9 @@ case class InclusiveCacheMicroParameters(
   sbcGateStallCycles:      Int = 0,         // >0: hold the dst fence (dstValid) low N extra cycles after a
                                             //     migration starts, widening the [advice->gate] collision window
   // 005: all measurement hardware (every MMIO counter, read-back muxes). false = not built, reads 0; area only.
-  enablePerfCounters:      Boolean = true)
+  enablePerfCounters:      Boolean = true,
+  // 008: per-set PLRU recency + the L2_Replacement register (0 = random, 1 = PLRU). false = not built.
+  plruReplacement:         Boolean = false)
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)

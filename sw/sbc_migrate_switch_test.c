@@ -68,6 +68,9 @@ static void dump(const char *tag) {
 }
 
 int main(void) {
+#ifdef L2_POLICY
+    sbc_set_policy();   /* 008 */
+#endif
     printf("==== SBC_MigrateEnable switch test ====\n");
     if (!(sbc_rd(SBC_STATUS) & 1)) {
         printf("SKIP: SBC is not built into this config (SBC_Status bit0 = 0)\n");

@@ -57,6 +57,8 @@
 #define SBC_L2_SECONDSEARCH  (L2_CTRL_BASE + 0x420) /* R   partner search armed                         */
 #define SBC_L2_SECONDARYMISS (L2_CTRL_BASE + 0x428) /* R   partner searched, line not found              */
 #define SBC_L2_STATSHOLD     (L2_CTRL_BASE + 0x438) /* R/W freeze every event counter (not SBC_Parked)  */
+/* 008: victim policy. Reads 0 (random) when plruReplacement is not built. */
+#define SBC_L2_REPLACEMENT   (L2_CTRL_BASE + 0x490) /* R/W 0 = random (reset), 1 = PLRU              */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;
@@ -66,5 +68,16 @@ static inline void sbc_wr(uintptr_t addr, uint64_t v) {
     volatile uint64_t *p = (volatile uint64_t *)addr;
     *p = v;
 }
+
+#ifdef L2_POLICY
+/* 008 (sim tests, -DL2_POLICY=0|1): set the victim policy first thing in main. The value sits in a
+ * volatile pinned to .sdata (a 0 would otherwise go to .sbss), so 0 and 1 give the same layout and
+ * the two binaries differ in one data byte only. */
+static volatile uint64_t sbc_l2_policy __attribute__((section(".sdata"))) = L2_POLICY;
+static inline void sbc_set_policy(void) {
+    sbc_wr(SBC_L2_REPLACEMENT, sbc_l2_policy);
+    printf("[SBC] policy=%llu\n", (unsigned long long)sbc_rd(SBC_L2_REPLACEMENT));
+}
+#endif
 
 #endif /* SBC_MMIO_H */

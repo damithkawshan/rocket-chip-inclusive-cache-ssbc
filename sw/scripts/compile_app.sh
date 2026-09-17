@@ -14,6 +14,7 @@ mkdir -p "$SW/build"
 riscv64-unknown-elf-gcc \
   -mcmodel=medany -static -std=gnu99 -O2 \
   -fno-common -fno-builtin -fno-builtin-printf \
+  ${EXTRA_CFLAGS:-} \
   -I "$COMMON" -I "$ENV" \
   -o "$SW/build/${APP}.riscv" \
   "$SW/${APP}.c" \

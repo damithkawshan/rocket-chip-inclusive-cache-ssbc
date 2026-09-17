@@ -57,6 +57,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       // 005 commit 1: L2_StatsHold out - freezes every event counter (not SBC_Parked) for an exact
       // multi-register read.
       val stats_hold = Output(Bool())
+      // 008: L2_Replacement out (1 = PLRU victim). Absent when plruReplacement = false.
+      val l2_replacement = if (outer.micro.plruReplacement) Some(Output(Bool())) else None
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -167,6 +169,13 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
       RegFieldDesc("SBC_MigrateEnable", "Master switch: gates only the START of a new migration. 0=off (default)"))
+    // 008: L2_Replacement. Level, reset 0 = random. Not cleared by SBC_Reset/SBC_StatsReset, not held.
+    // Safe to flip at any time: every way is a legal victim. Absent (reads 0) when the flag is off.
+    val l2Replacement = if (outer.micro.plruReplacement) Some(RegInit(false.B)) else None
+    io.l2_replacement.foreach { _ := l2Replacement.get }
+    val l2ReplacementMap: Seq[RegField.Map] = l2Replacement.toSeq.map { r =>
+      0x490 -> Seq(RegField(1, r, RegFieldDesc("L2_Replacement", "Victim policy: 0 = random, 1 = PLRU")))
+    }
     // 005 commit 1: L2_StatsHold. Removed with enablePerfCounters (§4.3) - reads 0 when off.
     val sbcStatsHold: Bool = if (outer.micro.enablePerfCounters) RegInit(false.B) else false.B
     io.stats_hold := sbcStatsHold
@@ -235,7 +244,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       (true.B, true.B)  // fire-and-forget, same as SBC_Reset (or the D beat hangs on real fabric)
     }), RegFieldDesc("SBC_StatsReset", "Write any value to zero ONLY the SBC event/hit counters"))
 
-    val regmap = ctrlnode.regmap(
+    val regmap = ctrlnode.regmap((Seq[RegField.Map](
       0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
       0x200 -> (if (control.beatBytes >= 8) Seq(flush64) else Nil),
       0x240 -> Seq(flush32),
@@ -279,6 +288,6 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x420 -> Seq(l2SecondSearchField),
       0x428 -> Seq(l2SecondaryMissField),
       0x438 -> Seq(sbcStatsHoldField)
-    )
+    ) ++ l2ReplacementMap): _*)
   }
 }

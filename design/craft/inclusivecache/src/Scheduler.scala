@@ -51,6 +51,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // 005 commit 1: L2_StatsHold. Freezes every event counter (not SBC_Parked) for an exact
     // multi-register read.
     val statsHold     = Input(Bool())
+    // 008: L2_Replacement (1 = PLRU victim). Absent when plruReplacement = false.
+    val usePlru       = if (params.micro.plruReplacement) Some(Input(Bool())) else None
   })
 
   val sourceA = Module(new SourceA(params))
@@ -192,6 +194,20 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   directory.io.write.valid := schedule.dir.valid
   directory.io.write.bits.viewAsSupertype(chiselTypeOf(schedule.dir.bits)) := schedule.dir.bits
+
+  // 008: PLRU touches (D3) - T0 every inner-A D grant, T1 every migration install. Nothing else.
+  if (params.micro.plruReplacement) {
+    val touch = directory.io.touch.get
+    touch(0).valid    := schedule.d.valid && schedule.d.bits.prio(0) && !schedule.d.bits.control && !schedule.d.bits.bad
+    touch(0).bits.set := schedule.d.bits.physSet
+    touch(0).bits.way := schedule.d.bits.way
+    touch(1).valid    := schedule.dir.valid && schedule.dirInstall.getOrElse(false.B)
+    touch(1).bits.set := schedule.dir.bits.set
+    touch(1).bits.way := schedule.dir.bits.way
+    directory.io.usePlru.get := io.usePlru.get
+    // T0 is one touch per grant only because a D request is scheduled only when SourceD takes it.
+    assert (!schedule.d.valid || sourceD.io.req.ready, "008: schedule.d valid while SourceD is not ready")
+  }
   if (params.micro.sbcDebug) {
     when (directory.io.write.valid) {
       printf(p"[SBC][SCHED] DIR-WRITE set=${schedule.dir.bits.set} way=${schedule.dir.bits.way}" +

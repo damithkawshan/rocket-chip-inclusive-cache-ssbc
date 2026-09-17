@@ -64,6 +64,8 @@ class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBu
   val copy = Valid(new SetCopyRequest(params))
   // SBC Phase 1: 2nd directory-read lane — probe dstSet (preferInvalid) for a free way
   val dread = Valid(new DirectoryRead(params))
+  // 008: this dir-write installs a migrated guest in D (mig_dir1) - a PLRU touch, so it enters as MRU.
+  val dirInstall = if (params.micro.plruReplacement && params.micro.enableSetBalancing) Some(Bool()) else None
   val reload = Bool() // get next request via allocate (if any)
 }
 
@@ -831,6 +833,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.x.bits.fail    := false.B
   io.schedule.bits.dir.bits.set   := Mux(mig_dir1, migDstSet, Mux(sec_dir1, pairSetReg, physSet))
   io.schedule.bits.dir.bits.way   := Mux(mig_dir1, migDstWay, Mux(sec_dir1, secWay,     meta.way))
+  io.schedule.bits.dirInstall.foreach { _ := mig_dir1 }
   // SBC Phase 2: dir-write #1 (mig_dir1) installs the displaced copy at (dstSet,dstWay); dir-write
   // #2 is the ordinary demand refill that rewrites the freed home way (s,vWay) with the new line.
   // SBC Phase 3: sec_dir1 erases the parked copy. It runs whenever the search HIT, repatriate or not -
