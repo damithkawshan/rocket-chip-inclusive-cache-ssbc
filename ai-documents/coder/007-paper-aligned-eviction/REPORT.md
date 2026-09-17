@@ -26,8 +26,10 @@
 | 256 KB bitstream | **none** — build failed (B7-2). tmux session `sbc256` still open |
 | ⚠️ `fpga/bitstream_storage/…256K16WL2ConfigSBC-random-source-evict-2026-09-17.bit` | **MISLABELLED — byte-identical to the OLD pre-007 image** (`cmp` confirmed). It was archived after the failed build. Do not program it; delete or rename |
 
-**Update 2026-09-17 (later): items 1–3 below are DONE** — F7 fixed (`c6a824c`), C3 committed, gate green.
-Next is item 4.
+**Update 2026-09-17 (later): items 1–3 below are DONE** — F7 fixed (`c6a824c`), C3 committed (`744fabb`),
+gate green. **Before item 4, read finding F9:** C3 may cost speed (aborted migrations +52%, hypothesis:
+re-pairing after a teardown lands on full or dirty destinations). Recommended: a 64 KB board A/B of `744fabb`
+first, C4 after.
 
 **Order for the next session:**
 1. Fix B7-1 in `MSHR.scala` (on top of the uncommitted C3).
@@ -539,6 +541,42 @@ Logs: `sims/verilator/output/chipyard.harness.TestHarness.VerilatorRocket8KL116K
 - **F8 — the 256 KB bitstream of `251c9d7` fails Vivado DRC with a combinational loop (bug log B7-2).**
   16 LUTs through `sinkC/c_q`, `mshrs_*/request_tag`, `mshrs_*/bad_grant`, `mshrs_3/migDstSet[7]`,
   `directory/request_set[7]`, `requests/request_tag`. Absent at 256 KB before 007 and at 64 KB after c0–c2.
+- **F9 — does C3 (teardown) cost speed? Not settled; one interesting warning sign: aborted migrations
+  +52%.** Asked by the user after the `007-b71-c3` gate (2026-09-17).
+  **What the sim shows — too small to trust.** SBC vs NoSbc of the same build, c2 → F7 fix + c3: hit-rate
+  gap −0.52 → −0.73 pt, memory-traffic gap +0.95% → +0.98%, cycles gap +0.46% → +0.63%. Three reasons not to
+  read this as a loss: the differences are far below the build-to-build noise F2 measured (6.8% of accesses
+  from dead logic alone); C3 added case 8, so the two builds ran a different test binary; and case 8
+  (~815 accesses, mostly misses) runs only in the SBC half — NoSbc skips it — which tilts the gap against SBC.
+  **The warning sign — many more migrations abort:**
+
+  | stock config | c2 (`007-c2`) | F7 fix + c3 (`007-b71-c3`) |
+  |---|---:|---:|
+  | migrations started | 40,121 | 46,964 |
+  | aborted (destination unusable + declines) | 20,175 | **30,669 (+52%)** |
+  | committed | 20,108 | 16,448 |
+  | commit rate | 50% | **35%** |
+  | distinct (src→dst) pairs with an abort | 5 | **12** |
+
+  **Hypothesis (a guess, NOT checked):** when a pairing ends, the source picks a new destination. In this
+  test there are only 8 sets, so the new one is often full or dirty and the move aborts. Each abort costs a
+  probe and a directory read for nothing. The changed test binary affects these numbers too.
+  **What the existing logs already show (`sbc_stats.txt`, "ABORT-DST by (src->dst)") — fits the guess,
+  does not prove it:**
+  - c2 (pairings permanent): aborts sit on 5 pairs, one dominant — `1->3` 16,364, `4->2` 2,178, `5->7` 1,469.
+  - c3 (teardown live): the dominant pair is still there at the same size (`6->3` 16,315 — set 3 is case 4's
+    "full dirty cold set"), plus **~14,100 extra aborts spread over new pairs that all land on sets 7 and 5**:
+    `1->7` 3,517, `4->7` 3,179, `1->5` 2,525, `4->5` 2,398, `2->7` 1,583, `2->5` 924.
+  - In case 7, set 7 is the cold destination kept resident by light hits (so its lines are likely held by an
+    L1 client), and set 5 is `HOT_SET`, hammered with stores (dirty). A destination copy needs a free or
+    clean, client-free way, so both are poor destinations. **Why the DSS keeps offering them after a
+    teardown is not checked.**
+  **How to check.** (1) Board A/B at 64 KB of the current HEAD against the c2 board result (+0.41% cycles /
+  +0.07% memory) — decisive, and it also shows whether the F7 fix cut the wasted searches. (2) From the
+  existing `.out`: are the new-pair aborts clustered right after a `TEARDOWN` of that source? (3) Optional
+  sim: run the current RTL with the c2 test binary (no case 8) to remove the binary confounder (not F2's noise).
+  **Why it matters for C4:** if teardown does cost speed through re-pairing onto bad destinations, the cap
+  makes pairings fill and end more often, so C4 could make it worse. Recommendation: hold C4 until (1).
 - **F6 — `sw/sip_common.h` `park_n()` comment describes the rule commit 1 deleted.** It says "displaced
   ways are last-resort victims, so they persist while the fresh natives absorb the eviction". Since C1 a
   guest is an ordinary victim, so the top-up no longer protects parked lines the way the comment claims.
