@@ -109,6 +109,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 004 | Count all cache hits and misses | ✅ | — | 2026-09-02 |
 | 005 | Count hits honestly + sample counters over time | 🔴 next — ready to start | rewritten 2026-09-14 as one clean work order: counters in one place behind one switch, counters that follow the hit and miss words, strict timing rules, three fixes, snapshots; not started | 2026-09-14 |
 | 006 | On/off switch + count trips to main memory | ✅ 2026-09-14 | closed (`e4c5d53`). A new FPGA image is still owed — one image after task 005 | 2026-09-14 |
+| 008 | Pick the evicted line by recency (PLRU) instead of at random | 🔴 next — ready to start | [TASK](coder/008-plru-replacement/TASK.md): 2 commits, then one 64 KB image, sessions R (random) and P (PLRU). Session R also answers 007 F9 | 2026-09-17 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -130,7 +131,9 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | 🔴 found 2026-09-16 | `Scheduler.scala:689-693` ORs the erase pulses and `Mux1H`es the home set: two at once decrement one wrong set. Harmless today, a **data bug** once pairings end on that count. Prerequisite P0 of the [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) |
 | M17 | 🐞 Migrate advice can be checked against the wrong set | 🔴 found 2026-09-17, not verified in sim | A request popped from the per-MSHR queue latches `migAdvice` built from the incoming sink request's set (`Scheduler.scala` `migrateQuery.bits := request.bits.set`). Can start a migration from a set that is not at max. Also see [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 9–12: the other ways our heat counter differs from the paper |
+| M18 | Make the heat counters follow the paper | ⏸ deferred 2026-09-17 | Four gaps: write-backs and flushes count as hits; the hot test runs before this miss is added; M17; the second search never updates the partner. [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 7, 9–12. **PLRU goes first; this is the next lever if PLRU does not win** |
 | M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
+| M19 | 🐞 A pairing can end while a migration is still deferred for that source, and the migration then claims the wrong destination | 🔴 found 2026-09-17 (task 008), pre-existing since 007 C3 | RTL assert fires: "SBC: paired source migrated outside its partner set". Proven not an 008 bug — reproduces identically on a build with no PLRU code at all. Not fixed yet, does not block 008. [bug-fix-log.md](bugs/bug-fix-log.md) B8-1 |
 
 ### 1d. Left over from the build phases — details in CLAUDE.md
 

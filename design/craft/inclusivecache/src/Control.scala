@@ -165,6 +165,13 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcAtAssocField = RegField.r(9,
       Cat(io.sbc_stats.atSd, 0.U((8 - sbcSetBits).W), io.sbc_stats.atAssocSet),
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
+    // 008 C2: destination-probe aborts by reason. Cleared by SBC_StatsReset and SBC_Reset, held by L2_StatsHold.
+    val sbcDstAbortDirtyField = RegField.r(64, io.perfStats.dstAbortDirty,
+      RegFieldDesc("SBC_DstAbortDirty", "Destination-probe aborts: the way was dirty, no client", volatile=true))
+    val sbcDstAbortHeldField = RegField.r(64, io.perfStats.dstAbortHeld,
+      RegFieldDesc("SBC_DstAbortHeld", "Destination-probe aborts: the way was clean, client-held", volatile=true))
+    val sbcDstAbortBothField = RegField.r(64, io.perfStats.dstAbortBoth,
+      RegFieldDesc("SBC_DstAbortBoth", "Destination-probe aborts: the way was dirty and client-held", volatile=true))
     val sbcParkedField = RegField.r(64, io.perfStats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,
@@ -287,7 +294,10 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x418 -> Seq(l2UpgradeMissField),
       0x420 -> Seq(l2SecondSearchField),
       0x428 -> Seq(l2SecondaryMissField),
-      0x438 -> Seq(sbcStatsHoldField)
+      0x438 -> Seq(sbcStatsHoldField),
+      0x498 -> Seq(sbcDstAbortDirtyField),
+      0x4A0 -> Seq(sbcDstAbortHeldField),
+      0x4A8 -> Seq(sbcDstAbortBothField)
     ) ++ l2ReplacementMap): _*)
   }
 }

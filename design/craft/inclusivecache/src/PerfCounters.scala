@@ -37,6 +37,10 @@ class PerfCounterStats extends Bundle
   val secC        = UInt(64.W)  // partner serves raised by a C-channel Release
   val homeBranch  = UInt(64.W)  // directory results that found the home line in BRANCH
   val parked      = UInt(64.W)  // a level: parked lines resident now
+  // 008 C2: destination-probe aborts by reason (the way offered was dirty / client-held / both)
+  val dstAbortDirty = UInt(64.W)
+  val dstAbortHeld  = UInt(64.W)
+  val dstAbortBoth  = UInt(64.W)
   // outcomes (005 commit 1) - cache-terminology.md
   val accessA       = UInt(64.W)  // an inner-A request was accepted
   val primaryHit    = UInt(64.W)  // home line hit, enough permission, no outer A
@@ -66,6 +70,9 @@ class SBCEventPulses(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val dispDrop    = UInt(log2Ceil(params.mshrs + 1).W)
   val secC        = UInt(log2Ceil(params.mshrs + 1).W)
   val homeBranch  = UInt(log2Ceil(params.mshrs + 1).W)
+  val dstAbortDirty = UInt(log2Ceil(params.mshrs + 1).W)  // 008 C2
+  val dstAbortHeld  = UInt(log2Ceil(params.mshrs + 1).W)
+  val dstAbortBoth  = UInt(log2Ceil(params.mshrs + 1).W)
 }
 
 // Outcome pulses (005 commit 1), as the number of MSHRs raising each one this cycle. Not gated by
@@ -216,6 +223,9 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     val dispDrop    = RegInit(0.U(64.W))
     val secC        = RegInit(0.U(64.W))
     val homeBranch  = RegInit(0.U(64.W))
+    val dstAbortDirty = RegInit(0.U(64.W))
+    val dstAbortHeld  = RegInit(0.U(64.W))
+    val dstAbortBoth  = RegInit(0.U(64.W))
     when (go) {
       migrations  := migrations  + p.migCommit
       attempted   := attempted   + p.migAttempt
@@ -229,6 +239,9 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
       dispDrop    := dispDrop    + p.dispDrop
       secC        := secC        + p.secC
       homeBranch  := homeBranch  + p.homeBranch
+      dstAbortDirty := dstAbortDirty + p.dstAbortDirty
+      dstAbortHeld  := dstAbortHeld  + p.dstAbortHeld
+      dstAbortBoth  := dstAbortBoth  + p.dstAbortBoth
     }
 
     // A level, not an event: never held, never cleared by clearStats/clearSbc's `when` below except
@@ -248,6 +261,7 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
       secHits := 0.U; secMiss := 0.U; secPerm := 0.U
       secWrite := 0.U; secProbe := 0.U
       dispRelease := 0.U; dispDrop := 0.U; secC := 0.U; homeBranch := 0.U
+      dstAbortDirty := 0.U; dstAbortHeld := 0.U; dstAbortBoth := 0.U
     }
 
     io.stats.migrations  := migrations
@@ -263,5 +277,8 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     io.stats.secC        := secC
     io.stats.homeBranch  := homeBranch
     io.stats.parked      := parked
+    io.stats.dstAbortDirty := dstAbortDirty
+    io.stats.dstAbortHeld  := dstAbortHeld
+    io.stats.dstAbortBoth  := dstAbortBoth
   }
 }

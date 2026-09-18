@@ -780,6 +780,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     perf.io.sbc.migAbort    := PopCount(VecInit(mshrs.map(_.io.migAbort)))
     perf.io.sbc.migCommit   := PopCount(VecInit(mshrs.map(_.io.migCommit)))
     perf.io.sbc.migCommitReuse := PopCount(VecInit(mshrs.map(_.io.migCommitReuse)))
+    perf.io.sbc.dstAbortDirty := PopCount(VecInit(mshrs.map(_.io.dstAbortDirty)))   // 008 C2
+    perf.io.sbc.dstAbortHeld  := PopCount(VecInit(mshrs.map(_.io.dstAbortHeld)))
+    perf.io.sbc.dstAbortBoth  := PopCount(VecInit(mshrs.map(_.io.dstAbortBoth)))
     perf.io.sbc.secHit      := PopCount(VecInit(mshrs.map(_.io.secHit)))
     perf.io.sbc.secMiss     := PopCount(VecInit(mshrs.map(_.io.secMiss)))
     perf.io.sbc.secPerm     := PopCount(VecInit(mshrs.map(_.io.secPerm)))

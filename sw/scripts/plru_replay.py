@@ -6,6 +6,7 @@ a cycle the access (src=0) is applied before the install (src=1)), then checks e
 `[SBC] PLRU-VICTIM` line:
   * plruWay == the model's victim, on every line (both modes)
   * chosen == plruWay whenever usePlru=1 and tier=2 (in random mode tier 2 is the LFSR way)
+  * 008 C2 option B: chosen == evictWay == the masked walk over emask whenever usePlru=1 and tier=1
 It also reports tier counts, how often res != chosen (write-bypass tag match), and how often a
 migration install lands on the same way as the previous install into that set.
 
@@ -71,9 +72,24 @@ def replace_way(state, n):
     return 0
 
 
+def masked_way(state, allowed, n):
+    """Recency.maskedWay (008 C2 option B): the PLRU walk, stepping into the older half only if it holds
+    an allowed way. n must be a power of two."""
+    if n == 2:
+        return (allowed >> 1) & 1 if state & 1 else (0 if allowed & 1 else 1)
+    half = n // 2
+    hi_ok = (allowed >> half) & ((1 << half) - 1)
+    lo_ok = allowed & ((1 << half) - 1)
+    go_high = (hi_ok != 0) if (state >> (n - 2)) & 1 else (lo_ok == 0)
+    if go_high:
+        return (1 << log2ceil(half)) | masked_way((state >> (half - 1)) & ((1 << (half - 1)) - 1), hi_ok, half)
+    return masked_way(state & ((1 << (half - 1)) - 1), lo_ok, half)
+
+
 RE_TOUCH = re.compile(r"\[SBC\] PLRU-TOUCH cyc=\s*(\d+) set=\s*(\d+) way=\s*(\d+) src=\s*(\d+)")
 RE_VICTIM = re.compile(r"\[SBC\] PLRU-VICTIM cyc=\s*(\d+) set=\s*(\d+) plruWay=\s*(\d+) chosen=\s*(\d+)"
-                       r" res=\s*(\d+) usePlru=\s*(\d+) tier=\s*(\d+) busy=\s*([01]+) internal=\s*(\d+)")
+                       r" res=\s*(\d+) usePlru=\s*(\d+) tier=\s*(\d+) busy=\s*([01]+) internal=\s*(\d+)"
+                       r"(?: sec=\s*(\d+))?(?: emask=\s*([01]+) evictWay=\s*(\d+))?")
 
 
 def replay(path, ways):
@@ -88,7 +104,7 @@ def replay(path, ways):
 
     def flush():
         # Victims read the state as it was at the START of the cycle; then this cycle's touches land.
-        for (c, s, pw, ch, res, up, tier, internal) in victims:
+        for (c, s, pw, ch, res, up, tier, internal, emask, ew) in victims:
             st["victims"] += 1
             tiers[(up, internal, tier)] += 1
             model = replace_way(state[s], ways)
@@ -102,6 +118,18 @@ def replay(path, ways):
                     st["chosen_ne_plruWay"] += 1
                     if len(first_bad) < 10:
                         first_bad.append(f"cyc={c} set={s} tier=2 chosen={ch} plruWay={pw}")
+            if emask is not None and emask:
+                mw = masked_way(state[s], emask, ways)
+                if ew != mw:
+                    st["evictWay_mismatch"] += 1
+                    if len(first_bad) < 10:
+                        first_bad.append(f"cyc={c} set={s} evictWay={ew} model={mw} emask={emask:0{ways}b}")
+                if up == 1 and tier == 1:
+                    st["tier1_plru"] += 1
+                    if ch != mw:
+                        st["chosen_ne_masked"] += 1
+                        if len(first_bad) < 10:
+                            first_bad.append(f"cyc={c} set={s} tier=1 chosen={ch} masked={mw}")
             if res != ch:
                 st["res_ne_chosen"] += 1
         for (c, s, w, src) in sorted(touches, key=lambda t: t[3]):
@@ -131,7 +159,10 @@ def replay(path, ways):
                     continue
                 g = m.groups()
                 c = int(g[0])
-                ev = ("v", (c, int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5]), int(g[6]), int(g[8])))
+                kind = int(g[8]) * (2 if g[9] == "1" else 1)   # 0 demand, 1 internal (dst probe if sec= is printed), 2 second search
+                emask = int(g[10], 2) if g[10] is not None else None
+                ew = int(g[11]) if g[11] is not None else None
+                ev = ("v", (c, int(g[1]), int(g[2]), int(g[3]), int(g[4]), int(g[5]), int(g[6]), kind, emask, ew))
             if c != cur:
                 if c < cur:
                     st["cycle_went_backwards"] += 1
@@ -150,17 +181,22 @@ def main():
         st, tiers, installs, bad = replay(log, ways)
         out = [f"== {log}  (ways={ways})"]
         ok = st["plruWay_mismatch"] == 0 and st["chosen_ne_plruWay"] == 0 and st["victims"] > 0 \
+            and st["evictWay_mismatch"] == 0 and st["chosen_ne_masked"] == 0 \
             and st["cycle_went_backwards"] == 0 and st["unparsed"] == 0
         out.append(f"V3 verdict            : {'PASS' if ok else 'FAIL'}")
         out.append(f"victim lines          : {st['victims']}")
         out.append(f"touches access/install: {st['touch_src0']} / {st['touch_src1']}")
         out.append(f"plruWay != model      : {st['plruWay_mismatch']}")
         out.append(f"tier2 with usePlru=1  : {st['tier2_plru']}   chosen != plruWay: {st['chosen_ne_plruWay']}")
+        out.append(f"tier1 with usePlru=1  : {st['tier1_plru']}   chosen != masked walk: {st['chosen_ne_masked']}"
+                   f"   evictWay != model: {st['evictWay_mismatch']}")
         out.append(f"res != chosen         : {st['res_ne_chosen']}   (write-bypass tag match)")
         out.append(f"unparsed / backwards  : {st['unparsed']} / {st['cycle_went_backwards']}")
-        out.append("tier counts (usePlru, internal, tier) - tier 0 invalid, 1 evictable, 2 policy, 3 lowest free:")
+        out.append("tier counts - tier 0 invalid, 1 evictable, 2 policy, 3 lowest free;"
+                   " read: demand | internal (dst probe when sec= is printed) | second search:")
+        kinds = {0: "demand", 1: "internal", 2: "second search"}
         for k in sorted(tiers):
-            out.append(f"  usePlru={k[0]} internal={k[1]} tier={k[2]} : {tiers[k]}")
+            out.append(f"  usePlru={k[0]} read={kinds[k[1]]:<13} tier={k[2]} : {tiers[k]}")
         wp = installs["with_previous"]
         same = installs["same_way_as_previous"]
         out.append(f"installs with a previous install in the set: {wp}; same way as the previous one: {same}"

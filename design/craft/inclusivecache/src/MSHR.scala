@@ -191,6 +191,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // SBC (007 C2): this commit reused an older guest's slot, so one guest left as one arrived and
     // the parked count must NOT be incremented for it.
     val migCommitReuse = Output(Bool())
+    // 008 C2: why a destination probe aborted - the way it offered was dirty, client-held, or both.
+    val dstAbortDirty = Output(Bool())
+    val dstAbortHeld  = Output(Bool())
+    val dstAbortBoth  = Output(Bool())
     // SBC: the destination set this MSHR probed and found unusable. Blocks it in the DSS so the
     // next migration picks a different set.
     val migRejectDst = Valid(UInt(params.setBits.W))
@@ -369,6 +373,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.migAbort   := migAbort
   io.migCommit  := migCommit
   io.migCommitReuse := migCommit && migDstReuse
+  val dstAbortDirty = WireInit(false.B)
+  val dstAbortHeld  = WireInit(false.B)
+  val dstAbortBoth  = WireInit(false.B)
+  io.dstAbortDirty := dstAbortDirty
+  io.dstAbortHeld  := dstAbortHeld
+  io.dstAbortBoth  := dstAbortBoth
   io.migRejectDst.valid := migRejectDst
   io.migRejectDst.bits  := migDstSet
   // SBC (003 §10.5): event pulses, defaulted low and raised in the serve block / armEviction below.
@@ -1542,7 +1552,16 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       migRejectDst := true.B   // block this dst in the DSS so the next pick rotates
       s_release    := false.B  // release the (clean, client-free) victim and refill normally
       w_releaseack := false.B
-      if (params.micro.sbcDebug) { printf(p"[SBC] ABORT-DST srcSet=${request.set} dstSet=${migDstSet}\n") }
+      // 008 C2: the reason. Not free and not evictable means valid and dirty and/or client-held.
+      val dstDirty = io.directory.bits.dirty
+      val dstHeld  = io.directory.bits.clients.orR
+      dstAbortDirty := dstDirty && !dstHeld
+      dstAbortHeld  := !dstDirty && dstHeld
+      dstAbortBoth  := dstDirty && dstHeld
+      if (params.micro.sbcDebug) {
+        printf(p"[SBC] ABORT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}" +
+               p" dirty=${dstDirty} held=${dstHeld}\n")
+      }
     }
   } .elsewhen (io.directory.valid || (io.allocate.valid && io.allocate.bits.repeat)) {
     meta_valid := true.B

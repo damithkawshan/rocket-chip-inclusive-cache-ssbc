@@ -30,7 +30,12 @@ live in `ai-documents/`.
 >
 > Details and how to check: `ai-documents/README.md` (box at the top).
 
-- **▶ START HERE (next session after 2026-09-17):** the "RESUME HERE" box at the top of
+- **▶ START HERE (after 2026-09-17, supersedes the next bullet):** [ai-documents/daily-summary/2026-09-17.md](ai-documents/daily-summary/2026-09-17.md)
+  (box at the top) and the "RESUME HERE" box of [coder/008 REPORT](ai-documents/coder/008-plru-replacement/REPORT.md).
+  Task 008 C1 committed (`7494296`); **C2 (option B — a workaround, task 009 is the permanent fix) gate green and
+  board-tested, not committed.** Board 64 KB: PLRU alone **−3.56% cycles / −12.65% memory traffic** on the plain L2;
+  SBC on top of PLRU still **+0.07% / +0.41%**. Open bugs: **B8-1** (teardown vs deferred migration claim) and **B7-2**.
+- **(earlier, 2026-09-17 morning)** the "RESUME HERE" box at the top of
   [ai-documents/coder/007-paper-aligned-eviction/REPORT.md](ai-documents/coder/007-paper-aligned-eviction/REPORT.md).
   **B7-1 FIXED** (`c6a824c`: a reclaimed guest was charged to the wrong set, so teardown never fired and
   `mayHold` stuck true) and task 007 **commit 3 (teardown) committed** (`744fabb`), gate green.
@@ -305,7 +310,11 @@ A single `displaced` bit has been added to `DirectoryEntry`. **It no longer affe
 every free way → lowest free way, and a parked line is an ordinary candidate. The policy way is the LFSR
 way, or — when built with `plruReplacement` and `L2_Replacement = 1` — the row's PLRU way (task 008).
 The tracker learns from two touches only: every inner-A D grant, and every migration install (so a guest
-enters D as most recently used). The bit still decides hit detection
+enters D as most recently used). With PLRU on, the migration destination probe takes an invalid way,
+else **D's least-recent clean, client-free way** (a masked PLRU walk, task 008 C2), else D's PLRU way and
+aborts (counted by reason at `0x498`–`0x4A8`). ⚠️ That masked walk is a **workaround** (user decision
+2026-09-17): the paper evicts D's LRU line whatever its state; the permanent fix is **task 009** (probe and
+write back a dirty or client-held destination way). The bit still decides hit detection
 (line ~143), which excludes displaced ways from satisfying demand lookups:
 ```scala
 w.tag === tag && w.state =/= INVALID && !w.displaced && (...)
@@ -397,6 +406,9 @@ Authoritative layout: [Control.scala](design/craft/inclusivecache/src/Control.sc
 | `0x428` | `L2_SecondaryMiss` | R, 64 — the partner set was searched and the line was not there |
 | `0x438` | `L2_StatsHold` | R/W, 1 bit, default 0 — while 1 every event counter (including `L2_Cycles`) keeps its value, so ~28 registers can be read as one instant. `SBC_Parked` is a level and is **never** held. Clears still work. Removed with `enablePerfCounters` |
 | `0x490` | `L2_Replacement` | R/W, 1 bit, **default 0 = random**, 1 = PLRU (task 008). Safe to flip at any time; the tracker learns in both positions. **Not** cleared by `SBC_Reset`/`SBC_StatsReset`, not held. Absent (reads 0) unless `plruReplacement`. `sbc_read --policy=random\|plru` sets it and checks the read-back. `0x470`–`0x480` stay reserved for task 005 |
+| `0x498` | `SBC_DstAbortDirty` | R, 64 — destination-probe aborts where the way offered was dirty, no client (task 008). Both policies. Cleared by `SBC_StatsReset` and `SBC_Reset`, held by `L2_StatsHold` |
+| `0x4A0` | `SBC_DstAbortHeld` | R, 64 — … clean but client-held |
+| `0x4A8` | `SBC_DstAbortBoth` | R, 64 — … dirty and client-held. The three add up to the destination aborts; `SBC_Aborted` also counts declines, so it is larger |
 
 **Hit rate is now exact:** hit rate = (`L2_PrimaryHit` + `L2_SecondaryHit`) ÷ `L2_AccessA`, miss rate =
 (`L2_DataMiss` + `L2_UpgradeMiss`) ÷ `L2_AccessA`. Identities that must hold, and did on the board in four

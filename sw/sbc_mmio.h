@@ -59,6 +59,10 @@
 #define SBC_L2_STATSHOLD     (L2_CTRL_BASE + 0x438) /* R/W freeze every event counter (not SBC_Parked)  */
 /* 008: victim policy. Reads 0 (random) when plruReplacement is not built. */
 #define SBC_L2_REPLACEMENT   (L2_CTRL_BASE + 0x490) /* R/W 0 = random (reset), 1 = PLRU              */
+/* 008 commit 2: destination-probe aborts by reason (both policies). */
+#define SBC_DSTABORT_DIRTY   (L2_CTRL_BASE + 0x498) /* R   the way offered was dirty, no client       */
+#define SBC_DSTABORT_HELD    (L2_CTRL_BASE + 0x4A0) /* R   the way offered was clean, client-held     */
+#define SBC_DSTABORT_BOTH    (L2_CTRL_BASE + 0x4A8) /* R   the way offered was dirty and client-held  */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;

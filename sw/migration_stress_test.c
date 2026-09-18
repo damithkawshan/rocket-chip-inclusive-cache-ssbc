@@ -66,6 +66,13 @@ static void sbc_summary(void) {
     printf("[SBC-PARK] parked=%lu dispRelease=%lu dispDrop=%lu\n",
            (unsigned long)sbc_rd(SBC_PARKED), (unsigned long)sbc_rd(SBC_DISPRELEASE),
            (unsigned long)sbc_rd(SBC_DISPDROP));
+#ifdef L2_POLICY
+    /* 008 C2 (V6): the three abort reasons must add up to the ABORT-DST printfs. Only in -DL2_POLICY
+     * builds, so the flag-free binary stays byte-identical for V1. */
+    printf("[SBC-DSTABORT] dirty=%lu held=%lu both=%lu\n",
+           (unsigned long)sbc_rd(SBC_DSTABORT_DIRTY), (unsigned long)sbc_rd(SBC_DSTABORT_HELD),
+           (unsigned long)sbc_rd(SBC_DSTABORT_BOTH));
+#endif
 }
 
 /* C5: read the four outcome counters and accessA under L2_StatsHold, so they are one instant, and

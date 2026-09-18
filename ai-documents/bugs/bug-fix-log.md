@@ -15,8 +15,9 @@ Quick index:
   inner-D), Displaced accumulation (bricked set); plus `s_verify` disabled, Q3 rejected.
 - **Found in 003** — P1 ✅, P2 ✅, P5 ✅ (closed by deletion), P6 ✅, P7 ✅; A5.1 / A5.2 🟡 live RTL facts, not the corruption.
 - **Found in 007** — B7-1 ✅ stale `dispHome` (fixed 2026-09-17).
+- **Found in 008** — B8-1 🔴 teardown races a deferred migration's stale partner claim (2026-09-17).
 - **Open** — residual `[born→gate]` sub-window (latent, do not pre-build); **B7-2 combinational loop at 256 KB**
-  (Vivado DRC, 2026-09-17).
+  (Vivado DRC, 2026-09-17); **B8-1** (above).
 
 ---
 
@@ -195,6 +196,39 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   T1–T4, 0 asserts, shadows quiet. `TEARDOWN` printfs **2,460** (was 0), `L2_SecondSearch` 64,335 → 44,410.
   The same gate first stopped on C3's N2 reporting assert — a handled race that only became reachable once
   teardown worked; N2 is now a printf (user decision). Board effect on wasted searches: not measured yet.
+
+### 🔴 B8-1 — teardown races a deferred migration's stale partner claim ("migrated outside its partner set")
+- **Found:** 2026-09-17, coder task 008 commit-1 gate, finding F5. **Pre-existing** — present since 007 C3
+  (teardown) landed (`744fabb`); not caused by task 008. Full write-up: coder/008 REPORT finding **F5**.
+- **Symptom:** `migration_stress_test` on `VerilatorRocket8KL116KL2Config`, `case_bankstore_saturation`
+  (cases 1–6 already PASS). RTL assert fires and the simulator `$stop`s:
+  `MSHR.scala:1265 assert (!io.dstClaim.valid || !pairValidNow || !pairIsSrcNow || io.dstClaim.bits === pairSetNow, "SBC: paired source migrated outside its partner set")`.
+  Log: `sw/verilator_logs/migration_stress_test_VerilatorRocket8KL116KL2Config_008-c1-random0/`.
+- **Proven not an 008 regression:** the identical test binary re-run on a build with `plruReplacement`
+  compiled out entirely (no `Recency` module, no register, no touches — pure `744fabb`) hits the **same
+  assert, same MSHR, same sim time (4,645,571,000), same multiset of `[SBC]` events.**
+  (`…_008-c1-random0-flagoff/`).
+- **Event sequence at the end of `sbc.log`** (coder's read, not yet confirmed against the RTL):
+  `EVICT-DISPLACED-RECLAIM srcSet=0 srcWay=2` (source 2's last guest in set 0 leaves) → `ADVICE-MIG srcSet=2`
+  → `TEARDOWN src=2 dst=0` → `EVICT-ASSESS srcSet=2 way=5 … clients=1` → `MIG-DEFER srcSet=2 srcWay=5`
+  (deferred for a probe, with partner still latched as 0) → `MIG-CLAIM dstSet=6` → `MIG-START srcSet=2
+  dstSet=6` → assert.
+- **Suspected cause (unverified):** the pairing 2↔0 tears down while an MSHR for source 2 has already
+  deferred a migration and latched partner = 0. The DSS then legally offers 2 a *new* partner (6); the
+  deferred migration resumes and claims 6; the check at `MSHR.scala:1265` still compares against the old
+  latch (0), so it fires. 007 C3 added a re-check for exactly this race on the **second-search** path
+  (finding N2, now a printf) but apparently not for a **deferred migration's claim**.
+- **Why it wasn't caught by the 007 gate:** traffic/timing-dependent — needs teardown to race a deferred
+  (probe-blocked) migration for the *same* source in a narrow window. The extra MMIO write at boot
+  (`sbc_set_policy()`, even writing the reset value) was enough to shift timing into that window; existing
+  gates evidently were not.
+- **Consequence for 008:** blocks a clean same-layout-random ("before") baseline on the SBC config — the
+  run stops at case 7, so that comparison currently exists only for the NoSbc config. May also fire under
+  PLRU mode (traffic-dependent; C3 is live in both). **Do not treat a recurrence of this exact assert during
+  008 commit 2 as a C2 regression** — check the event sequence against this entry first.
+- **Sequencing decision (2026-09-17, user):** log now, do not block 008 on it. Commit 008 C1 (proven
+  correct on its own — V0 clean). Fix B8-1 as its own task once 008 is further along.
+- **Fix:** not designed yet.
 
 ### 🔴 B7-2 — combinational loop: 256 KB bitstream refused by Vivado DRC
 - **Found:** 2026-09-17 02:41, 256 KB build of `251c9d7` (tag `sbc-007-c2-breakeven-2026-09-16`, config

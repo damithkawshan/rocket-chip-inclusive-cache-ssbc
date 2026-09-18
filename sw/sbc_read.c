@@ -84,6 +84,8 @@ static const struct { const char *name; unsigned off; } REGS[] = {
     { "accessA",       0x3F0 }, { "primaryHit",    0x3F8 }, { "secondaryHit",  0x400 },
     { "probedHit",     0x408 }, { "dataMiss",      0x410 }, { "upgradeMiss",   0x418 },
     { "secondSearch",  0x420 }, { "secondaryMiss", 0x428 },
+    /* 008 commit 2: destination-probe aborts by reason. Appended, never inserted. */
+    { "dstAbortDirty", 0x498 }, { "dstAbortHeld",  0x4A0 }, { "dstAbortBoth",  0x4A8 },
 };
 /* Positional indices into REGS, used by show(). Keep in step with the table above. */
 #define I_MIGRATIONS 0
@@ -102,6 +104,9 @@ static const struct { const char *name; unsigned off; } REGS[] = {
 #define I_UPGRADEMISS   25
 #define I_SECONDSEARCH  26
 #define I_SECONDARYMISS 27
+#define I_DSTABORTDIRTY 28
+#define I_DSTABORTHELD  29
+#define I_DSTABORTBOTH  30
 #define NREG (sizeof(REGS)/sizeof(REGS[0]))
 
 static volatile uint64_t *base;
@@ -191,6 +196,12 @@ static void show(const char *tag, uint64_t *v) {
     if (mig)
         printf("  hits per park    : %llu/%llu = %.2f   (break-even is about 1.0)\n",
                (unsigned long long)sh, (unsigned long long)mig, (double)sh / mig);
+    /* 008 C2: why destination probes aborted. 0 on a bitstream built before 008 commit 2. */
+    uint64_t ad = v[I_DSTABORTDIRTY], ah = v[I_DSTABORTHELD], ab = v[I_DSTABORTBOTH];
+    if (ad || ah || ab)
+        printf("  dst aborts       : %llu  (dirty %llu, client-held %llu, both %llu)\n",
+               (unsigned long long)(ad + ah + ab), (unsigned long long)ad, (unsigned long long)ah,
+               (unsigned long long)ab);
 
     /* The headline. Reads and writes stay separate above; this is the one number that has no
      * denominator to argue about - a count of things that physically happened at the memory port. */
