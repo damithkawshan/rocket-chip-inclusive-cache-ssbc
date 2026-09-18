@@ -30,10 +30,13 @@ live in `ai-documents/`.
 >
 > Details and how to check: `ai-documents/README.md` (box at the top).
 
-- **▶ START HERE (after 2026-09-17, supersedes the next bullet):** [ai-documents/daily-summary/2026-09-17.md](ai-documents/daily-summary/2026-09-17.md)
+- **▶ START HERE (2026-09-18):** task **009** is open —
+  [coder/009 TASK](ai-documents/coder/009-evict-destination-lru/TASK.md): with PLRU on, a migration evicts D's
+  least-recent line whatever its state (probe + write-back, stock TileLink sequence), replacing option B. No new
+  register or counter. All earlier work is committed (008 C1 `7494296`, C2 `201ebae`; chipyard `d3243fe3`).
+- **(2026-09-17)** [ai-documents/daily-summary/2026-09-17.md](ai-documents/daily-summary/2026-09-17.md)
   (box at the top) and the "RESUME HERE" box of [coder/008 REPORT](ai-documents/coder/008-plru-replacement/REPORT.md).
-  Task 008 C1 committed (`7494296`); **C2 (option B — a workaround, task 009 is the permanent fix) gate green and
-  board-tested, not committed.** Board 64 KB: PLRU alone **−3.56% cycles / −12.65% memory traffic** on the plain L2;
+  Board 64 KB: PLRU alone **−3.56% cycles / −12.65% memory traffic** on the plain L2;
   SBC on top of PLRU still **+0.07% / +0.41%**. Open bugs: **B8-1** (teardown vs deferred migration claim) and **B7-2**.
 - **(earlier, 2026-09-17 morning)** the "RESUME HERE" box at the top of
   [ai-documents/coder/007-paper-aligned-eviction/REPORT.md](ai-documents/coder/007-paper-aligned-eviction/REPORT.md).
@@ -487,8 +490,11 @@ cause is Rocket's `acquireBeforeRelease = false` default (`HellaCache.scala:42/5
 our L2 already handles voluntary Release correctly ([MSHR.scala:401-404](design/craft/inclusivecache/src/MSHR.scala#L401-L404)).
 **Try the flag before building the destination probe.**
 
-⛔ **Do not build dirty-destination eviction** (the other 53%). It pays a real memory write to avoid a
-free one, and evicts a well-behaved line to preserve one we were discarding.
+~~⛔ **Do not build dirty-destination eviction** (the other 53%). It pays a real memory write to avoid a
+free one, and evicts a well-behaved line to preserve one we were discarding.~~ **Superseded 2026-09-18
+(user decision, task 009):** written under random replacement, where the clean alternative was a random
+line. With PLRU the clean alternative is a *recent* line, and skipping to it cost 0.68 primary hits per
+migration on the board. In PLRU mode a migration now evicts D's LRU line whatever its state.
 
 ⚠️ **CORRECTED 2026-08-29 — migrating *dirty source* lines does NOT need a directory format change.**
 That assessment predates strict 1:1 pinning. Under pinning the home set is one value **per set**, and
