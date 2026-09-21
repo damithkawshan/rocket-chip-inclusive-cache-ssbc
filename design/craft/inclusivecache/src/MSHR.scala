@@ -81,12 +81,21 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   // ... and whether we are waiting for one at all. Without this an idle MSHR still advertises its own
   // address and can claim a ProbeAck meant for a parked line whose HOME is that address.
   val probeAckPending = Bool()
+  // 009: where the ProbeAck data must land. Same split as above: a probe of the destination way W is
+  // answered about W's address but written into the destination row.
+  val probeWay     = UInt(params.wayBits.W)
+  val probePhysSet = UInt(params.setBits.W)
   val tag = UInt(params.tagBits.W)
   val way = UInt(params.wayBits.W)
   val blockB = Bool()
   val nestB  = Bool()
   val blockC = Bool()
   val nestC  = Bool()
+  // 009: this MSHR is probing a NATIVE way of its destination row, so a Release to that row must nest
+  // (nestD) instead of waiting at the fence. dstEvict/dprobeOpen are the Scheduler's stall and T1 keys.
+  val nestD      = Bool()
+  val dstEvict   = Bool()
+  val dprobeOpen = Bool()
   // SBC Phase 1: migration destination reservation
   val dstValid = Bool()
   val dstSet   = UInt(params.setBits.W)
@@ -294,6 +303,20 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migSrcWay        = Reg(UInt(params.wayBits.W))
   val s_dread          = RegInit(true.B)  // schedule the 2nd dir-read (dstSet, preferInvalid)
   val w_dread          = RegInit(true.B)  // waiting for the 2nd dir-read result
+  // 009 (PLRU builds): the migration evicts D's way W like a normal victim - its own Release, never the
+  // stock s_release/meta, which always mean the SOURCE line.
+  val evictW           = params.micro.plruReplacement && params.micro.enableSetBalancing
+  val dstEvict         = RegInit(false.B) // this migration evicts a valid W
+  val s_dprobe         = RegInit(true.B)  // B: probe W off its clients (009 C2)
+  val w_dprobeackfirst = RegInit(true.B)
+  val w_dprobeacklast  = RegInit(true.B)
+  val dprobes_done     = Reg(UInt(params.clientBits.W))   // W's own probe mask - never probes_done
+  val s_drelease       = RegInit(true.B)  // C: Release W
+  val w_dreleaseack    = RegInit(true.B)
+  val dstMeta          = Reg(new DirectoryEntry(params))  // W's entry, from the destination read
+  val dstHome          = Reg(UInt(params.setBits.W))      // W's address set: D, or S for a guest of S
+  // W's probe is open: every ProbeAck reaching us is W's, and the stock probe registers are idle.
+  val probingW         = !w_dprobeacklast
   // SBC Phase 2.5 (probe-then-migrate): the victim is clean but the directory says a client still
   // holds it. That bit is CONSERVATIVE - rocket's L1 drops clean lines silently (silentDrop=true),
   // so it is usually stale. Rather than reject the victim, run the eviction probe we would have
@@ -425,6 +448,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (io.nestedwb.b_toB) { meta.state := BRANCH }
     when (io.nestedwb.b_toN) { meta.hit := false.B }
   }
+  // 009 (N6): the same forwarding for W. A client Release of W nests into the C MSHR while our probe
+  // is open, and its effect must reach our latched copy of W's entry, or we would release W clean.
+  when (dstEvict && io.nestedwb.homeSet === dstHome && io.nestedwb.tag === dstMeta.tag) {
+    when (io.nestedwb.c_set_dirty) { dstMeta.dirty := true.B }
+    assert (!(io.nestedwb.b_toN || io.nestedwb.b_toB || io.nestedwb.b_clr_dirty),
+            "009: an outer probe reached W - impossible at the last level")
+  }
 
   // SBC Phase 3 (003): the SRAM row this MSHR is working in. Stage 2e is what finally makes it differ
   // from the home set. Scala `if`, not a Chisel Mux, so with SBC off this is literally `request.set`
@@ -458,9 +488,19 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.bits.homeSet  := request.set
   io.status.bits.physSet  := physSet
   io.dispHome := dispHomeW  // declared after dispHomeW on purpose: Scala vals are not forward-referable
-  io.status.bits.probeSet := Mux(probingVictim, lineHome, request.set)
-  io.status.bits.probeTag := Mux(probingVictim, meta.tag, request.tag)
-  io.status.bits.probeAckPending := !w_rprobeacklast || !w_pprobeacklast
+  // 009 (N7): while W's probe is open the ProbeAck we are waiting for is W's, so the routing keys are
+  // W's address and the row W sits in. status.way / status.physSet stay on the SOURCE line - the
+  // way-lock, SinkD and partnerBusy read those.
+  io.status.bits.probeSet := Mux(probingW, dstHome, Mux(probingVictim, lineHome, request.set))
+  io.status.bits.probeTag := Mux(probingW, dstMeta.tag, Mux(probingVictim, meta.tag, request.tag))
+  io.status.bits.probeWay     := Mux(probingW, migDstWay, meta.way)
+  io.status.bits.probePhysSet := Mux(probingW, migDstSet, physSet)
+  io.status.bits.probeAckPending := !w_rprobeacklast || !w_pprobeacklast || !w_dprobeacklast
+  // 009 (N1): a client Release to the destination row must nest while we hold D fenced AND wait on the
+  // L1 (bug P1's shape). Only for a NATIVE W - a guest's address maps to S, where nestC already holds.
+  io.status.bits.nestD    := dstEvict && !w_dprobeackfirst && !dstMeta.displaced
+  io.status.bits.dstEvict := dstEvict
+  io.status.bits.dprobeOpen := dstEvict && probingW
   io.status.bits.tag    := request.tag
   io.status.bits.way    := meta.way
   io.status.bits.blockB := !meta_valid || ((!w_releaseack || !w_rprobeacklast || !w_pprobeacklast) && !w_grantfirst)
@@ -545,7 +585,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   }
 
   // Scheduler requests
-  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy
+  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy &&
+                w_dprobeacklast && w_dreleaseack
   // SBC Phase 1: migration dir-write sequencing. #1 installs the displaced entry at
   // (dstSet,dstWay) once the copy is done; #2 reuses the writeback step to invalidate the
   // home way. mig_ready holds the home-invalidate (and retire) until #1 has gone out.
@@ -577,10 +618,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // absent and the refill could overwrite the way while the client still held it. Adding the term
   // directly is behaviour-preserving on every path that already worked - each of them has
   // `w_rprobeackfirst` true by the time `s_release` lets this gate open - and closes the new hole.
-  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy) && !migDeferred &&
+  io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe &&(!migrating || (w_dread && w_copy)) && !migDeferred &&
                               !searching && w_rprobeackfirst
-  io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
-  io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
+  // 009: W's probe. Named once - the valid, the bits and the completion below all key off it.
+  val dProbeNow = !s_dprobe
+  io.schedule.bits.b.valid := !s_rprobe || !s_pprobe || dProbeNow
+  // 009: W's Release. Named once - the valid and the completion below must use the same condition
+  // (707445c). H1: not before the LAST ProbeAck beat, so SinkC's write of W's data lands first.
+  val dRelNow = !s_drelease && w_dprobeacklast
+  io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst) || dRelNow
   // Named once because the completion below MUST use the identical condition - a gate added to the
   // valid and missed in its sibling is exactly what 707445c was, and it silently retires a Grant that
   // never went out. (003 Stage 2a removed this gate's repatriation term along with the copy.)
@@ -612,7 +658,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 1: copy lane — driven only while this MSHR owns a migration whose copy is pending.
   // SBC (003 Stage 2a): the lane has exactly ONE job again. The repatriation copy is deleted, so the
   // lane cannot collide with itself (bug P5) and the done pulse below needs no disambiguation.
-  val doMigCopy = migrating && !s_copy
+  // 009 (H3/H4): the copy overwrites (D,W) only after W's probe is fully answered and W's Release was
+  // taken by SourceC in an earlier cycle. Both are true at once when there is nothing to evict.
+  val doMigCopy = migrating && !s_copy && w_dprobeacklast && s_drelease
   io.schedule.bits.copy.valid       := doMigCopy
   // SBC (003): the copy lane addresses BankedStore ROWS, never addresses.
   io.schedule.bits.copy.bits.srcSet := physSet
@@ -624,6 +672,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.copy.bits.shadowKind.foreach { _ := 1.U }
   // SBC Phase 2b: 2nd dir-read of dstSet — prefer a free (INVALID) way, else a clean/client-free
   // evictable way we can silently overwrite (no writeback, no probe). Falls back if neither exists.
+  // 009: with PLRU on, the Directory skips the clean-way tier and returns D's PLRU way, which we evict.
   // SBC Phase 3: the dread lane carries two reads of the partner set. The search asks "is my line
   // parked here?"; the migrate probe asks "where can I park my victim?". The search goes first.
   val doSearch = searching && !s_ssearch && !io.partnerBusy
@@ -654,6 +703,14 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       when (migrating) {
         printf(p"[SBC] SCHED-FIRE srcSet=${request.set} dstSet=${migDstSet} a_valid=${io.schedule.bits.a.valid} dread=${migrating && !s_dread} copy=${migrating && !s_copy} dir1=${mig_dir1} retire=${no_wait && mig_ready} s_acq=${s_acquire} w_copy=${w_copy} w_dread=${w_dread}\n")
       }
+      when (dRelNow) {
+        printf(p"[SBC] DST-RELEASE srcSet=${request.set} dstSet=${migDstSet} dstWay=${migDstWay} home=${dstHome}" +
+               p" dirty=${dstMeta.dirty} guest=${dstMeta.displaced}\n")
+      }
+      when (dProbeNow) {
+        printf(p"[SBC] DST-PROBE srcSet=${request.set} dstSet=${migDstSet} dstWay=${migDstWay} home=${dstHome}" +
+               p" tag=${dstMeta.tag} clients=${dstMeta.clients} guest=${dstMeta.displaced}\n")
+      }
     }
                                     s_rprobe     := true.B
     when (w_rprobeackfirst)       { s_release    := true.B }
@@ -673,6 +730,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // SBC Phase 1: migration scoreboard advances (one schedule item at a time)
     when (doDread)                { s_dread      := true.B }
     when (doMigCopy)              { s_copy       := true.B }
+    when (dProbeNow)              { s_dprobe     := true.B }
+    when (dRelNow)                { s_drelease   := true.B }
     when (mig_dir1)               { s_dmeta      := true.B }
     // SBC Phase 3 scoreboard advances
     when (doSearch)               { s_ssearch    := true.B }
@@ -686,6 +745,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // A dst-full abort already cleared `migrating` (and pulsed migAbort) on the fallback path.
       migCommit := migrating
       migrating := false.B
+      dstEvict  := false.B
     }
   }
 
@@ -812,21 +872,26 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC (003): one selector, used for BOTH the tag and the set, so they cannot drift. A victim probe
   // names the VICTIM's address (meta.tag @ lineHome); a permission probe names the request's.
   val probeVictimNow = !s_rprobe
-  io.schedule.bits.b.bits.param   := Mux(probeVictimNow, toN, Mux(request.prio(1), request.param, Mux(req_needT, toN, toB)))
-  io.schedule.bits.b.bits.tag     := Mux(probeVictimNow, meta.tag, request.tag)
-  io.schedule.bits.b.bits.homeSet := Mux(probeVictimNow, lineHome, request.set)
-  io.schedule.bits.b.bits.clients := meta.clients & ~excluded_client
-  io.schedule.bits.c.bits.opcode  := Mux(meta.dirty, ReleaseData, Release)
-  io.schedule.bits.c.bits.param   := Mux(meta.state === BRANCH, BtoN, TtoN)
+  // 009 (N9): W's probe asks every client holding W to go to N, at W's own address. No excluded client -
+  // the requester asked about its own line, not about W.
+  io.schedule.bits.b.bits.param   := Mux(dProbeNow, toN,
+                                     Mux(probeVictimNow, toN, Mux(request.prio(1), request.param, Mux(req_needT, toN, toB))))
+  io.schedule.bits.b.bits.tag     := Mux(dProbeNow, dstMeta.tag, Mux(probeVictimNow, meta.tag, request.tag))
+  io.schedule.bits.b.bits.homeSet := Mux(dProbeNow, dstHome,     Mux(probeVictimNow, lineHome, request.set))
+  io.schedule.bits.b.bits.clients := Mux(dProbeNow, dstMeta.clients, meta.clients & ~excluded_client)
+  // 009: W's Release is built from W's own entry (dstMeta), read from (D,W), sent to W's home address.
+  val cDirty = Mux(dRelNow, dstMeta.dirty, meta.dirty)
+  io.schedule.bits.c.bits.opcode  := Mux(cDirty, ReleaseData, Release)
+  io.schedule.bits.c.bits.param   := Mux(Mux(dRelNow, dstMeta.state, meta.state) === BRANCH, BtoN, TtoN)
   io.schedule.bits.c.bits.source  := 0.U
-  io.schedule.bits.c.bits.tag     := meta.tag
+  io.schedule.bits.c.bits.tag     := Mux(dRelNow, dstMeta.tag, meta.tag)
   // SBC (003): the two meanings in one request - read the bytes from our row, send them to the
   // address the line actually belongs to.
   io.schedule.bits.c.bits.shadowSrc.foreach { _ := txnCtr }
-  io.schedule.bits.c.bits.physSet := physSet
-  io.schedule.bits.c.bits.homeSet := lineHome
-  io.schedule.bits.c.bits.way     := meta.way
-  io.schedule.bits.c.bits.dirty   := meta.dirty
+  io.schedule.bits.c.bits.physSet := Mux(dRelNow, migDstSet, physSet)
+  io.schedule.bits.c.bits.homeSet := Mux(dRelNow, dstHome, lineHome)
+  io.schedule.bits.c.bits.way     := Mux(dRelNow, migDstWay, meta.way)
+  io.schedule.bits.c.bits.dirty   := cDirty
   io.schedule.bits.d.bits.viewAsSupertype(chiselTypeOf(request)) := request
   io.schedule.bits.d.bits.param   := Mux(!req_acquire, request.param,
                                        MuxLookup(request.param, request.param)(Seq(
@@ -1001,7 +1066,21 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val probe_bit = params.clientBit(io.sinkc.bits.source)
   val last_probe = (probes_done | probe_bit) === (meta.clients & ~excluded_client)
   val probe_toN = isToN(io.sinkc.bits.param)
-  if (!params.firstLevel) when (io.sinkc.valid) {
+  // 009 (N8): while W's probe is open every ProbeAck routed here is W's, and it must touch ONLY W's
+  // registers. The stock half below reads `meta` - the source line - and the same tag exists in every
+  // set, so letting it run would mark the source victim dirty from W's data.
+  val dLastProbe = (dprobes_done | probe_bit) === dstMeta.clients
+  if (!params.firstLevel) when (io.sinkc.valid && probingW) {
+    dprobes_done     := dprobes_done | probe_bit
+    w_dprobeackfirst := w_dprobeackfirst || dLastProbe
+    w_dprobeacklast  := w_dprobeacklast  || (dLastProbe && io.sinkc.bits.last)
+    when (io.sinkc.bits.data) { dstMeta.dirty := true.B }
+    if (params.micro.sbcDebug) {
+      printf(p"[SBC] DST-PROBEACK dstSet=${migDstSet} dstWay=${migDstWay} data=${io.sinkc.bits.data}" +
+             p" param=${io.sinkc.bits.param} last=${io.sinkc.bits.last}\n")
+    }
+  }
+  if (!params.firstLevel) when (io.sinkc.valid && !probingW) {
     params.ccover( probe_toN && io.schedule.bits.b.bits.param === toB, "MSHR_PROBE_FULL", "Client downgraded to N when asked only to do B")
     params.ccover(!probe_toN && io.schedule.bits.b.bits.param === toB, "MSHR_PROBE_HALF", "Client downgraded to B when asked only to do B")
     // Caution: the probe matches us only in set.
@@ -1278,6 +1357,29 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
     assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
 
+    // 009: evicting W. T6 - one Release per MSHR (the source victim is moved, not released). The three
+    // C-channel sources never go together. W's Release names W's real home address. It always finishes.
+    assert (w_dreleaseack || w_releaseack, "009: two Releases outstanding in one MSHR (T6)")
+    assert (PopCount(Cat(!s_release && w_rprobeackfirst, !s_probeack && w_pprobeackfirst, dRelNow)) <= 1.U,
+            "009: two C-channel messages scheduled together")
+    assert (!dRelNow || (dstHome === migDstSet) === !dstMeta.displaced,
+            "009: W's Release address does not match W's home set")
+    assert (!dstEvict || migrating, "009: destination eviction without a migration")
+    // W's probe never overlaps the stock probes - every reader of probes_done/meta depends on that (N8).
+    assert (w_dprobeacklast || (w_rprobeacklast && w_pprobeacklast),
+            "009: W's probe and a stock probe are open together")
+    assert (!probingW || (s_rprobe && s_pprobe), "009: a stock probe was armed while W's probe is open")
+    // Q2 (replaces N2): a Release to our own set nests all through the migration anyway, because the
+    // demand Acquire is armed and ungranted. If that ever stops being true, W's probe can deadlock.
+    assert (!probingW || io.status.bits.nestC, "009: nestC is false while W's probe is open (Q2)")
+    val dstEvictCtr = RegInit(0.U(16.W))
+    when (!dstEvict || (w_dprobeacklast && w_dreleaseack)) { dstEvictCtr := 0.U } .otherwise { dstEvictCtr := dstEvictCtr + 1.U }
+    assert (dstEvictCtr < 2000.U,
+            cf"009: destination eviction stuck. set=${request.set}%d dstSet=${migDstSet}%d dstWay=${migDstWay}%d " +
+            cf"s_dprobe=${s_dprobe}%d w_dpaFirst=${w_dprobeackfirst}%d w_dpaLast=${w_dprobeacklast}%d " +
+            cf"dprobes_done=${dprobes_done}%d s_drelease=${s_drelease}%d w_dreleaseack=${w_dreleaseack}%d " +
+            cf"dirty=${dstMeta.dirty}%d clients=${dstMeta.clients}%d guest=${dstMeta.displaced}%d w_copy=${w_copy}%d")
+
     // SBC (003 Stage 2b): the same four guarantees for the search deferral, in the same shape as the
     // proven migDeferred set above. While secDefer holds, NOTHING may have been committed: no
     // eviction, no fetch, and no second deferral.
@@ -1311,6 +1413,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
             cf"metaClients=${meta.clients}%d s_flush=${s_flush}%d s_dread=${s_dread}%d s_copy=${s_copy}%d " +
             cf"s_dmeta=${s_dmeta}%d s_ssearch=${s_ssearch}%d s_probeack=${s_probeack}%d " +
             cf"s_grantack=${s_grantack}%d prio=${request.prio.asUInt}%d ctrl=${request.control}%d " +
+            cf"dstEvict=${dstEvict}%d s_dprobe=${s_dprobe}%d w_dpaLast=${w_dprobeacklast}%d " +
+            cf"s_drelease=${s_drelease}%d w_dreleaseack=${w_dreleaseack}%d " +
             cf"tag=${request.tag}%x reload=${io.schedule.bits.reload}%d schedV=${io.schedule.valid}%d")
   }
 
@@ -1328,7 +1432,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       gotT := io.sinkd.bits.param === toT
     }
     .elsewhen (io.sinkd.bits.opcode === ReleaseAck) {
-      w_releaseack := true.B
+      // 009: while W's Release is out it is this MSHR's only one (T6), so the ack is W's.
+      when (!w_dreleaseack) { w_dreleaseack := true.B } .otherwise { w_releaseack := true.B }
     }
   }
   when (io.sinke.valid) {
@@ -1532,19 +1637,52 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // fenced at allocation (Scheduler dstSetConflict → allocReady), so no other MSHR can be on it during
     // the copy — a collision can no longer reach here.
     val dstFree      = io.directory.bits.state === INVALID
-    // SBC (007 C2): a parked way qualifies. Clean and client-free still required - taking a DIRTY or
-    // client-held guest needs a real Release at the guest's home address, which is not built (L5).
+    // SBC (007 C2): a parked way qualifies. Random-only builds: clean and client-free still required.
     val dstEvictable = io.directory.bits.state =/= INVALID && !io.directory.bits.dirty &&
                        !io.directory.bits.clients.orR
-    when (dstFree || dstEvictable) {
+    val dstDirty = io.directory.bits.dirty
+    val dstHeld  = io.directory.bits.clients.orR
+    // 009 (PLRU builds): take a valid W whatever its state, and evict it like a normal victim - probe it
+    // off its clients, then Release it. Random-only builds keep the silent overwrite and the abort.
+    val takeW = evictW.B && !dstFree
+    // 008 C2 counters, now: what the destination way was (aborted in random builds, evicted in PLRU builds).
+    dstAbortDirty := !dstFree && dstDirty && !dstHeld
+    dstAbortHeld  := !dstFree && !dstDirty && dstHeld
+    dstAbortBoth  := !dstFree && dstDirty && dstHeld
+    when (dstFree || dstEvictable || takeW) {
       migDstWay   := io.directory.bits.way
-      migDstReuse := dstEvictable && io.directory.bits.displaced
+      migDstReuse := !dstFree && io.directory.bits.displaced
       s_copy      := false.B  // now run: copy → dir-write #1 (displaced) → dir-write #2 (refill)
       w_copy      := false.B
       s_dmeta     := false.B
       s_writeback := false.B
+      when (takeW) {
+        dstEvict      := true.B
+        dstMeta       := io.directory.bits
+        // 4.2: D is S's partner or an unpaired set, so a guest in D is always a guest of S.
+        dstHome       := Mux(io.directory.bits.displaced, request.set, migDstSet)
+        s_drelease    := false.B
+        w_dreleaseack := false.B
+        // 009 C2: a client still holds W - probe it off first, at W's own address (N9).
+        when (io.directory.bits.clients.orR) {
+          s_dprobe         := false.B
+          w_dprobeackfirst := false.B
+          w_dprobeacklast  := false.B
+          dprobes_done     := 0.U
+        }
+        // T5: our Acquire does not wait for W's ReleaseAck, so W must never be the line we fetch.
+        assert (!(io.directory.bits.displaced && io.directory.bits.tag === request.tag),
+                "009: the destination way is the line this MSHR is fetching")
+        if (params.micro.sbcShadow) {
+          assert (!io.directory.bits.displaced || io.directory.bits.homeShadow.get === request.set,
+                  "009: a guest in the destination set is not a guest of this source (4.2)")
+        }
+      }
       if (params.micro.sbcDebug) {
-        when (!dstFree) { printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}\n") }
+        when (!dstFree) {
+          printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}" +
+                 p" dirty=${dstDirty} clients=${io.directory.bits.clients} guest=${io.directory.bits.displaced} evict=${takeW}\n")
+        }
       }
     } .otherwise {                               // dst set has no free or evictable way → fall back
       migrating    := false.B
@@ -1552,12 +1690,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       migRejectDst := true.B   // block this dst in the DSS so the next pick rotates
       s_release    := false.B  // release the (clean, client-free) victim and refill normally
       w_releaseack := false.B
-      // 008 C2: the reason. Not free and not evictable means valid and dirty and/or client-held.
-      val dstDirty = io.directory.bits.dirty
-      val dstHeld  = io.directory.bits.clients.orR
-      dstAbortDirty := dstDirty && !dstHeld
-      dstAbortHeld  := !dstDirty && dstHeld
-      dstAbortBoth  := dstDirty && dstHeld
+      // 009: a PLRU build takes every valid W, so this branch is unreachable there.
+      if (evictW) assert (false.B, "009: a destination probe aborted in a PLRU build")
       if (params.micro.sbcDebug) {
         printf(p"[SBC] ABORT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}" +
                p" dirty=${dstDirty} held=${dstHeld}\n")
@@ -1611,6 +1745,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_dread          := true.B
     w_dread          := true.B
     migrating        := false.B
+    // 009: W's eviction ends before retire (no_wait), so these are already idle here.
+    assert (!dstEvict && s_dprobe && w_dprobeacklast && s_drelease && w_dreleaseack,
+            "009: destination eviction dropped at assess-reset")
+    dstEvict         := false.B
+    s_dprobe         := true.B
+    w_dprobeackfirst := true.B
+    w_dprobeacklast  := true.B
+    s_drelease       := true.B
+    w_dreleaseack    := true.B
     // SBC (003 Stage 2e, P4 - READ TWICE). This block also runs on a `repeat` reload, which has NO
     // dir-read: `meta` keeps its value, so it still points at the partner row. Clearing inPlace here
     // unconditionally would leave meta on the partner while physSet reverted home, and every access

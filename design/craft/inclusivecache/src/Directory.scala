@@ -206,16 +206,12 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // allocate on D. This mask is new protection for that new situation and nothing else: steer the
   // victim away from a way somebody is inside. It never blocks a request, so it cannot deadlock.
   val freeWays = ~busyWays
-  // 008 C2 (option B, a WORKAROUND): with PLRU on, the destination probe takes D's least-recent CLEAN,
-  // client-free way instead of the lowest-index one, so a fresh guest is not the next one overwritten.
-  // The paper evicts D's LRU line whatever its state; that needs a write-back and a probe - task 009.
-  // No such way: the PLRU way, and the MSHR aborts (counted by reason).
+  // 009: the clean-way tier is random mode only. With PLRU on, the destination probe takes D's PLRU way
+  // whatever its state, and the MSHR evicts it like a normal victim (probe, then Release).
+  val evictTier = preferEvictable && !io.usePlru.getOrElse(false.B)
   val evictOH   = evictableOH & freeWays
-  recency.foreach { r => r.io.evictMask := evictOH }
-  val evictPick = recency.map(r => Mux(io.usePlru.get, UIntToOH(r.io.evictWay, params.cache.ways), PriorityEncoderOH(evictOH)))
-                         .getOrElse(PriorityEncoderOH(evictOH))
   val victimWayOH = Mux(preferInvalid && (invalidWayOH & freeWays).orR, PriorityEncoderOH(invalidWayOH & freeWays),
-                    Mux(preferEvictable && evictOH.orR, evictPick,
+                    Mux(evictTier && evictOH.orR, PriorityEncoderOH(evictOH),
                     Mux((policyOH & freeWays).orR, policyOH & freeWays,
                     Mux(freeWays.orR, PriorityEncoderOH(freeWays),
                     // Last resort: no free way at all. Unreachable - at most two ways in a row are
@@ -227,8 +223,6 @@ class Directory(params: InclusiveCacheParameters) extends Module
   assert (!ren2 || victimLTE(0) === 1.U)
   assert (!ren2 || ((victimSimp >> 1) & ~victimSimp) === 0.U) // monotone
   assert (!ren2 || PopCount(victimWayOH) === 1.U)
-  assert (!ren2 || !(preferEvictable && evictOH.orR) || (evictPick & evictOH).orR,
-          "008: the evictable-tier pick is not a clean, client-free, unlocked way")
   // Provable, not hopeful: an MSHR locks at most its own way, and at most two MSHRs can be inside one
   // row (its owner, plus one serving in place from its partner). With ways >= 4 there is always room.
   if (params.micro.enableSetBalancing) {
@@ -326,18 +320,17 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // 008: every read that may use a victim. tier: 0 invalid, 1 evictable, 2 policy, 3 lowest free way.
   // internal=1 sec=0 is a migration destination probe; sec=1 a second search (its victim is unused).
   // res = the way the result really names (differs from chosen only on the write-bypass tag match).
-  // emask = the clean, client-free, unlocked ways (the tier-1 candidates); evictWay = the masked PLRU pick.
   recency.foreach { r =>
     if (params.micro.sbcDebug) {
       val cyc = RegInit(0.U(64.W))
       cyc := cyc + 1.U
       val tier = Mux(preferInvalid && (invalidWayOH & freeWays).orR, 0.U,
-                 Mux(preferEvictable && evictOH.orR, 1.U,
+                 Mux(evictTier && evictOH.orR, 1.U,
                  Mux((policyOH & freeWays).orR, 2.U, 3.U)))
       when (ren2 && !io.result.bits.hit) {
         printf(p"[SBC] PLRU-VICTIM cyc=${cyc} set=${set} plruWay=${r.io.victimWay} chosen=${victimWay}" +
                p" res=${io.result.bits.way} usePlru=${io.usePlru.get} tier=${tier} busy=${Binary(busyWays)}" +
-               p" internal=${internalRead} sec=${secondarySearch} emask=${Binary(evictOH)} evictWay=${r.io.evictWay}\n")
+               p" internal=${internalRead} sec=${secondarySearch}\n")
       }
     }
   }

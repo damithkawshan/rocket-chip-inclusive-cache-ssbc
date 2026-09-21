@@ -47,6 +47,8 @@ class SourceC(params: InclusiveCacheParameters) extends Module
     // RaW hazard
     val evict_req = new SourceDHazard(params)
     val evict_safe = Flipped(Bool())
+    // 009 (H3): still reading evict_req's row for a dirty Release. The migration copy must not write it yet.
+    val busy = Output(Bool())
   })
 
   // We ignore the depth and pipe is useless here (we have to provision for worst-case=stall)
@@ -82,6 +84,7 @@ class SourceC(params: InclusiveCacheParameters) extends Module
 
   io.evict_req.physSet := req.physSet
   io.evict_req.way := req.way
+  io.busy := busy
 
   io.bs_adr.valid := (beat.orR || io.evict_safe) && want_data
   io.bs_adr.bits.noop := false.B

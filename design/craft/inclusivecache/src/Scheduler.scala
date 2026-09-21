@@ -116,9 +116,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   }
 
   // If the pre-emption BC or C MSHR have a matching set, the normal MSHR must be blocked
+  // 009 (N5): the twin of that rule for a migration's destination row. While the C MSHR works in row D
+  // the migrant must not touch it - its snapshot of W is being changed under it (N6 forwards the effect).
   val mshr_stall_abc = abc_mshrs.map { m =>
     (bc_mshr.io.status.valid && m.io.status.bits.homeSet === bc_mshr.io.status.bits.homeSet) ||
-    ( c_mshr.io.status.valid && m.io.status.bits.homeSet ===  c_mshr.io.status.bits.homeSet)
+    ( c_mshr.io.status.valid && m.io.status.bits.homeSet ===  c_mshr.io.status.bits.homeSet) ||
+    ( c_mshr.io.status.valid && m.io.status.bits.dstEvict &&
+      m.io.status.bits.dstSet === c_mshr.io.status.bits.homeSet)
   }
   val mshr_stall_bc =
     c_mshr.io.status.valid && bc_mshr.io.status.bits.homeSet === c_mshr.io.status.bits.homeSet
@@ -303,7 +307,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // If a same-set MSHR says that requests of this type must be handled out-of-band, use special BC|C MSHR
   // ... these special MSHRs interlock the MSHR that said it should be pre-empted.
   val nestB  = Mux1H(setMatches, mshrs.map(_.io.status.bits.nestB))  && request.bits.prio(1)
-  val nestC  = Mux1H(setMatches, mshrs.map(_.io.status.bits.nestC))  && request.bits.prio(2)
+  // 009 (N3): a client Release to a migration's destination row has NO MSHR to nest into - row D is
+  // fenced, so setMatches is empty and the request waits at the head of the C channel. While the
+  // migrant is probing W that is bug P1's deadlock: its ProbeAck sits behind that Release. Send it to
+  // the C MSHR instead, which finishes it and ReleaseAcks, so the L1 can answer our probe (T2).
+  val nestDMatch = mshrs.map { m => m.io.status.valid && m.io.status.bits.nestD &&
+                                    m.io.status.bits.dstSet === request.bits.set }.reduce(_ || _) &&
+                   request.bits.prio(2)
+  val nestC  = (Mux1H(setMatches, mshrs.map(_.io.status.bits.nestC)) && request.bits.prio(2)) || nestDMatch
   // Prevent priority inversion; we may not queue to MSHRs beyond our level
   val prioFilter = Cat(request.bits.prio(2), !request.bits.prio(0), ~0.U((params.mshrs-2).W))
   val lowerMatches = setMatches & prioFilter
@@ -438,6 +449,20 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     when (!cHeadBlocked) { cHeadCtr := 0.U } .otherwise { cHeadCtr := cHeadCtr + 1.U }
     assert (cHeadCtr < 1000.U, "SBC: C-channel head held by the destination/partner fence (bug P1)")
     if (params.micro.sbcDebug) {
+      // 009 V4 coverage: the two nesting paths and the N5 stall, one line per event.
+      when (request.valid && request.ready && nestDMatch) {
+        printf(p"[SBC][SCHED] NEST-D set=${request.bits.set}\n")
+      }
+      val nestSDuringW = request.bits.prio(2) && mshrs.map { m => m.io.status.valid &&
+        m.io.status.bits.dprobeOpen && m.io.status.bits.homeSet === request.bits.set }.reduce(_ || _)
+      when (request.valid && request.ready && nestSDuringW) {
+        printf(p"[SBC][SCHED] NEST-S set=${request.bits.set}\n")
+      }
+      val n5Stall = c_mshr.io.status.valid && abc_mshrs.map { m => m.io.status.valid &&
+        m.io.status.bits.dstEvict && m.io.status.bits.dstSet === c_mshr.io.status.bits.homeSet }.reduce(_ || _)
+      when (n5Stall && !RegNext(n5Stall, false.B)) {
+        printf(p"[SBC][SCHED] N5-STALL dstSet=${c_mshr.io.status.bits.homeSet}\n")
+      }
       when (cHeadCtr === 200.U) {
         printf(p"[SBC][SCHED] C-HEAD-STALL set=${request.bits.set} alloc=${alloc} queue=${queue}\n")
       }
@@ -516,7 +541,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   c_mshr.io.allocate.bits.prio(1) := false.B
 
   // Fanout the result of the Directory lookup
-  val dirTarget = Mux(alloc, mshr_insertOH, Mux(nestB,(BigInt(1) << (params.mshrs-2)).U,(BigInt(1) << (params.mshrs-1)).U))
+  // 009 (N4): a Release nesting on a fenced destination row has `alloc` true (no MSHR owns that row),
+  // but its directory result belongs to the C MSHR, not to a freshly inserted one.
+  val dirTarget = Mux(alloc && !nestDMatch, mshr_insertOH, Mux(nestB,(BigInt(1) << (params.mshrs-2)).U,(BigInt(1) << (params.mshrs-1)).U))
   val directoryFanout = params.dirReg(RegNext(
     Mux(mshr_uses_directory || mshr_uses_directory_for_dread, mshr_selectOH,
       Mux(alloc_uses_directory, dirTarget, 0.U))))
@@ -539,19 +566,31 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val sinkC_abcMatch = abc_mshrs.map(m => m.io.status.valid && m.io.status.bits.probeAckPending &&
                                           m.io.status.bits.probeSet === sinkC.io.homeSet &&
                                           m.io.status.bits.probeTag === sinkC.io.probeTag)
+  // 009 (N7): probeWay/probePhysSet, not way/physSet - a ProbeAck for a migration's destination way W
+  // must be written into row D, while status.way/physSet still name the MSHR's own source line.
   sinkC.io.way :=
     Mux(sinkC_bcMatch,
-      bc_mshr.io.status.bits.way,
-      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.way)))
+      bc_mshr.io.status.bits.probeWay,
+      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.probeWay)))
   sinkC.io.physSet :=
     Mux(sinkC_bcMatch,
-      bc_mshr.io.status.bits.physSet,
-      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.physSet)))
+      bc_mshr.io.status.bits.probePhysSet,
+      Mux1H(sinkC_abcMatch, abc_mshrs.map(_.io.status.bits.probePhysSet)))
   if (params.micro.enableSetBalancing) {
     // Mux1H over a non-one-hot vector silently ORs the candidates together, producing a way that
     // belongs to nobody. The two-key match is what makes this hold; this is the net that proves it.
     assert (PopCount(VecInit(sinkC_abcMatch).asUInt) <= 1.U,
             "SBC: two MSHRs matched one ProbeAck in the way CAM")
+    // 009 (T1): nothing may be granting W while we probe it. W's home row is either the fenced
+    // destination row or the migrant's own set, so no OTHER demand MSHR may own it. The C MSHR is
+    // exempt: it only ReleaseAcks, it never grants.
+    val abcbc = abc_mshrs :+ bc_mshr
+    abcbc.foreach { m =>
+      val ownedElsewhere = abcbc.filter(_ ne m).map { o =>
+        o.io.status.valid && o.io.status.bits.homeSet === m.io.status.bits.probeSet }.reduce(_ || _)
+      assert (!(m.io.status.valid && m.io.status.bits.dprobeOpen && ownedElsewhere),
+              "009 (T1): another MSHR owns W's home set while W is being probed")
+    }
   }
   sinkD.io.way     := VecInit(mshrs.map(_.io.status.bits.way))(sinkD.io.source)
   sinkD.io.physSet := VecInit(mshrs.map(_.io.status.bits.physSet))(sinkD.io.source)
@@ -608,7 +647,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sourceD.io.copy_req  := setCopyUnit.io.copy_req
   sourceD.io.copy_wreq := setCopyUnit.io.copy_wreq
   setCopyUnit.io.copy_safe  := sourceD.io.copy_safe
-  setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe
+  // 009 (H3): nor while SourceC is still reading that row for a dirty Release (of the destination way W).
+  val copyWaitsSourceC = sourceC.io.busy && sourceC.io.evict_req.physSet === setCopyUnit.io.copy_wreq.physSet &&
+                         sourceC.io.evict_req.way === setCopyUnit.io.copy_wreq.way
+  setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe && !copyWaitsSourceC
+  if (params.micro.sbcDebug) {
+    // V4 coverage: the H3 term held a copy that SourceD alone would have let through (first cycle only).
+    val h3Hold = copyWaitsSourceC && sourceD.io.copy_wsafe && !setCopyUnit.io.idle
+    when (h3Hold && !RegNext(h3Hold, false.B)) {
+      printf(p"[SBC][SCHED] H3-HOLD set=${setCopyUnit.io.copy_wreq.physSet} way=${setCopyUnit.io.copy_wreq.way}\n")
+    }
+  }
 
   // ---------------- Set-Balancing Cache (SBC) ----------------
   // The SBU watches the directory result via a read-only tap (it owns no data/SRAM ports) and,
