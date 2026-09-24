@@ -155,17 +155,18 @@ static uint64_t run_steps(uint8_t *hbase, uint8_t *mbase, uint64_t first, uint64
 
 int main(int argc, char **argv) {
     uint64_t steps = 50000, warm = 2048;
-    unsigned h = 32, m = 32;
+    unsigned h = 32, m = 32, user_mp = 0;
     int writes = 0, nommio = 0;
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-s") && i + 1 < argc) steps = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-W") && i + 1 < argc) warm  = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-h") && i + 1 < argc) h = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) m = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-p") && i + 1 < argc) user_mp = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-w")) writes = 1;
         else if (!strcmp(argv[i], "-n")) nommio = 1;
         else {
-            fprintf(stderr, "usage: %s [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-w] [-n]\n",
+            fprintf(stderr, "usage: %s [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-p missPages] [-w] [-n]\n",
                     argv[0]);
             return 2;
         }
@@ -199,7 +200,7 @@ int main(int argc, char **argv) {
     unsigned sets = 1u << lgSets, half = span / 2, line = 1u << lgBlock;
     if (h > half) h = half;
     if (m > half) m = half;
-    unsigned hp = ways * 3 / 4, mp = ways * 8, need = hp + mp;
+    unsigned hp = ways * 3 / 4, mp = user_mp ? user_mp : (ways * 8), need = hp + mp;
 
     /* ---- memory: HP hit pages then MP miss pages, each its own frame, all in one set group ---- */
     size_t len = (size_t)need * PAGE;
