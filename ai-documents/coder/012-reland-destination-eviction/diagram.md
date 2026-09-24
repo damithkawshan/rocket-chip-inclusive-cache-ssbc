@@ -187,5 +187,6 @@ slot in an innocent row.
 | H3 read-vs-write interlock | 🟢 built, fired 24 of 24 |
 | CPU-holds-it slot (C3) | 🔴 **not built.** Needs the restructure in `011 §11.2(b)` |
 | a watchdog that survives into the bitstream | 🔴 **not built** — new state, needs the user's approval |
-| directed test for a **dirty guest** slot | 🔴 **not written.** All 24 events were native lines of D, so that combination is untested |
-| bitstream and board run | 🔴 not started |
+| directed test for a **dirty guest** slot | 🟢 **done (V4).** 9 guest write-backs, all to the source set's address, 0 asserts, read-back clean; random-mode control 0 events |
+| bitstream | 🟢 **built** — `af11762b…3ec4`, timing met (WNS +0.156 ns) |
+| board run | 🔴 not started |

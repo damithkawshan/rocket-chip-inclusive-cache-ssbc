@@ -31,6 +31,10 @@ name is wrong — use the `008-c2B` one, and cite the **hash**, never a filename
 
 Any new bitstream this task builds is recorded in `REPORT.md` with its own sha256 beside this one.
 
+**R1 — the candidate (C1+C2), built 2026-09-25, NOT yet board-tested:**
+`af11762b917780e5ec71e8246ec4455b7914b9102e635c0ce1c91741a3d32ec4` = commit `97d0162`, file
+`…SBCPLRU-012-c2-97d0162-2026-09-25.bit`. Row, timing and provenance in `REPORT.md` "Board run".
+
 ---
 
 ## 1. Goal
