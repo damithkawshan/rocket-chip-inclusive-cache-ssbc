@@ -291,7 +291,8 @@ an argument.**
 
 | # | Question | Options |
 |---|---|---|
-| D1 | **Fix or revert?** | (a) fix `739bd2a` in place; (b) revert 009 C2 to **`201ebae`** and re-land it later behind the fixes. (b) is now stronger than when this task was drafted: `201ebae` is the commit the passing bitstream was built from (proven, 010 §8.4), so it is a **board-verified** fallback, not just an older one. It costs the 009 feature |
+| ~~D1~~ | ~~Fix or revert?~~ | **ANSWERED 2026-09-24: revert.** Branch **`sbc-009-redo`** cut from `sbc-sampling`; `739bd2a`'s RTL reverted (`f385555`), verified byte-identical to `201ebae` per file by blob hash. `sbc-sampling` keeps the broken commit as the record. **This task's job is therefore to RE-LAND 009's function safely (§11), not to patch `739bd2a` in place.** |
+| **D5** | **Which re-land shape?** (new, see §11) | (a) keep 009's structure and widen the nesting; (b) **restructure so the hold-and-wait never exists** — probe W *before* raising the destination fence, the way the source victim is already handled. **Recommended: (b).** |
 | D2 | **Scope.** Is F1 alone enough for the first commit? | F1 is one line and provable. It restores random mode to 007-C2 behaviour and would show, in one board pair, whether the remaining fault is confined to the probe/Release path |
 | D3 | **F4** — mask the other tiers, or delete the flag and fix the comment? | Changing the mask alters victim selection in both policies and is a performance change, not just a safety one |
 | D4 | **Is the "at most one way locked per MSHR" invariant negotiable?** F3 needs a second slot | `Directory.scala`'s `freeWays.orR` assert rests on it. With ways = 16 there is ample room; the *proof* is what changes |
@@ -372,3 +373,87 @@ into the failure.
    Until then, "009 broke it" is supported but thin.
 2. **The random wedge rate is bounded, not measured** — 1 in 4.
 3. Candidates #1, #2 and #4 from 010 were never run.
+
+
+---
+
+## 11. The re-land plan (added 2026-09-24, after the fallback)
+
+### 11.1 Why 009's function still matters — and what it is NOT needed for
+
+009 exists for the **cost** side of a migration, not the count. Under 008 C2's option B the destination
+probe skips D's least-recent line whenever it is dirty or client-held and takes a **more recent clean**
+way instead, which on the 64 KB board cost **0.68 primary hits per migration** (random: 0.15). That is
+what 009 was meant to remove. It remains a real and unfixed cost.
+
+⚠️ **But "without 009 we cannot beat the plain L2" is not supported by the evidence.** The DualRocket
+board run of 2026-09-24 (`ai-documents/performance/board-dualcore-l2miss-calib-2026-09-24.md`) reports
+**−13.46% cycles and −29.52% memory reads** against the baseline L2 — and that image is **008 C2**, not
+009. Two independent checks: its Vivado run is `Fri Sep 18 09:24–09:49`, between `7494296` (09-17 17:38)
+and `201ebae` (09-18 10:44), so the tree was the uncommitted 008 C2 work; and the run's own **K3**
+identity holds (`attempted − migrations = 114 = 10 + 104 + 0`), which is 008 C2 abort semantics and
+fails by design on 009. The report itself names *"Option B destination probe workaround"*.
+
+So the position is:
+
+| workload / platform | 008 C2 result | needs 009? |
+|---|---|---|
+| `l2_miss_calib`, DualRocket, sized `-p 19` | **decisive win** (−13.5% cycles, −29.5% reads) | **no** |
+| `520.omnetpp_r`, single core, 64 KB | tie (+0.07% cycles, +0.41% traffic) | the 0.68-hits-per-migration cost is a leading suspect |
+
+**The fallback therefore gives up nothing that has been measured as a win.** 009 is a lever on the
+omnetpp tie, and it should be re-landed — but it is not the thing standing between SBC and the plain L2.
+
+### 11.2 The choice to make (D5)
+
+**(a) Keep 009's structure, widen the nesting.** Apply F2 + F5 so the escape hatch covers the whole
+eviction, plus F3 and F6. Smallest diff from `739bd2a`.
+*Against:* the design still **holds the destination fence and waits on the L1**. Correctness then rests
+on every nesting path being right, and the only thing that would catch a mistake is a sim assert that is
+not in the bitstream. It is hard to prove and it has already failed once.
+
+**(b) Restructure so the hold-and-wait never exists — recommended.** Do to W what the design already
+does to the *source* victim. Today the source victim's eviction probe completes **before** `dstValid`
+rises; `migPending` holds the one-migration token during that window **without fencing anything**, and
+`MSHR.scala:512-516` says in as many words that this was deliberate. Mirror it:
+
+1. destination read picks W;
+2. **way-lock `(migDstSet, migDstWay)`** (F3) so nobody else can take W — protection without a row fence;
+3. probe W and take its ProbeAck **while the row is NOT fenced**;
+4. Release W and wait for its `ReleaseAck`, still unfenced;
+5. **only then** raise `dstValid` for the copy + dir-write #1 + refill — a window that waits on no client.
+
+*For:* it removes the edge rather than mitigating it, it reuses a pattern already proven in this RTL,
+and it makes `nestD`, N2/Q2 and most of F2/F5 unnecessary rather than merely correct.
+*Against:* it is a real design change, and it must be shown that the way-lock alone covers what the row
+fence was doing. The fence has a **second** job — `Scheduler.scala:277`'s comment, *"keeping a second
+requester from allocating into a row mid-migration at all, which is what closed the dst-collision
+illegal-inner-D bug"* — so step 5 keeps the fence for the copy/install window, and the REPORT must argue
+why steps 2–4 are safe without it.
+
+### 11.3 Staging, if (b) is chosen
+
+Each stage is independently board-gated. **Do not stack two unproven stages on one bitstream.**
+
+| stage | what | board gate |
+|---|---|---|
+| R0 | **Baseline re-measure.** No RTL change. Build `sbc-009-redo` (= `201ebae` RTL) and reproduce the 010 control and the DualRocket win, to prove the branch is good before anything is added | 2 PLRU omnetpp completions + the `-p 19` DualRocket pair |
+| R1 | **F3 only** — way-lock the destination way. Harmless on its own (a victim-selection steer), and a prerequisite for everything after | 4 PLRU omnetpp completions |
+| R2 | **F4 + F6** — the no-op guard and the ReleaseAck identity. Both are correctness tidy-ups with no behaviour change intended | 2 completions |
+| R3 | **The re-land, client-free W only** — probe not needed; Release + `ReleaseAck` before the fence rises. This is 009 C1's scope, done in the new shape, and it is **runtime-gated on `usePlru` from the start** (F1) | 4 PLRU + 4 random completions |
+| R4 | **The re-land, client-held W** — the probe, still before the fence. This is the risky one; it is last on purpose | 4 PLRU completions, then repeats |
+
+**Gate rule for every stage: 4 consecutive PLRU completions on the board.** 009 was 0/4; a green sim is
+not evidence — 009's sim gate was green. Sim still runs first (V0–V6, §7), it just does not close a stage.
+
+### 11.4 Two things to fix regardless of D5
+
+- **F1's lesson, as a standing rule:** any new destination behaviour is gated on the **runtime**
+  `L2_Replacement` register, never on a compile-time flag, so a random-mode board run is always a true
+  control for the PLRU one. `739bd2a` lost that, which is why its random data is not a clean baseline.
+- **Put a watchdog in the bitstream.** Every net that would have caught this (12 asserts, the C-head
+  counter, `dstEvictCtr`, both shadow checkers, `sbcDebug`) is sim-only or configured off, so hardware
+  has none. Propose a **synthesizable** last-resort counter on `dstEvict` that, on expiry, abandons the
+  eviction and raises a sticky MMIO error bit — so a future failure prints something instead of freezing.
+  Cost is a few FF. **Needs the thinker's approval (it is new hardware and 009's U6 forbade new state),
+  but without it the next board failure is as blind as this one.**
