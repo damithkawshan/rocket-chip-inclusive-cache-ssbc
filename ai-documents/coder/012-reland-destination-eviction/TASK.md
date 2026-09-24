@@ -23,7 +23,7 @@ exact tree is archived and has passed on the board:
 | **sha256** | **`e41f780c67ff2da2e60ff55c59f6750d0ea60e9fbfd9d18e36d06cb58711d177`** |
 | commit | **`201ebae`** — proven, not inferred (010 §8.4: archived patch pre/post blob hashes + the run's K3 identity) |
 | config | `nWays=16, capacityKB=64, sbcAutoMigrate=true, sbcShadow=false, sbcDebug=false, plruReplacement=true` |
-| board record | `plru` ON: **1029 s, rc=0** (010 §6.1) · `random` ON: 1091 s ×2 · OFF: 1017 s |
+| board record | `plru` ON: **1029 s, 1030 s, 1029 s — 3 completions, all rc=0** · `plru` OFF: 1030 s · `random` ON: 1091 s ×2 · OFF: 1017 s |
 | provenance files | `….inclusive-cache.patch`, `….chipyard-configs.patch` beside it — the exact source |
 
 ⚠️ The **same bytes** are also archived as `…SBCPLRU-009-c1-2026-09-19.bit` (zero differing bytes). That

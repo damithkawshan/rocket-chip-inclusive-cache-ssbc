@@ -11,7 +11,9 @@ C3 (client-held W) not written; the synthesizable watchdog is awaiting a user de
 
 - **Baseline (R0) needs no build.** This branch's RTL is `201ebae`, and the bitstream from that exact tree is
   archived and board-proven — **`e41f780c67ff2da2e60ff55c59f6750d0ea60e9fbfd9d18e36d06cb58711d177`**
-  (`…SBCPLRU-008-c2B-7494296-wip-2026-09-17.bit`), `plru` ON 1029 s and 1030 s, rc=0. Full row in `TASK.md` §0.
+  (`…SBCPLRU-008-c2B-7494296-wip-2026-09-17.bit`). Its board record is **3 migration-ON PLRU completions —
+  1029 s, 1030 s, 1029 s — plus one migration-OFF run at 1030 s**, all rc=0, all in one transcript
+  (`scripts/logs/uart_PLRUonly_bit3_20260924_212536.log`). Full row in `TASK.md` §0.
   ⚠️ The same bytes are also archived under a `009-c1` name — cite the hash, never the filename.
 - **Candidate (C1+C2) bitstream — BUILT, NOT ON THE BOARD:**
   **`af11762b917780e5ec71e8246ec4455b7914b9102e635c0ce1c91741a3d32ec4`** = commit `97d0162`. Row in "Board run" below.
@@ -175,7 +177,7 @@ is a FAIL").
 | built | 2026-09-17 | 2026-09-25 00:01–00:29 (28 min) |
 | timing | — | WNS **+0.156 ns**, TNS 0, WHS +0.009, 0 failing endpoints (previous build +0.433) |
 | DRC | — | 54 violations, same count as the previous build |
-| board | `plru` ON **1029 s, 1030 s**, rc=0 | **not run** |
+| board | `plru` ON **1029 s, 1030 s, 1029 s** (3 completions) + one OFF run 1030 s, all rc=0 | **not run** |
 | provenance | patches beside it | `…-012-c2-97d0162-2026-09-25.provenance.txt`: commit, sha256 of every RTL source, chipyard state |
 | reports | — | `…-012-c2-97d0162-2026-09-25.reports/` (timing, DRC, utilization, clocks) |
 
