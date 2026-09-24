@@ -263,6 +263,7 @@ rocket-chip-inclusive-cache/
     │   └── code-cleanup-suggestions.md
     ├── coder/                             000 … 006, unchanged
     ├── performance/
+    │   ├── board-dualcore-l2miss-calib-2026-09-24.md
     │   ├── board-128kb-omnetpp-2026-09-17.md
     │   ├── fpga-ab-baseline-2026-09-11.md
     │   ├── why-sbc-loses-2026-09-15.md
