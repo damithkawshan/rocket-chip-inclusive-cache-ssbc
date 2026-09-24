@@ -165,13 +165,13 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val sbcAtAssocField = RegField.r(9,
       Cat(io.sbc_stats.atSd, 0.U((8 - sbcSetBits).W), io.sbc_stats.atAssocSet),
       RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[7:0]=assocSet, bit8=sd", volatile=true))
-    // 008 C2 / 009: the state of the destination way a migration took. Cleared by SBC_StatsReset and SBC_Reset, held by L2_StatsHold.
+    // 008 C2: destination-probe aborts by reason. Cleared by SBC_StatsReset and SBC_Reset, held by L2_StatsHold.
     val sbcDstAbortDirtyField = RegField.r(64, io.perfStats.dstAbortDirty,
-      RegFieldDesc("SBC_DstAbortDirty", "Destination way was dirty, no client (009: evicted with PLRU on, aborted without)", volatile=true))
+      RegFieldDesc("SBC_DstAbortDirty", "Destination-probe aborts: the way was dirty, no client", volatile=true))
     val sbcDstAbortHeldField = RegField.r(64, io.perfStats.dstAbortHeld,
-      RegFieldDesc("SBC_DstAbortHeld", "Destination way was clean, client-held (009: evicted with PLRU on, aborted without)", volatile=true))
+      RegFieldDesc("SBC_DstAbortHeld", "Destination-probe aborts: the way was clean, client-held", volatile=true))
     val sbcDstAbortBothField = RegField.r(64, io.perfStats.dstAbortBoth,
-      RegFieldDesc("SBC_DstAbortBoth", "Destination way was dirty and client-held (009: evicted with PLRU on, aborted without)", volatile=true))
+      RegFieldDesc("SBC_DstAbortBoth", "Destination-probe aborts: the way was dirty and client-held", volatile=true))
     val sbcParkedField = RegField.r(64, io.perfStats.parked,
       RegFieldDesc("SBC_Parked", "Live displaced lines currently resident", volatile=true))
     val sbcMigrateEnableField = RegField(1, sbcMigrateEnable,

@@ -188,11 +188,11 @@ def parse(sbc_log):
                     _src, dst, _way, st, dy, cl, dp = map(int, mm.groups())
                     bits = [n for n, v in (("dirty", dy), ("clients", cl), ("displaced", dp)) if v]
                     if st == 0:
-                        d["dread_outcome"]["free"] += 1
+                        d["dread_outcome"]["accept-free"] += 1
                     elif not bits:
-                        d["dread_outcome"]["clean-unheld"] += 1
+                        d["dread_outcome"]["accept-evictable"] += 1
                     else:
-                        d["dread_outcome"]["dirty-or-held"] += 1
+                        d["dread_outcome"]["reject"] += 1
                         d["dread_cause"]["+".join(bits)] += 1
                         for n in bits:
                             d["dread_presence"][n] += 1
@@ -441,24 +441,20 @@ def render(run_dir, d, verdict, cases, crashes, counters, checksum, cycles):
     if d["dread_outcome"]:
         o = d["dread_outcome"]
         tot = sum(o.values())
-        rej = o.get("dirty-or-held", 0)
-        aborts = sum(d["abort_dst_pairs"].values())
-        # 009: a dirty or client-held way is EVICTED (probe, then Release), not refused. Before 009 the
-        # same way aborted the migration, so read this block together with the ABORT-DST line below.
-        w("---- DREAD-RESULT : the state of the destination way the migration was offered ----")
+        rej = o.get("reject", 0)
+        w("---- DREAD-RESULT : why destination probes fail ----")
         w(f"  probes            : {tot}")
-        for k in ("free", "clean-unheld", "dirty-or-held"):
+        for k in ("accept-free", "accept-evictable", "reject"):
             n = o.get(k, 0)
             w(f"  {k:<18}: {n:8d}  ({100.0*n/tot:.2f}%)")
-        w(f"  ABORT-DST (refused): {aborts:8d}   (009 PLRU builds: must be 0)")
         if rej:
-            w("  dirty/held cause (exact combination):")
+            w("  reject cause (exact combination):")
             for cause, n in d["dread_cause"].most_common():
-                w(f"    {cause:<26} {n:8d}  ({100.0*n/rej:.2f}%)")
-            w("  cause (presence, overlapping):")
+                w(f"    {cause:<26} {n:8d}  ({100.0*n/rej:.2f}% of rejects)")
+            w("  reject cause (presence, overlapping):")
             for cause, n in d["dread_presence"].most_common():
                 w(f"    {cause:<26} {n:8d}  ({100.0*n/rej:.2f}%)")
-            w("  dirty/held by dstSet:")
+            w("  rejects by dstSet:")
             for st, n in sorted(d["dread_reject_set"].items()):
                 w(f"    set {st}: {n}")
         w("")
