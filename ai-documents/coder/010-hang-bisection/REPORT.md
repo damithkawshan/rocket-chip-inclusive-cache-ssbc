@@ -357,7 +357,7 @@ So the split by RTL, which the table above could not make:
 | build | policy | pass | wedge |
 |---|---|---:|---:|
 | #3 (008-c2) | random | 2 | 0 |
-| #3 (008-c2) | **plru** | **1** | **0** |
+| #3 (008-c2) | **plru** | **2** ⁵ | **0** |
 | #5≡#6≡#7 (009-c2) | random | 3 | 1 |
 | #5≡#6≡#7 (009-c2) | **plru** | **0** | **4** |
 
@@ -366,7 +366,11 @@ from four wedges that were all on one bitstream. What is isolated is **`policy=p
 build**. PLRU on 008-c2 completes, and completes *faster* than the same bitstream's random runs
 (1029 s vs 1091 s; reads −15.1%, writes −17.6%), which is what task 008 measured for PLRU alone.
 
-**Sample-size caveat, stated plainly:** one PLRU pass on #3 does not prove #3 never wedges. `739bd2a`
+⁵ **Second PLRU pass added 2026-09-24 ~23:05** (run by the user on the same boot, same bitstream):
+**`ITER_RC=0 ITER_SECS=1030`**, against 1029 s for the first — 1 s apart, so the result is repeatable,
+not a fluke. 009 is now 0/4 against 008-c2's 2/2 in the identical configuration.
+
+**Sample-size caveat, stated plainly:** two PLRU passes on #3 do not prove #3 never wedges. `739bd2a`
 passed 3 of its first 4 `random` runs before wedging. What the run does establish is that PLRU is not
 sufficient on its own, and that the pass/fail boundary now lies between two bitstreams of **different,
 known** provenance — the condition TASK §8 sets before a commit may be named.

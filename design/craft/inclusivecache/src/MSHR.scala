@@ -113,6 +113,13 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val lockValid = Bool()
   val lockSet   = UInt(params.setBits.W)
   val lockWay   = UInt(params.wayBits.W)
+  // 012 C1 (F3): a SECOND lock slot for the migration destination way. One slot was enough while the
+  // two old cases were mutually exclusive, but a migrant holds a victim in its own row AND a
+  // destination way in D at the same time, so they are not. Without this, W - the one way the migrant
+  // is actually working in - is the only way in the cache nobody steers a victim away from.
+  val lock2Valid = Bool()
+  val lock2Set   = UInt(params.setBits.W)
+  val lock2Way   = UInt(params.wayBits.W)
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -159,6 +166,11 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val nestedwb  = Flipped(new NestedWriteback(params))
     // SBC Phase 1: SetCopyUnit done pulse for this MSHR (routed by mshrId in Scheduler)
     val copy_done = Input(Bool())
+    // 012 C2: the LIVE replacement policy (`L2_Replacement`, 0x490). Deliberately an input and not
+    // `params.micro.plruReplacement`: task 009's F1 gated the destination-eviction path on the
+    // compile-time flag, so it ran in random mode too and destroyed the random-mode control. Runtime,
+    // always. None when the flag is off, so a flag-off build elaborates no new hardware.
+    val usePlru = if (params.micro.plruReplacement) Some(Input(Bool())) else None
     // SBC Phase 2: migrate advice latched at allocate. SOURCE-SIDE ONLY: "my set is a hot migration
     // source". The destination used to ride along here and was read many cycles later; it does not
     // any more (see migOffer/migWant/migGrant below).
@@ -294,6 +306,19 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migSrcWay        = Reg(UInt(params.wayBits.W))
   val s_dread          = RegInit(true.B)  // schedule the 2nd dir-read (dstSet, preferInvalid)
   val w_dread          = RegInit(true.B)  // waiting for the 2nd dir-read result
+  // 012 C2: evicting a DIRTY, client-free destination way W with a real write-back, so the migration
+  // no longer has to abort on it. Client-HELD ways still abort here - that needs a probe, which means
+  // waiting on the L1 while the destination row is fenced, and that is the hold-and-wait edge that
+  // hung the board in 739bd2a. It is task 012 C3, restructured, and it is deliberately not this commit.
+  // Own registers throughout: every reader of s_release/w_releaseack/meta means the SOURCE line.
+  val dstEvict         = RegInit(false.B) // this migration is writing W back
+  val s_drelease       = RegInit(true.B)  // C: Release W
+  val w_dreleaseack    = RegInit(true.B)  // waiting for W's ReleaseAck
+  val dstRelOut        = RegInit(false.B) // F6: the outstanding ReleaseAck is W's. Set when SourceC
+                                         // ACCEPTS the message, not when the wait is armed - the gap
+                                         // between those two is the window 009's ordering test had.
+  val dstMeta          = Reg(new DirectoryEntry(params))  // W's entry, from the destination read
+  val dstHome          = Reg(UInt(params.setBits.W))      // W's address set: D, or S for a guest of S
   // SBC Phase 2.5 (probe-then-migrate): the victim is clean but the directory says a client still
   // holds it. That bit is CONSERVATIVE - rocket's L1 drops clean lines silently (silentDrop=true),
   // so it is usually stale. Rather than reject the victim, run the eviction probe we would have
@@ -512,6 +537,13 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                              (meta_valid && !meta.hit && meta.state =/= INVALID)   // my chosen victim
   io.status.bits.lockSet   := Mux(lockBorrowed, pairSetReg, physSet)
   io.status.bits.lockWay   := Mux(lockBorrowed, secWay,     meta.way)
+  // 012 C1 (F3): the destination way, from the cycle the 2nd dir-read returns it until retire.
+  // `w_dread` is the gate because `migDstWay` is a register written in that same block - before it,
+  // the register still holds the PREVIOUS migration's way, and locking that would steer victims away
+  // from an innocent way in an innocent row. Both registers update together, so the pair is consistent.
+  io.status.bits.lock2Valid := migrating && w_dread
+  io.status.bits.lock2Set   := migDstSet
+  io.status.bits.lock2Way   := migDstWay
   io.status.bits.secSearched := searchedReg
   io.status.bits.txnId       := txnCtr
   io.status.bits.secSet   := pairSetReg
@@ -545,7 +577,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   }
 
   // Scheduler requests
-  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy
+  val no_wait = w_rprobeacklast && w_releaseack && w_grantlast && w_pprobeacklast && w_grantack && w_copy &&
+                w_dreleaseack   // 012 C2: W's write-back must be acknowledged before we retire (T4/T5)
   // SBC Phase 1: migration dir-write sequencing. #1 installs the displaced entry at
   // (dstSet,dstWay) once the copy is done; #2 reuses the writeback step to invalidate the
   // home way. mig_ready holds the home-invalidate (and retire) until #1 has gone out.
@@ -580,7 +613,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.a.valid := !s_acquire && s_release && s_pprobe && (!migrating || w_copy) && !migDeferred &&
                               !searching && w_rprobeackfirst
   io.schedule.bits.b.valid := !s_rprobe || !s_pprobe
-  io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst)
+  // 012 C2: W's write-back. Named once - the valid, the bits and the completion below all key off
+  // this single wire. A gate added to the valid and missed in its sibling is exactly what 707445c was.
+  val dRelNow = !s_drelease
+  io.schedule.bits.c.valid := (!s_release && w_rprobeackfirst) || (!s_probeack && w_pprobeackfirst) || dRelNow
   // Named once because the completion below MUST use the identical condition - a gate added to the
   // valid and missed in its sibling is exactly what 707445c was, and it silently retires a Grant that
   // never went out. (003 Stage 2a removed this gate's repatriation term along with the copy.)
@@ -612,7 +648,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // SBC Phase 1: copy lane — driven only while this MSHR owns a migration whose copy is pending.
   // SBC (003 Stage 2a): the lane has exactly ONE job again. The repatriation copy is deleted, so the
   // lane cannot collide with itself (bug P5) and the done pulse below needs no disambiguation.
-  val doMigCopy = migrating && !s_copy
+  // 012 C2: the copy may overwrite (D,W) only once W's write-back has been ACCEPTED by SourceC in an
+  // earlier cycle (s_drelease back to true). SourceC then reports `busy` on that row, which is what
+  // the H3 interlock in the Scheduler keys off. True immediately when there is nothing to evict.
+  val doMigCopy = migrating && !s_copy && s_drelease
   io.schedule.bits.copy.valid       := doMigCopy
   // SBC (003): the copy lane addresses BankedStore ROWS, never addresses.
   io.schedule.bits.copy.bits.srcSet := physSet
@@ -673,6 +712,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // SBC Phase 1: migration scoreboard advances (one schedule item at a time)
     when (doDread)                { s_dread      := true.B }
     when (doMigCopy)              { s_copy       := true.B }
+    // 012 C2: identical condition to io.schedule.bits.c.valid's dRelNow term (the 707445c rule).
+    // dstRelOut is set HERE, where SourceC actually takes the message, so the ReleaseAck that comes
+    // back can be attributed by identity instead of by which wait-flag happens to be low (F6).
+    when (dRelNow)                { s_drelease   := true.B; dstRelOut := true.B }
     when (mig_dir1)               { s_dmeta      := true.B }
     // SBC Phase 3 scoreboard advances
     when (doSearch)               { s_ssearch    := true.B }
@@ -686,6 +729,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // A dst-full abort already cleared `migrating` (and pulsed migAbort) on the fallback path.
       migCommit := migrating
       migrating := false.B
+      dstEvict  := false.B   // 012 C2: no_wait already required w_dreleaseack, so W's write-back is done
     }
   }
 
@@ -816,17 +860,21 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.b.bits.tag     := Mux(probeVictimNow, meta.tag, request.tag)
   io.schedule.bits.b.bits.homeSet := Mux(probeVictimNow, lineHome, request.set)
   io.schedule.bits.b.bits.clients := meta.clients & ~excluded_client
-  io.schedule.bits.c.bits.opcode  := Mux(meta.dirty, ReleaseData, Release)
-  io.schedule.bits.c.bits.param   := Mux(meta.state === BRANCH, BtoN, TtoN)
+  // 012 C2: when W's write-back is the message going out, every field comes from W's OWN latched entry
+  // (dstMeta) and from the row W sits in - never from `meta`, which is the source victim. C2 only ever
+  // takes a dirty W, so the opcode is ReleaseData on that path; the Mux keeps the stock path untouched.
+  val cDirty = Mux(dRelNow, dstMeta.dirty, meta.dirty)
+  io.schedule.bits.c.bits.opcode  := Mux(cDirty, ReleaseData, Release)
+  io.schedule.bits.c.bits.param   := Mux(Mux(dRelNow, dstMeta.state, meta.state) === BRANCH, BtoN, TtoN)
   io.schedule.bits.c.bits.source  := 0.U
-  io.schedule.bits.c.bits.tag     := meta.tag
+  io.schedule.bits.c.bits.tag     := Mux(dRelNow, dstMeta.tag, meta.tag)
   // SBC (003): the two meanings in one request - read the bytes from our row, send them to the
   // address the line actually belongs to.
   io.schedule.bits.c.bits.shadowSrc.foreach { _ := txnCtr }
-  io.schedule.bits.c.bits.physSet := physSet
-  io.schedule.bits.c.bits.homeSet := lineHome
-  io.schedule.bits.c.bits.way     := meta.way
-  io.schedule.bits.c.bits.dirty   := meta.dirty
+  io.schedule.bits.c.bits.physSet := Mux(dRelNow, migDstSet, physSet)
+  io.schedule.bits.c.bits.homeSet := Mux(dRelNow, dstHome,   lineHome)
+  io.schedule.bits.c.bits.way     := Mux(dRelNow, migDstWay, meta.way)
+  io.schedule.bits.c.bits.dirty   := cDirty
   io.schedule.bits.d.bits.viewAsSupertype(chiselTypeOf(request)) := request
   io.schedule.bits.d.bits.param   := Mux(!req_acquire, request.param,
                                        MuxLookup(request.param, request.param)(Seq(
@@ -1254,6 +1302,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   if (params.micro.enableSetBalancing) {
     assert (!(migDeferred && io.schedule.bits.a.valid), "SBC: outer Acquire issued during deferred probe (R1 gate broken)")
     assert (!(migDeferred && io.status.bits.dstValid),  "SBC: destination fenced before the probe completed (adds hold-and-wait)")
+    // 012 C1 (F3): the two lock slots must never name the same place, or the "at most two ways per row"
+    // argument behind Directory's assert(freeWays.orR) counts one way twice and over-states the room.
+    // A migrant's victim lives in S and W lives in D, and a set is never its own destination - so the
+    // sets differ, which is the stronger statement and the one worth checking.
+    assert (!(io.status.bits.lockValid && io.status.bits.lock2Valid) ||
+            io.status.bits.lockSet =/= io.status.bits.lock2Set,
+            "012: the two way-lock slots are in the same row")
+    assert (!io.status.bits.lock2Valid || migDstSet =/= physSet,
+            "012: a set is its own migration destination")
     assert (!(migDeferred && migrating),                "SBC: migDeferred and migrating are mutually exclusive")
     assert (!(migDeferred && !s_release),               "SBC: release committed while the migrate decision was still open")
     // SBC Phase 2.5b / 003 2b: the decide points must never both ask in one cycle - they would both
@@ -1277,6 +1334,30 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val migDeferCtr = RegInit(0.U(16.W))
     when (!migDeferred) { migDeferCtr := 0.U } .otherwise { migDeferCtr := migDeferCtr + 1.U }
     assert (migDeferCtr < 1000.U, "SBC: migDeferred stuck - eviction probe never completed")
+
+    // ---- 012 C2: W's write-back ----
+    // T6: at most one outstanding Release per source id. In the migrate path the source victim is
+    // MOVED, not released, so W's is this MSHR's only one.
+    assert (w_dreleaseack || w_releaseack, "012: two Releases outstanding in one MSHR (T6)")
+    assert (PopCount(Cat(!s_release && w_rprobeackfirst, !s_probeack && w_pprobeackfirst, dRelNow)) <= 1.U,
+            "012: two C-channel messages scheduled together")
+    // W's Release must carry W's real address: D for a native line, S for a guest of S.
+    assert (!dRelNow || (dstHome === migDstSet) === !dstMeta.displaced,
+            "012: W's Release address does not match W's home set")
+    assert (!dstEvict || migrating, "012: destination write-back without a migration")
+    // C2 evicts only a client-free W, so no probe is ever armed for it. C3 lifts this.
+    assert (!dstEvict || !dstMeta.clients.orR, "012 C2: a client-held destination way was taken")
+    assert (!dstEvict || dstMeta.dirty, "012 C2: a clean destination way took the write-back path")
+    // The identity bit is only ever set while a message is genuinely out (F6).
+    assert (!dstRelOut || !w_dreleaseack, "012: dstRelOut set with no W Release outstanding")
+    // Liveness: W's write-back completes. It waits on MEMORY, not on the L1, so there is no cycle -
+    // this is the net that says so out loud.
+    val dstEvictCtr = RegInit(0.U(16.W))
+    when (!dstEvict || w_dreleaseack) { dstEvictCtr := 0.U } .otherwise { dstEvictCtr := dstEvictCtr + 1.U }
+    assert (dstEvictCtr < 2000.U,
+            cf"012: destination write-back stuck. set=${request.set}%d dstSet=${migDstSet}%d " +
+            cf"dstWay=${migDstWay}%d home=${dstHome}%d s_drelease=${s_drelease}%d " +
+            cf"w_dreleaseack=${w_dreleaseack}%d dstRelOut=${dstRelOut}%d w_copy=${w_copy}%d")
 
     // SBC (003 Stage 2b): the same four guarantees for the search deferral, in the same shape as the
     // proven migDeferred set above. While secDefer holds, NOTHING may have been committed: no
@@ -1328,7 +1409,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       gotT := io.sinkd.bits.param === toT
     }
     .elsewhen (io.sinkd.bits.opcode === ReleaseAck) {
-      w_releaseack := true.B
+      // 012 C2 (F6): attribute the ack by identity, not by ordering. `dstRelOut` was set in the cycle
+      // SourceC accepted W's write-back, so it is only true while W's Release is genuinely outstanding.
+      when (dstRelOut) { w_dreleaseack := true.B; dstRelOut := false.B } .otherwise { w_releaseack := true.B }
     }
   }
   when (io.sinke.valid) {
@@ -1532,19 +1615,51 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // fenced at allocation (Scheduler dstSetConflict → allocReady), so no other MSHR can be on it during
     // the copy — a collision can no longer reach here.
     val dstFree      = io.directory.bits.state === INVALID
-    // SBC (007 C2): a parked way qualifies. Clean and client-free still required - taking a DIRTY or
-    // client-held guest needs a real Release at the guest's home address, which is not built (L5).
+    // SBC (007 C2): a parked way qualifies. Clean and client-free is the SILENT-overwrite case: no
+    // writeback and no probe, coherence-identical to dropping a clean victim. Unchanged by 012.
     val dstEvictable = io.directory.bits.state =/= INVALID && !io.directory.bits.dirty &&
                        !io.directory.bits.clients.orR
-    when (dstFree || dstEvictable) {
+    // 012 C2: a DIRTY, client-free W is no longer an abort. It is evicted the stock way - a real
+    // ReleaseData at W's own address - and only then may the copy overwrite (D,W). Client-HELD stays an
+    // abort: that needs a probe, i.e. waiting on the L1 while D is fenced, which is the hold-and-wait
+    // edge that hung the board in 739bd2a (010). That is C3, restructured.
+    // Gated on the LIVE policy register, never on the compile-time flag (009's F1).
+    val dstReleasable = io.usePlru.getOrElse(false.B) && io.directory.bits.state =/= INVALID &&
+                        io.directory.bits.dirty && !io.directory.bits.clients.orR
+    when (dstFree || dstEvictable || dstReleasable) {
       migDstWay   := io.directory.bits.way
-      migDstReuse := dstEvictable && io.directory.bits.displaced
+      migDstReuse := !dstFree && io.directory.bits.displaced
       s_copy      := false.B  // now run: copy → dir-write #1 (displaced) → dir-write #2 (refill)
       w_copy      := false.B
       s_dmeta     := false.B
       s_writeback := false.B
+      when (dstReleasable) {
+        dstEvict      := true.B
+        dstMeta       := io.directory.bits
+        // 009 §4.2: D is either S's existing partner or an unpaired cold set, and strict 1:1 pinning
+        // means D's only partner source is S - so a guest sitting in D can only be a guest OF S, and
+        // its address therefore maps to S, not to D.
+        dstHome       := Mux(io.directory.bits.displaced, request.set, migDstSet)
+        s_drelease    := false.B
+        w_dreleaseack := false.B
+        // T5: our own Acquire does not wait for W's ReleaseAck, so W must never be the line we are
+        // fetching - that would be an Acquire and a Release of one address in flight together.
+        assert (!(io.directory.bits.displaced && io.directory.bits.tag === request.tag),
+                "012: the destination way is the line this MSHR is fetching")
+        if (params.micro.sbcShadow) {
+          assert (!io.directory.bits.displaced || io.directory.bits.homeShadow.get === request.set,
+                  "012: a guest in the destination set is not a guest of this source")
+        }
+        if (params.micro.sbcDebug) {
+          printf(p"[SBC] DST-RELEASE srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}" +
+                 p" home=${Mux(io.directory.bits.displaced, request.set, migDstSet)} tag=${io.directory.bits.tag}" +
+                 p" guest=${io.directory.bits.displaced}\n")
+        }
+      }
       if (params.micro.sbcDebug) {
-        when (!dstFree) { printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}\n") }
+        when (!dstFree) { printf(p"[SBC] EVICT-DST srcSet=${request.set} dstSet=${migDstSet} dstWay=${io.directory.bits.way}" +
+                                 p" dirty=${io.directory.bits.dirty} clients=${io.directory.bits.clients}" +
+                                 p" guest=${io.directory.bits.displaced} release=${dstReleasable}\n") }
       }
     } .otherwise {                               // dst set has no free or evictable way → fall back
       migrating    := false.B
@@ -1611,6 +1726,14 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     s_dread          := true.B
     w_dread          := true.B
     migrating        := false.B
+    // 012 C2: W's eviction always finishes before retire (no_wait carries w_dreleaseack), so these are
+    // already idle here. The assert says so rather than assuming it, then they are reset anyway.
+    assert (!dstEvict && s_drelease && w_dreleaseack && !dstRelOut,
+            "012: destination write-back dropped at assess-reset")
+    dstEvict         := false.B
+    s_drelease       := true.B
+    w_dreleaseack    := true.B
+    dstRelOut        := false.B
     // SBC (003 Stage 2e, P4 - READ TWICE). This block also runs on a `repeat` reload, which has NO
     // dir-read: `meta` keeps its value, so it still points at the partner row. Clearing inPlace here
     // unconditionally would leave meta on the partner while physSet reverted home, and every access

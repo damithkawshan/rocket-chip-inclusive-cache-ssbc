@@ -113,6 +113,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.nestedwb := nestedwb
     // SBC Phase 1: deliver the SetCopyUnit done pulse to its owning MSHR (routed by mshrId)
     m.io.copy_done := setCopyUnit.io.done && setCopyUnit.io.doneId === i.U
+    // 012 C2: the live replacement policy. The MSHR's destination-eviction decision reads this, never
+    // the compile-time flag (009's F1 made that mistake and lost the random-mode control).
+    m.io.usePlru.foreach { _ := io.usePlru.get }
   }
 
   // If the pre-emption BC or C MSHR have a matching set, the normal MSHR must be blocked
@@ -455,8 +458,19 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.preferInvalid   := mshr_uses_directory_for_dread && schedule.dread.bits.preferInvalid
   directory.io.read.bits.internalRead    := mshr_uses_directory_for_dread && schedule.dread.bits.internalRead
   directory.io.read.bits.secondarySearch := mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch
-  // SBC (007 C2): only the migration destination probe may take a parked way as its victim - a source
-  // read must never pick a guest, because the AT records one hop only.
+  // SBC (007 C2): only the migration destination probe may take a parked way as its victim.
+  // 012 C1 (F4) - READ THIS BEFORE TRUSTING THE LINE ABOVE. This flag reaches ONLY `evictableOH`
+  // (Directory.scala:200), which feeds ONLY victim tier 1, and tier 1 is reachable only when
+  // `preferEvictable` is set - which only the destination probe does, and there this flag is always
+  // true. So it is true wherever it has an effect and ignored everywhere else: **it changes no
+  // behaviour today.** The old comment went on to claim "a source read must never pick a guest,
+  // because the AT records one hop only"; nothing enforces that, and since 007 C1 it is not even the
+  // intent - a guest is an ordinary candidate in tiers 2/3, and a demand miss that picks one RELEASES
+  // it (dispRelease/dispDrop at its own home set), it does not migrate it, so the one-hop rule holds
+  // by a different route. Kept, not deleted, because it still documents the intent for the destination
+  // probe and because deleting a guard whose comment described hardware is how the `s_wsafe` fix was
+  // lost. If you ever want the stated rule enforced, the mask has to reach tiers 2 and 3 too - that is
+  // a victim-selection change in BOTH policies and a performance change, not a tidy-up.
   directory.io.read.bits.allowDisplacedVictim := mshr_uses_directory_for_dread &&
                                                 schedule.dread.bits.allowDisplacedVictim
   // SBC: only the migration destination probe raises preferEvictable (Phase 2b Bug A: without it a full
@@ -465,13 +479,20 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.preferEvictable := mshr_uses_directory_for_dread && schedule.dread.bits.preferEvictable
   // SBC (003 Stage 2c): the way-lock mask for the row this read is about. Purely a steer on the
   // victim Mux inside the Directory - it never gates a ready and never blocks a request, so it cannot
-  // deadlock. Under strict 1:1 pinning a row has exactly one partner source, and there is one MSHR
-  // per set, so AT MOST ONE way in any row is locked; that is what makes `assert(freeWays.orR)`
-  // provable rather than hopeful.
+  // deadlock.
+  // 012 C1 (F3): TWO slots per MSHR now - its borrowed/victim way, and a migrant's destination way W.
+  // The old note said "at most one way in any row is locked". Still true per row, for a different
+  // reason: a migrant's two slots are in DIFFERENT rows (its victim in S, W in D), D is fenced and is
+  // only ever claimed when no MSHR owns it (`dstOfferOwned`), and strict 1:1 pinning gives a row one
+  // partner source. So a row sees at most its owner's slot plus one borrower - which is what keeps
+  // `assert(freeWays.orR)` provable rather than hopeful. ways >= 4 leaves ample room either way.
   directory.io.read.bits.busyWays := mshrs.map { m =>
     Mux(m.io.status.valid && m.io.status.bits.lockValid &&
         m.io.status.bits.lockSet === directory.io.read.bits.set,
-        UIntToOH(m.io.status.bits.lockWay, params.cache.ways), 0.U)
+        UIntToOH(m.io.status.bits.lockWay, params.cache.ways), 0.U) |
+    Mux(m.io.status.valid && m.io.status.bits.lock2Valid &&
+        m.io.status.bits.lock2Set === directory.io.read.bits.set,
+        UIntToOH(m.io.status.bits.lock2Way, params.cache.ways), 0.U)
   }.reduce(_ | _)
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
@@ -608,7 +629,21 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sourceD.io.copy_req  := setCopyUnit.io.copy_req
   sourceD.io.copy_wreq := setCopyUnit.io.copy_wreq
   setCopyUnit.io.copy_safe  := sourceD.io.copy_safe
-  setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe
+  // 012 C2 (H3): SourceD's WaR check is not enough any more. A migration that writes W back reads
+  // (D,W) through SourceC, and the copy writes that same row - so hold the copy while SourceC is still
+  // reading it. The copy is only started after W's Release was accepted in an EARLIER cycle, so `busy`
+  // is already visible by then and this is a real interlock, not a race.
+  val copyWaitsSourceC = sourceC.io.busy &&
+                         sourceC.io.evict_req.physSet === setCopyUnit.io.copy_wreq.physSet &&
+                         sourceC.io.evict_req.way     === setCopyUnit.io.copy_wreq.way
+  setCopyUnit.io.copy_wsafe := sourceD.io.copy_wsafe && !copyWaitsSourceC
+  if (params.micro.sbcDebug) {
+    // V4 coverage: the H3 term held a copy that SourceD alone would have let through (first cycle only).
+    val h3Hold = copyWaitsSourceC && sourceD.io.copy_wsafe && !setCopyUnit.io.idle
+    when (h3Hold && !RegNext(h3Hold, false.B)) {
+      printf(p"[SBC][SCHED] H3-HOLD set=${setCopyUnit.io.copy_wreq.physSet} way=${setCopyUnit.io.copy_wreq.way}\n")
+    }
+  }
 
   // ---------------- Set-Balancing Cache (SBC) ----------------
   // The SBU watches the directory result via a read-only tap (it owns no data/SRAM ports) and,
