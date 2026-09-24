@@ -13,7 +13,30 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status (updated 2026-09-14)
+## Current status (updated 2026-09-25)
+
+> **▶ START HERE (2026-09-25).** Branch **`sbc-009-redo`**. Task **012** is active:
+> [TASK](ai-documents/coder/012-reland-destination-eviction/TASK.md) ·
+> [REPORT](ai-documents/coder/012-reland-destination-eviction/REPORT.md) ·
+> [diagram](ai-documents/coder/012-reland-destination-eviction/diagram.md).
+>
+> - **Task 009 is REVERTED — its bitstream hung the board** (0 of 4 runs completed). The cause is not
+>   PLRU: the 008 image completed 2 of 2 PLRU runs (1029 s, 1030 s). Proof, and the two mislabelled
+>   bitstreams found along the way, are in [coder/010](ai-documents/coder/010-hang-bisection/REPORT.md).
+>   **Anything quoting 009 as built-and-working is wrong.**
+> - **012 C1+C2 are written and sim-green** (V1–V5, including a directed dirty-**guest** test: 9 write-backs,
+>   all to the source set's address, plus a random-mode control with 0 events). Commits `97d0162`, `85cb5ff`.
+> - **012 C3 (a CPU still holds the destination line) is deliberately NOT built.** It needs the CPU to
+>   answer while the destination row is fenced — the hold-and-wait edge `MSHR.scala:512-516` warns about,
+>   and the shape that hung the board.
+> - **Bitstreams — cite the sha256, never the filename** (two files were archived under wrong names):
+>   baseline `e41f780c…d177` = `201ebae`; candidate `af11762b…3ec4` = `97d0162` (built 2026-09-25).
+> - **Open decision:** a watchdog that survives into the bitstream (011 §11.4). Every Chisel assert is
+>   inside `ifndef SYNTHESIS`, so **the board has no safety net** and the next wedge is as blind as the last.
+
+<details>
+<summary>The 2026-09-14 status, kept for the sections that still refer to it</summary>
+
 
 **Start here: [ai-documents/README.md](ai-documents/README.md)** — every doc grouped and labelled
 (live / record / superseded), with the same status in point form. Keep the two in step.
@@ -77,6 +100,8 @@ live in `ai-documents/`.
   teardown · a cap of ~2 guests per pairing) behind **one runtime register**, plus one prerequisite: the
   `parkCount` fan-in in `Scheduler.scala:689-693` is a latent wrong-set decrement (tracker M16).
 - The Phase 1 / Phase 2 sections further down are **history** — right for their phase, not the current status.
+
+</details>
 
 ### Remote
 

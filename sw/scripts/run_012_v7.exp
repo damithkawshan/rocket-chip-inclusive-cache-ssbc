@@ -1,0 +1,255 @@
+#!/usr/bin/expect --
+#
+# run_012_v7.exp - task 012 V7: N consecutive omnetpp completions on ONE boot, with heartbeats
+# and hang capture. The board must ALREADY be programmed and booted
+# (scripts/ssbc_scripts/reboot_and_handover.exp -bit <bitstream>).
+#
+# The per-run recipe is 010 TASK §4.3 verbatim - zero, background the benchmark, heartbeat every
+# POLL seconds, then ITER_RC / ITER_SECS - so the numbers are comparable with the 1029 s / 1030 s
+# reference runs of the baseline image. Changing it breaks that comparison.
+#
+# Hang handling follows 010 §5 and §6: a stalled accessA or a silent heartbeat is a HANG, and the
+# script then captures the evidence and STOPS. It never reprograms - reprogramming destroys the
+# only view into the failure.
+#
+# Usage:
+#   ./run_012_v7.exp -policy plru -runs 4
+#   ./run_012_v7.exp -policy random -runs 4 -label v7-random
+#   ./run_012_v7.exp -policy plru -runs 1 -simtime 0.0002s -label dryrun   # harness check, ~2 min
+#
+set CY       "/home/damith/Research/repos/chipyard_performance_eval/chipyard"
+set OMNET_SET "520.omnetpp_r_run_ref"
+set OMNET_BIN "omnetpp_r_base.riscv-64"
+set SRC_DIR  "/mnt/damith_vcu118"
+set DEVICE   "/dev/ttyUSB2"
+set BAUD     "115200"
+set LOGIN    "root"
+set PASSWORD "fpga"
+set PROMPT   "# "
+set send_slow {1 .008}
+
+set POLICY  "plru"
+set RUNS    4
+set POLL    60
+set SIMTIME "0.002s"
+set LABEL   ""
+set MIGRATE "on"
+
+for {set i 0} {$i < $argc} {incr i} {
+    set a [lindex $argv $i]
+    switch -- $a {
+        "-policy"  { incr i; set POLICY [lindex $argv $i]
+                     if {$POLICY ne "random" && $POLICY ne "plru"} { puts "-policy must be random or plru"; exit 2 } }
+        "-runs"    { incr i; set RUNS [lindex $argv $i] }
+        "-poll"    { incr i; set POLL [lindex $argv $i] }
+        "-simtime" { incr i; set SIMTIME [lindex $argv $i] }
+        "-label"   { incr i; set LABEL [lindex $argv $i] }
+        "-migrate" { incr i; set MIGRATE [string tolower [lindex $argv $i]] }
+        default    { puts "unknown arg: $a"; exit 2 }
+    }
+}
+if {$LABEL eq ""} { set LABEL "v7-$POLICY" }
+
+set stamp [clock format [clock seconds] -format "%Y%m%d-%H%M%S"]
+set LOGDIR "$CY/scripts/logs"
+catch { file mkdir $LOGDIR }
+if {![file isdirectory $LOGDIR] || ![file writable $LOGDIR]} { set LOGDIR "$env(HOME)/sbc-logs"; catch { file mkdir $LOGDIR } }
+set LOGPATH "$LOGDIR/012-$LABEL-$stamp.log"
+log_file -a $LOGPATH
+puts "===== transcript: $LOGPATH"
+puts "===== policy=$POLICY runs=$RUNS poll=${POLL}s simtime=$SIMTIME migrate=$MIGRATE"
+
+# Send a command and confirm the board echoed it. This UART has no RTS/CTS, so a dropped character
+# is normal and must fail fast rather than silently run something else.
+proc board_cmd {cmd {tmo 60}} {
+    set timeout $tmo
+    send -s "$cmd\r"
+    set probe [string range $cmd 0 59]
+    expect {
+        -ex $probe { return 1 }
+        timeout { puts "\n!!! echo mismatch - a character was dropped sending: $cmd"; return 0 }
+    }
+}
+proc bail {msg} { global LOGPATH; puts "\n!!! $msg"; puts "!!! transcript: $LOGPATH"; exit 1 }
+
+# 010 §6: the only chance to see the wedge from the inside. Capture, then STOP - never reprogram.
+proc capture_hang {runno note} {
+    global PROMPT LOGPATH
+    puts "\n!!! ============================================================"
+    puts "!!! HANG on run $runno: $note"
+    puts "!!! capturing 010 §6 evidence. The board is NOT being reprogrammed."
+    puts "!!! ============================================================"
+    for {set k 1} {$k <= 3} {incr k} {
+        puts "\n!!! §6.2 probe $k of 3 (sbc_read, 30 s apart)"
+        set timeout 45
+        send -s "/root/sbc_read | head -1\r"
+        expect {
+            -re {\[SBC-COUNTERS\][^\n]*} { puts "\n!!! probe $k answered" }
+            timeout { puts "\n!!! probe $k: NO ANSWER - sbc_read itself is stuck (fabric-level wedge)" }
+        }
+        set timeout 40; expect { -re "$PROMPT" {} timeout {} }
+        exec sleep 30
+    }
+    puts "\n!!! §6.3 Ctrl-C - does a prompt come back?"
+    set timeout 30
+    send "\x03"
+    expect { -re "$PROMPT" { puts "\n!!! prompt RETURNED - the shell is alive, only the workload was stuck" }
+             timeout       { puts "\n!!! NOTHING returned - the core cannot complete a cacheable access (L2/fabric wedge)" } }
+    puts "\n!!! §6.4 two bare Enters - does anything echo?"
+    set timeout 20
+    send "\r"; expect { -re "$PROMPT" { puts "\n!!! echo 1 ok" } timeout { puts "\n!!! echo 1 silent" } }
+    send "\r"; expect { -re "$PROMPT" { puts "\n!!! echo 2 ok" } timeout { puts "\n!!! echo 2 silent" } }
+    puts "\n!!! transcript (this is §6.5): $LOGPATH"
+    puts "!!! STOPPING. Report this as a finding - do not fix anything mid-session."
+    exit 3
+}
+
+# ----------------------------------------------------------------- attach
+spawn picocom -b $BAUD $DEVICE
+set timeout 60
+expect { -re "Terminal ready" {} timeout { bail "picocom never said Terminal ready - is the port busy?" } }
+send "\r"
+set timeout 120
+expect {
+    -re "login:"    { send -s "$LOGIN\r"; exp_continue }
+    -re "Password:" { send -s "$PASSWORD\r"; exp_continue }
+    -re "$PROMPT"   {}
+    timeout         { bail "no shell prompt - is the board booted?" }
+}
+puts "\n===== \[1/5\] shell is up"
+
+# ----------------------------------------------------------------- setup (idempotent, not measured)
+puts "\n===== \[2/5\] staging the benchmark (idempotent)"
+foreach c [list \
+    "grep -q ' /mnt ' /proc/mounts || mount /dev/mmcblk0p2 /mnt" \
+    "mkdir -p /root/test_dir" ] {
+    if {![board_cmd $c]} { bail "setup command failed: $c" }
+    set timeout 120; expect -re "$PROMPT"
+}
+if {![board_cmd "test -x /root/test_dir/$OMNET_SET/$OMNET_BIN || cp -r $SRC_DIR/$OMNET_SET /root/test_dir/"]} { bail "staging failed" }
+set timeout 3600
+expect { -re "$PROMPT" {} timeout { bail "copying the benchmark timed out" } }
+
+# ----------------------------------------------------------------- identity + registers
+puts "\n===== \[3/5\] identity and registers"
+if {![board_cmd "/root/sbc_read | head -1"]} { bail "sbc_read is not on the board" }
+set timeout 120
+expect { -re {policy=(random|plru)} { puts "\n===== board reports policy=$expect_out(1,string)" } timeout {} }
+expect -re "$PROMPT"
+
+if {![board_cmd "/root/sbc_read --policy=$POLICY"]} { bail "could not write L2_Replacement" }
+set got ""
+set timeout 120
+expect {
+    -re {L2_Replacement read back} { bail "L2_Replacement did not take - PLRU is not built into this bitstream" }
+    -re {policy *: *(random|plru)} { set got $expect_out(1,string) }
+    timeout { bail "sbc_read never reported a policy" }
+}
+expect -re "$PROMPT"
+if {$got ne $POLICY} { bail "asked for policy=$POLICY but the board reports $got - refusing to measure" }
+puts "\n===== policy confirmed: $got"
+
+# --reset-all is legal only while nothing is parked (a parked line's only record of where it belongs
+# is the AT). On a fresh boot it is; on a repeat it is not, and sbc_read refuses - then plain
+# --migrate=on is the right call and the run simply does not start cold (010 §4.2).
+set armed 0
+set refused 0
+if {![board_cmd "/root/sbc_read --reset-all --migrate=$MIGRATE"]} { bail "could not arm the run" }
+set timeout 180
+# sbc_read RETURNS IMMEDIATELY when it refuses --reset-all - it never reaches the line that prints
+# the switch state. So end this expect on the prompt, not on a switch line, or a refusal hangs here.
+expect {
+    -re {refusing --reset-all: ([0-9]+) line} { puts "\n===== --reset-all refused ($expect_out(1,string) line(s) parked) - this run does not start cold (010 §4.2)"; set refused 1; exp_continue }
+    -re {migrate *: *n/a} { bail "SBC is not built into this bitstream - the switch controls nothing here" }
+    -re {migrate *: *ON}  { set armed 1; exp_continue }
+    -re {migrate *: *OFF} { set armed 0; exp_continue }
+    -re "$PROMPT" {}
+    timeout { bail "sbc_read never came back from the arming command" }
+}
+if {$refused} {
+    if {![board_cmd "/root/sbc_read --migrate=$MIGRATE"]} { bail "could not set the migrate switch" }
+    set timeout 180
+    expect {
+        -re {migrate *: *ON}  { set armed 1; exp_continue }
+        -re {migrate *: *OFF} { set armed 0; exp_continue }
+        -re "$PROMPT" {}
+        timeout { bail "sbc_read never reported a switch state" }
+    }
+}
+if {$MIGRATE eq "on" && !$armed} { bail "migrate is OFF - this run would measure a plain L2 and prove nothing (K8)" }
+if {$MIGRATE eq "off" && $armed} { bail "asked for migrate=off but the board reports ON" }
+puts "\n===== migrate confirmed: [expr {$armed ? {ON} : {OFF}}]"
+
+if {![board_cmd "cd /root/test_dir/$OMNET_SET"]} { bail "cannot enter the benchmark directory" }
+set timeout 60; expect -re "$PROMPT"
+
+# ----------------------------------------------------------------- the runs
+puts "\n===== \[4/5\] $RUNS consecutive runs, one boot, no reprogramming between them"
+set results [list]
+for {set r 1} {$r <= $RUNS} {incr r} {
+    puts "\n=================================================================="
+    puts "===== RUN $r of $RUNS   policy=$POLICY migrate=$MIGRATE   [clock format [clock seconds] -format %H:%M:%S]"
+    puts "=================================================================="
+    if {![board_cmd "/root/sbc_read --zero > /dev/null"]} { bail "run $r: could not zero the counters" }
+    set timeout 120; expect -re "$PROMPT"
+    if {![board_cmd "HS=\$(date +%s)"]} { bail "run $r: could not start the clock" }
+    set timeout 60; expect -re "$PROMPT"
+    if {![board_cmd "(./$OMNET_BIN -c General -r 0 --sim-time-limit=$SIMTIME > wl.out 2> wl.err; echo ITER_RC=\$? > /tmp/rc) & W=\$!"]} { bail "run $r: could not start the workload" }
+    set timeout 60; expect -re "$PROMPT"
+    if {![board_cmd "while kill -0 \$W 2>/dev/null; do echo HB t=\$(( \$(date +%s) - \$HS ))s; /root/sbc_read | head -1; sleep $POLL; done"]} { bail "run $r: could not start the heartbeat" }
+
+    # 010 §5: the heartbeat is the instrument. Silence, or accessA unchanged across 3 beats, is a hang.
+    set prev_access -1
+    set stalls 0
+    set beats 0
+    set timeout [expr {$POLL + 150}]
+    expect {
+        -re {HB t=([0-9]+)s} { incr beats; exp_continue }
+        -re {accessA=([0-9]+)} {
+            set a $expect_out(1,string)
+            if {$a == $prev_access} { incr stalls } else { set stalls 0 }
+            set prev_access $a
+            if {$stalls >= 3} { capture_hang $r "accessA frozen at $a across 3 consecutive heartbeats" }
+            exp_continue
+        }
+        -re "$PROMPT" {}
+        timeout { capture_hang $r "the heartbeat itself stopped - the shell is no longer executing (K7c signature)" }
+    }
+    if {![board_cmd "echo RUNEND \$(cat /tmp/rc) ITER_SECS=\$(( \$(date +%s) - \$HS ))"]} { bail "run $r: could not read the result" }
+    set rc "?"; set secs "?"
+    set timeout 120
+    expect {
+        -re {RUNEND ITER_RC=([0-9]+) ITER_SECS=([0-9]+)} { set rc $expect_out(1,string); set secs $expect_out(2,string) }
+        timeout { puts "\n!!! run $r: no RUNEND line" }
+    }
+    expect -re "$PROMPT"
+    puts "\n----- run $r: ITER_RC=$rc ITER_SECS=$secs beats=$beats"
+    if {![board_cmd "/root/sbc_read"]} { bail "run $r: could not read the final counters" }
+    set counters ""
+    set timeout 180
+    expect {
+        -re {\[SBC-COUNTERS\][^\n]*} { set counters $expect_out(0,string); exp_continue }
+        -re "$PROMPT" {}
+        timeout { puts "\n!!! run $r: final counter read timed out" }
+    }
+    set mr "?"; set mw "?"; set mg "?"; set pk "?"
+    regexp {memReads=([0-9]+)}   $counters -> mr
+    regexp {memWrites=([0-9]+)}  $counters -> mw
+    regexp {migrations=([0-9]+)} $counters -> mg
+    regexp {parked=([0-9]+)}     $counters -> pk
+    lappend results [list $r $rc $secs $mr $mw $mg $pk]
+    puts "----- run $r: memReads=$mr memWrites=$mw migrations=$mg parked=$pk"
+    if {$rc ne "0"} { puts "\n!!! run $r: ITER_RC=$rc - a non-zero rc means the run measured nothing useful. Reporting, not retrying." }
+}
+
+# ----------------------------------------------------------------- summary
+puts "\n===== \[5/5\] summary   policy=$POLICY migrate=$MIGRATE   runs completed: [llength $results] of $RUNS"
+puts "run | rc | secs | memReads | memWrites | migrations | parked"
+foreach row $results {
+    lassign $row r rc secs mr mw mg pk
+    puts [format "%3s | %2s | %4s | %s | %s | %s | %s" $r $rc $secs $mr $mw $mg $pk]
+}
+puts "\n===== reads and writes are reported separately on purpose - a combined figure hides the trade."
+puts "===== transcript: $LOGPATH"
+send "\x01\x18"
+expect eof

@@ -1,7 +1,7 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in section 10.
+Updated **2026-09-25** (section 0 and the trackers in 1b/3b). **Folders applied on 2026-09-14** — the layout is in section 10.
 
 > ## ⚠️ VERIFY THIS WEEK — due Friday 2026-09-18
 >
@@ -36,7 +36,25 @@ Updated 2026-09-14. **Folders applied on 2026-09-14** — the layout is in secti
 
 ---
 
-## 0. Where we are (2026-09-14)
+## 0. Where we are (updated 2026-09-25)
+
+> **Today, in one paragraph.** PLRU replacement is in and it helps the plain L2. SBC on top of it is at
+> parity, not yet a win. The change meant to make it win (evict the destination's least-recent line,
+> task 009) **hung the board** and was reverted. Task **012** is re-landing it in stages: the half that
+> needs no help from the CPU is built and passes every simulation check, including a directed test for
+> the one dangerous case; its FPGA image is built and is **on the board now**. The other half, where a
+> CPU still holds the line, is deliberately **not built** — that is the shape that hung the board.
+
+- **Branch now:** `sbc-009-redo` (cut from the fallback). `sbc-paper-aligned` is still the main line;
+  `sbc-sampling` holds the 010/011 documents.
+- **Two images that matter.** Quote the **hash**, never the filename — two files were found archived
+  under wrong names (010 §8.5):
+  - baseline, board-proven: `e41f780c…d177` (commit `201ebae`) — PLRU runs 1029 s and 1030 s, both rc=0
+  - candidate, built 2026-09-25: `af11762b…3ec4` (commit `97d0162`) — timing met, board result pending
+- **What is still true from before:** SBC is correct but not yet faster; every earlier number below
+  stands unless a later line replaces it.
+
+### The 2026-09-14 picture (kept — it is what the tracker below was written against)
 
 - **Branches:** `sbc-paper-aligned` is the main branch. `sbc-sampling` is a testing branch and will be
   merged back into the main branch.
@@ -109,7 +127,12 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 004 | Count all cache hits and misses | ✅ | — | 2026-09-02 |
 | 005 | Count hits honestly + sample counters over time | 🔴 next — ready to start | rewritten 2026-09-14 as one clean work order: counters in one place behind one switch, counters that follow the hit and miss words, strict timing rules, three fixes, snapshots; not started | 2026-09-14 |
 | 006 | On/off switch + count trips to main memory | ✅ 2026-09-14 | closed (`e4c5d53`). A new FPGA image is still owed — one image after task 005 | 2026-09-14 |
-| 008 | Pick the evicted line by recency (PLRU) instead of at random | 🔴 next — ready to start | [TASK](coder/008-plru-replacement/TASK.md): 2 commits, then one 64 KB image, sessions R (random) and P (PLRU). Session R also answers 007 F9 | 2026-09-17 |
+| 007 | Follow the paper's placement and eviction rules | ✅ 2026-09-16 | closed. Moved lines can be evicted, a move may reuse a moved-line slot, pairings end. Turned a big loss into near-parity | 2026-09-16 |
+| 008 | Pick the evicted line by recency (PLRU) instead of at random | ✅ 2026-09-18 | closed (`201ebae`). On the board PLRU alone won on the plain L2 (−3.56% cycles, −12.65% memory traffic); SBC on top still only ties | 2026-09-18 |
+| 009 | Evict the destination's least-recent line whatever its state | ⛔ **reverted** | **Its image hung the board** — 0 of 4 runs finished. Reverted on the fallback branch. The design rule it broke is written in the RTL: fencing the destination before the CPU answers adds a wait the baseline does not have | 2026-09-24 |
+| 010 | Find out which change hung the board | ✅ 2026-09-24 | closed. The hang belongs to 009, not to PLRU: the 008 image finished 2 of 2 PLRU runs (1029 s, 1030 s) while 009's finished 0 of 4. Also found two bitstreams archived under wrong names — cite hashes, never filenames | 2026-09-24 |
+| 011 | Plan how to re-land 009 safely | ✅ 2026-09-24 | the staged plan 012 follows | 2026-09-24 |
+| 012 | Re-land 009's destination eviction, one stage at a time | 🟡 **active** | [TASK](coder/012-reland-destination-eviction/TASK.md) · [REPORT](coder/012-reland-destination-eviction/REPORT.md) · [diagram](coder/012-reland-destination-eviction/diagram.md). C1 + C2 written and **sim-green (V1–V5)**; candidate image built (`af11762b…`). **On the board now.** C3 (the CPU-holds-it case) not written; a watchdog that survives into the image is waiting on a decision | 2026-09-25 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -191,6 +214,10 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 📘 [004](coder/004-l2-hitrate-counters/)
 - 🟢 [005](coder/005-hit-accounting-and-sampling/) — **active**: work order rewritten 2026-09-14, ready for a fresh coder chat.
 - 📘 [006](coder/006-migrate-switch-and-memory-traffic/) — closed 2026-09-14.
+- 📘 [007](coder/007-paper-aligned-eviction/) · 📘 [008](coder/008-plru-replacement/) — both closed.
+- ⚠️ [009](coder/009-evict-destination-lru/) — **reverted**: its image hung the board. Read 010 before reusing anything from it.
+- 📘 [010](coder/010-hang-bisection/) — which image hung, proved by hash and by counter identity. 📘 [011](coder/011-fix-009-destination-eviction/) — the re-land plan.
+- 🟢 [012](coder/012-reland-destination-eviction/) — **active**: the staged re-land. C1+C2 sim-green, image built, board run in progress.
 
 ## 4. Speed and improvement — `performance/`
 
