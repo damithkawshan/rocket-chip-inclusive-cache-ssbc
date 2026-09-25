@@ -51,8 +51,16 @@ Updated **2026-09-25** (section 0 and the trackers in 1b/3b). **Folders applied 
   under wrong names (010 §8.5):
   - baseline, board-proven: `e41f780c…d177` (commit `201ebae`) — PLRU runs 1029 s and 1030 s, both rc=0
   - candidate, built 2026-09-25: `af11762b…3ec4` (commit `97d0162`) — timing met, board result pending
-- **What is still true from before:** SBC is correct but not yet faster; every earlier number below
-  stands unless a later line replaces it.
+- **What is still true from before:** SBC is correct but not yet faster on real workloads; every earlier
+  number below stands unless a later line replaces it.
+- **NEW 2026-09-25 — the design's operating envelope is measured:**
+  [board-calib-envelope-2026-09-25.md](performance/board-calib-envelope-2026-09-25.md). 80 A/B points on
+  the board. Set balancing pays **exactly while a hot set's overflow fits the empty ways of its partner**
+  (`overflow <= spare`) — the rule is right on **78 of 80 points**, and the cliff moves to the predicted
+  place as the spare ways are varied. Inside the envelope: up to **−41% cycles, −85% memory reads**.
+  Outside: up to **+14% cycles, +24% reads** — half the plane loses, and losing is not free.
+  77% of the gain is the **source set no longer thrashing**, not reuse of parked lines; "hits per parked
+  line" is therefore not a figure of merit (0.19–295 among *winning* points).
 
 ### The 2026-09-14 picture (kept — it is what the tracker below was written against)
 
@@ -150,6 +158,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M10 | Try the CPU-cache setting that makes it report lines it drops | 🔴 | never tried; should cut wasted move attempts |
 | M11 | Which heat counter a partner hit should change | ✅ settled 2026-09-16 | Read from the paper PDF (Figures 2 and 3): home **+1** on a native miss even when the partner search hits, partner **−1**. We match the home half; the partner half changes no decision while paired. **No RTL change.** [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) section 0a |
 | M12 | Board check 1: after an SBC run, read every set — paired or not, and how hot | 🔴 | analysis §6 check 1. Predicts every set paired and destinations near maximum heat. **Also verifies L8** |
+| M20 | Map when SBC pays: sweep spare ways x overflow lines on the board | ✅ 2026-09-25 | **Done, 80 points.** Rule `overflow <= spare` holds on 78/80. [envelope](performance/board-calib-envelope-2026-09-25.md). Turns L6 (adaptive throttle) from a hunch into a specified job: detect "my overflow does not fit" and stop |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | 🔴 found 2026-09-16 | `Scheduler.scala:689-693` ORs the erase pulses and `Mux1H`es the home set: two at once decrement one wrong set. Harmless today, a **data bug** once pairings end on that count. Prerequisite P0 of the [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) |

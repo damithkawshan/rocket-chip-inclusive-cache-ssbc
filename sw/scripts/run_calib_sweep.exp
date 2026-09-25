@@ -74,6 +74,22 @@ set timeout 30
 expect { -re "TOOLS-OK" {} timeout { bail "l2_miss_calib or sbc_read missing on the board" } }
 expect -re "$PROMPT"
 
+# The board must carry the build that HAS -P. An older one ignores the flag and silently sweeps one
+# vertical line through the plane 160 times - which looks like data. The "model" line only exists in
+# the new build, so demand it before spending half an hour.
+if {![board_cmd "./l2_miss_calib -n -s 2 -W 1 -P 12 -p 19 | grep -c model"]} { bail "echo failed" }
+set timeout 60
+set hasP 0
+expect {
+    -re {usage:} { bail "the board's l2_miss_calib does not know -P - push the current build first" }
+    -re {\n1\r?\n} { set hasP 1 }
+    -re "$PROMPT" {}
+    timeout { bail "l2_miss_calib did not answer the -P capability check" }
+}
+if {!$hasP} { bail "the board's l2_miss_calib printed no model line - it is not the -P build" }
+expect -re "$PROMPT"
+puts "\n===== board has the -P build"
+
 # Build the sweep on the board, one short line at a time: this UART has no flow control, so a long
 # heredoc loses characters. Each line is echo-verified by board_cmd.
 puts "\n===== writing the sweep script on the board"

@@ -70,6 +70,13 @@ def pivot(pts):
             "migrations_on": on.get("m_migrations", 0),
             "parked_on": on.get("m_parked", 0),
             "secperpark_on": (on.get("m_secondaryHit", 0) / on["m_migrations"]) if on.get("m_migrations") else 0.0,
+            # The ON arm cannot start with a truly empty cache: after the drain and --reset-all the
+            # switch goes ON, and the 700 KB static binary paging itself in already heats sets and
+            # parks lines before main() reads the counter. Those lines sit in destination sets and
+            # eat the very empty ways this sweep varies, so the number is carried per point rather
+            # than averaged away - it matters most on the small-spare rows.
+            "parked_at_start_on": on.get("d_parkedAtStart", 0),
+            "parked_at_start_off": off.get("d_parkedAtStart", 0),
             "seconds_off": off.get("d_seconds", 0), "seconds_on": on.get("d_seconds", 0),
             "accessA_off": acc_o, "accessA_on": acc_n,
         }
@@ -106,6 +113,12 @@ def main(argv):
     bad = [r for r in rows if r["drained_off"] or r["drained_on"]]
     if bad:
         print(f"\n!!! {len(bad)} point(s) did not start cold (drain left lines parked) - listed in the CSV")
+    pre = [r for r in rows if r["parked_at_start_on"]]
+    if pre:
+        mx = max(r["parked_at_start_on"] for r in pre)
+        print(f"\nnote: {len(pre)} ON arm(s) began with lines already parked by the binary's own startup "
+              f"(max {mx:.0f}). Those sit in destination sets and reduce the empty ways the row claims; "
+              f"worst where spare is small. Column parked_at_start_on.")
     return 0
 
 if __name__ == "__main__":
