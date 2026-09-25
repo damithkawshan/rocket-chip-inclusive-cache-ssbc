@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     }
 
     /* ---- geometry ---- */
-    unsigned ways = 16, lgSets = 6, lgBlock = 6;
+    unsigned ways = 8, lgSets = 7, lgBlock = 6;
     uint64_t parked0 = 0, mig0 = 0;
     if (!nommio) {
         int fd = open("/dev/mem", O_RDWR | O_SYNC);
