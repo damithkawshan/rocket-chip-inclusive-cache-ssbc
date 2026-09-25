@@ -230,7 +230,11 @@ int main(int argc, char **argv) {
     unsigned spare    = (hp < ways) ? ways - hp : 0;          /* empty ways a partner can offer */
     unsigned overflow = (mp > ways) ? mp - ways : 0;          /* lines a source cannot hold */
     unsigned combined = ways + spare;                         /* source ways + partner's empty ways */
-    unsigned pairable = (h < m) ? h : m;                      /* the AT is 1:1, so this many pairs */
+    /* The AT is 1:1: every source needs a destination of its own, and a destination is any set that
+     * is not itself a source. Counting hit LINES here would be wrong - with -P 0 the hit sets get no
+     * traffic at all, which makes them better destinations (16 empty ways), not worse. */
+    unsigned nsrc = m, ndst = (m < sets) ? sets - m : 0;
+    unsigned pairable = (nsrc < ndst) ? nsrc : ndst;
     const char *verdict = (mp <= ways) ? "no misses by design (MP <= ways): nothing for SBC to move"
                         : (overflow <= spare) ? "SBC WIN predicted (overflow fits the partner's empty ways)"
                         : "SBC LOSS predicted (overflow exceeds the partner: floods it and evicts its hits)";
@@ -314,8 +318,13 @@ int main(int argc, char **argv) {
     if (hp >= ways && h)
         printf("  !!! -P %u >= %u ways: the hit sets thrash too, so no set has an empty way to donate\n",
                hp, ways);
-    if (h && m && h != m)
-        printf("  !!! h=%u and m=%u differ: only %u source(s) can be paired 1:1\n", h, m, pairable);
+    if (pairable < nsrc)
+        printf("  !!! %u source set(s) but only %u possible destination(s): %u source(s) cannot pair\n",
+               nsrc, ndst, nsrc - pairable);
+    if (h && h != m)
+        printf("  !!! h=%u m=%u: destinations are not uniform - sets %u..%u hold %u line(s) (%u empty ways),\n"
+               "  !!!   sets %u..%u are untouched (%u empty ways). Keep h == m for a clean sweep point.\n",
+               h, m, sb, sb + h - 1, hp, spare, sb + h, sb + half - 1, ways);
 
     /* ---- warm-up: fill the H sets and cycle the M pages ---- */
     uint64_t chk = run_steps(hbase, mbase, 0, warm, half, line, h, m, hp, mp, writes);
