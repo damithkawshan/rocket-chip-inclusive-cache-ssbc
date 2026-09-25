@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     }
 
     /* ---- geometry ---- */
-    unsigned ways = 8, lgSets = 7, lgBlock = 6;
+    unsigned ways = 8, lgSets = 11, lgBlock = 6;
     uint64_t parked0 = 0, mig0 = 0;
     if (!nommio) {
         int fd = open("/dev/mem", O_RDWR | O_SYNC);
@@ -208,7 +208,7 @@ int main(int argc, char **argv) {
     }
     int extra = (int)(lgSets + lgBlock) - 12;   /* set-index bits taken from the frame number */
     if (extra < 0) extra = 0;
-    if (ways < 4 || lgSets < 2 || lgBlock < 3 || lgBlock > 11 || extra > 4) {
+    if (ways < 4 || lgSets < 2 || lgBlock < 3 || lgBlock > 11 || extra > 6) {
         fprintf(stderr, "l2_miss_calib: unsupported L2 geometry ways=%u lgSets=%u lgBlockBytes=%u\n",
                 ways, lgSets, lgBlock);
         return 2;
@@ -270,7 +270,7 @@ int main(int argc, char **argv) {
                             "frame numbers from /proc/self/pagemap failed (run as root)\n", sets, extra);
             return 1;
         }
-        unsigned cnt[16] = {0};
+        unsigned cnt[64] = {0};
         for (unsigned i = 0; i < pool; i++) cnt[pfn[i] & (groups - 1)]++;
         for (unsigned g = 1; g < groups; g++) if (cnt[g] > cnt[q]) q = g;
         if (cnt[q] < need) {
