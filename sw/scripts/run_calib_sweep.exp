@@ -65,6 +65,7 @@ proc bail {m} { global LOGPATH; puts "\n!!! $m"; puts "!!! transcript: $LOGPATH"
 spawn picocom -b $BAUD $DEVICE
 set timeout 60
 expect { -re "Terminal ready" {} timeout { bail "picocom never became ready - is the port busy?" } }
+sleep 1
 send "\r"
 set timeout 120
 expect {
