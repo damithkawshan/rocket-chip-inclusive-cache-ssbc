@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""plot_calib_sweep.py <calib_sweep.csv> [-o outdir]
+"""plot_calib_sweep.py <calib_sweep.csv> [-o outdir] [--ways 16]
 
 Three figures from the l2_miss_calib sweep.
 
@@ -88,10 +88,9 @@ def fig_envelope(rows, out):
     fig.tight_layout(); fig.savefig(out, bbox_inches="tight"); plt.close(fig)
     return out
 
-def fig_cliffs(rows, out):
+def fig_cliffs(rows, out, ways=16):
     """Change over a continuous x, two series -> lines, small multiples by spare, legend + labels."""
     spares = sorted({int(r["spare"]) for r in rows}, reverse=True)
-    ways = 16
     fig, axes = plt.subplots(1, len(spares), figsize=(2.9 * len(spares), 3.5), sharey=True)
     axes = np.atleast_1d(axes)
     for ax, s in zip(axes, spares):
@@ -146,13 +145,18 @@ def fig_gain_source(rows, out):
 def main(argv):
     if not argv:
         print(__doc__); return 2
-    csv_path, outdir = argv[0], "."
-    if "-o" in argv:
-        outdir = argv[argv.index("-o") + 1]
+    csv_path, outdir, ways = argv[0], ".", 16
+    i = 1
+    while i < len(argv):
+        if argv[i] == "-o":
+            i += 1; outdir = argv[i]
+        elif argv[i] == "--ways":
+            i += 1; ways = int(argv[i])
+        i += 1
     rows = load(csv_path)
-    print(f"{len(rows)} points from {csv_path}")
+    print(f"{len(rows)} points from {csv_path}, ways={ways}")
     for f in (fig_envelope(rows, f"{outdir}/envelope.png"),
-              fig_cliffs(rows, f"{outdir}/cliffs.png"),
+              fig_cliffs(rows, f"{outdir}/cliffs.png", ways=ways),
               fig_gain_source(rows, f"{outdir}/gain-source.png")):
         if f: print("  wrote", f)
     return 0

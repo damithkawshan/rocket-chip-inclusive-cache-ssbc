@@ -16,7 +16,10 @@
 #
 # The board must already be booted and hold sbc_read + l2_miss_calib (reboot_and_handover.exp).
 #
-# Usage: ./run_calib_sweep.exp [-steps 100000] [-label calib-sweep]
+# Usage: ./run_calib_sweep.exp [-steps 100000] [-label calib-sweep] [-hm 32] [-drain "-P 16 -p 48"]
+#   -hm <n>          number of hot sets AND miss sets (must be equal); default 32 (for 64-set L2)
+#   -drain "<args>"  drain-command arguments passed to l2_miss_calib to thrash the cache clean;
+#                    default "-P 16 -p 48" (for 16-way); 8-way should pass "-P 8 -p 24"
 set CY      "/home/damith/Research/repos/chipyard_performance_eval/chipyard"
 set DEVICE  "/dev/ttyUSB2"
 set BAUD    "115200"
@@ -26,6 +29,8 @@ set STEPS   100000
 set LABEL   "calib-sweep"
 set PLIST   "0 4 8 12 16"
 set MPLIST  "17 18 19 20 21 22 23 24 25 26 27 28 30 32 36 48"
+set HM      32
+set DRAIN   "-P 16 -p 48"
 
 for {set i 0} {$i < $argc} {incr i} {
     switch -- [lindex $argv $i] {
@@ -33,6 +38,8 @@ for {set i 0} {$i < $argc} {incr i} {
         "-label" { incr i; set LABEL [lindex $argv $i] }
         "-P"     { incr i; set PLIST [lindex $argv $i] }
         "-p"     { incr i; set MPLIST [lindex $argv $i] }
+        "-hm"    { incr i; set HM [lindex $argv $i] }
+        "-drain" { incr i; set DRAIN [lindex $argv $i] }
         default  { puts "unknown arg: [lindex $argv $i]"; exit 2 }
     }
 }
@@ -100,11 +107,11 @@ set lines [list \
   "echo 'for M in $MPLIST; do' >> /root/sweep.sh" \
   "echo 'for G in off on; do' >> /root/sweep.sh" \
   "echo './sbc_read --migrate=off > /dev/null' >> /root/sweep.sh" \
-  "echo './l2_miss_calib -n -s 1500 -P 16 -p 48 > /dev/null' >> /root/sweep.sh" \
+  "echo './l2_miss_calib -n -s 1500 $DRAIN > /dev/null' >> /root/sweep.sh" \
   "echo 'K=\$(./sbc_read | grep -o \"parked=\[0-9\]*\" | head -1 | cut -d= -f2)' >> /root/sweep.sh" \
   "echo './sbc_read --reset-all --migrate=\$G > /dev/null 2>&1 || ./sbc_read --migrate=\$G > /dev/null' >> /root/sweep.sh" \
   "echo 'echo SWEEP-POINT P=\$P p=\$M migrate=\$G drainedParked=\$K' >> /root/sweep.sh" \
-  "echo './l2_miss_calib -s \$S -P \$P -p \$M -h 32 -m 32' >> /root/sweep.sh" \
+  "echo './l2_miss_calib -s \$S -P \$P -p \$M -h $HM -m $HM' >> /root/sweep.sh" \
   "echo 'done; done; done' >> /root/sweep.sh" \
   "echo 'echo SWEEP-DONE' >> /root/sweep.sh" ]
 foreach l $lines {
