@@ -5,10 +5,14 @@ Parses the [SBC-COUNTERS] dump that closes each run plus the RUNEND line, then a
 checks from 010 TASK §7. Reads and writes are printed SEPARATELY on purpose: SBC trades one for the
 other, and a combined figure hides exactly that.
 
-K3 (attempted - migrations == dstAbortDirty + Held + Both) is the behavioural fingerprint of WHICH
-RTL is in the bitstream: it holds under 008-c2 semantics and MUST FAIL on 012 C2, because a dirty
-destination way is now written back instead of aborting. A K3 that still holds means the image on
-the board is not the one we think it is.
+WHICH RTL is in the bitstream is told by **dstAbortDirty**, not by K3. Corrected 2026-09-25 after the
+first board run: under 012 C2 a dirty client-free destination no longer aborts, so dstAbortDirty falls
+to 0 AND those attempts commit - both sides of K3 move together and K3 keeps holding. K3 breaking was
+a property of task 009 (which also took client-held ways), and carrying that claim over to C2 was
+wrong. The fingerprint is:
+
+    R0 (008-c2) : dstAbortDirty large   (48,258 on the 1029 s reference run)
+    R1 (012 C2) : dstAbortDirty == 0    with migrations > 0 and dstAbortHeld still climbing
 """
 import re, sys
 
@@ -58,7 +62,11 @@ def main(paths):
               f"misses-outerA={mis:+d} ({'OK' if mis==0 else 'FAIL'}) | "
               f"L2_Cycles/50e6={cyc:.1f}s vs {d['secs']}s ({drift:.2f}%{'  OK' if drift<2 else '  FAIL'})")
         print(f"         K3: attempted-migrations={k3l} vs dstAborts={k3r} -> "
-              f"{'HOLDS - this is 008-c2 behaviour, NOT 012 C2' if k3l==k3r else 'BREAKS by design (012 C2 writes a dirty destination back instead of aborting)'}")
+              f"{'holds' if k3l==k3r else 'breaks (declines are counted in SBC_Aborted, not in the three)'}")
+        which = ("012 C2 IS live (dirty-only destination aborts eliminated)" if d["dstAbortDirty"] == 0 and d["migrations"] > 0
+                 else "008-c2 behaviour: a dirty destination still aborts" if d["dstAbortDirty"] > 0
+                 else "no migrations - says nothing about which RTL is loaded")
+        print(f"         which RTL: dstAbortDirty={d['dstAbortDirty']} held={d['dstAbortHeld']} both={d['dstAbortBoth']} -> {which}")
 
     if len(runs) > 1:
         s = [d["secs"] for d in runs]

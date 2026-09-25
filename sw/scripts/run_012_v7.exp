@@ -227,8 +227,11 @@ for {set r 1} {$r <= $RUNS} {incr r} {
     if {![board_cmd "/root/sbc_read"]} { bail "run $r: could not read the final counters" }
     set counters ""
     set timeout 180
+    # Require the trailing newline. Without it the pattern fires as soon as "[SBC-COUNTERS]" plus
+    # whatever has arrived matches, so the ~600-char line is captured half-built and every field past
+    # the cut reads "?" (seen on run 1, 2026-09-25: migrations=4889442 was captured as 488944).
     expect {
-        -re {\[SBC-COUNTERS\][^\n]*} { set counters $expect_out(0,string); exp_continue }
+        -re {\[SBC-COUNTERS\][^\n]*\n} { set counters $expect_out(0,string); exp_continue }
         -re "$PROMPT" {}
         timeout { puts "\n!!! run $r: final counter read timed out" }
     }
@@ -250,6 +253,8 @@ foreach row $results {
     puts [format "%3s | %2s | %4s | %s | %s | %s | %s" $r $rc $secs $mr $mw $mg $pk]
 }
 puts "\n===== reads and writes are reported separately on purpose - a combined figure hides the trade."
+puts "===== authoritative numbers: run sw/scripts/v7_summarize.py on the transcript - it parses whole"
+puts "===== lines from the log and also applies the 010 §7 identity checks."
 puts "===== transcript: $LOGPATH"
 send "\x01\x18"
 expect eof
