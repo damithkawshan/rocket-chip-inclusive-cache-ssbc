@@ -14,14 +14,26 @@
  *     and moved next to each other with mremap (the frame does not change).
  *     Within the group's 64 sets, "set k" below means the group's k-th set.
  *   - L1 D-cache set = page offset bits 10:6.
- *   - H ("hit") lines: sets 0..h-1 on HP = 3/4 x ways pages (12). 12 lines per 16-way set always fit,
- *     with 4 ways spare for stray OS lines. Between two touches of an H line its L1 set takes 23 other
- *     misses, so it has left the 4-way L1 (survives (3/4)^23 = 0.1%).
- *     Every H access: L1 miss -> L2 primary hit.
- *   - M ("miss") lines: sets 32..32+m-1 on MP = 8 x ways pages (128). A line survives the 127 misses
- *     between two of its touches with (15/16)^127 = 0.03%.
- *     Every M access: L1 miss -> L2 data miss.
+ *   - H ("hit") lines: sets 0..h-1 on HP pages (-P, default 3/4 x ways = 12). Exactly ONE line of each
+ *     H set is touched per step, so HP is both that set's working set AND its reuse distance. HP < ways
+ *     means the set always hits and leaves ways-HP ways EMPTY - those empty ways are what SBC can use.
+ *     Between two touches of an H line its L1 set takes 2*HP-1 other misses, so it has left the 4-way
+ *     L1 (12 pages: (3/4)^23 = 0.1%). Every H access: L1 miss -> L2 primary hit.
+ *   - M ("miss") lines: sets 32..32+m-1 on MP pages (-p, default 8 x ways = 128). Same story: one line
+ *     per M set per step, so MP is the set's working set and reuse distance. MP > ways means every
+ *     access misses. Every M access: L1 miss -> L2 data miss.
  *   - Each step touches h H lines and m M lines, interleaved. Designed miss rate = m / (h + m).
+ *
+ * WHAT THIS MEASURES FOR SBC (the reason -P exists). With migration ON the M sets heat up and become
+ * sources, the H sets stay cold and become destinations, paired 1:1. A source overflows its set by
+ * MP-ways lines; its partner offers ways-HP empty ways. So the design predicts:
+ *
+ *       SBC wins  <=>  MP - ways  <=  ways - HP    <=>    MP <= 2*ways - HP
+ *
+ * Default 16 ways and HP=12 puts the cliff at MP=20: -p 19 won on the board (-13.5% cycles), -p 48
+ * flooded the partners and lost (miss rate 60.6% -> 69.0%). -P sweeps the other side of that
+ * inequality, which was hardcoded until now, so the whole (spare, overflow) plane can be mapped.
+ * Every run prints its own predicted verdict so a sweep is self-checking.
  *
  * Reads only by default. L1 victims are then clean, and Rocket's D-cache drops clean victims silently
  * (acquireBeforeRelease = false), so there is no inner-C write-back: the legacy L2_Accesses / L2_Hits
@@ -36,7 +48,8 @@
  * ticks, and this program's own start and finish.
  *
  * Build: riscv64-unknown-linux-gnu-gcc -O2 -static -o sw/build/l2_miss_calib sw/l2_miss_calib.c
- * Run:   ./l2_miss_calib [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-w] [-n]
+ * Run:   ./l2_miss_calib [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-p missPages]
+ *                        [-P hitPages] [-w] [-n]
  *        -n: no MMIO at all (no counter reset, no read-back; assumes 64 sets x 16 ways x 64 B).
  *        Otherwise it zeroes the event counters (SBC_StatsReset) after warm-up and reads them under
  *        L2_StatsHold at the end, so its own output is an exact window. Safe inside sbc_read --zero --.
@@ -156,6 +169,7 @@ static uint64_t run_steps(uint8_t *hbase, uint8_t *mbase, uint64_t first, uint64
 int main(int argc, char **argv) {
     uint64_t steps = 50000, warm = 2048;
     unsigned h = 32, m = 32, user_mp = 0;
+    int user_hp = -1;                     /* -1 = not given; 0 IS a legal value (no hit lines at all) */
     int writes = 0, nommio = 0;
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-s") && i + 1 < argc) steps = strtoull(argv[++i], 0, 0);
@@ -163,10 +177,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-h") && i + 1 < argc) h = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) m = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-p") && i + 1 < argc) user_mp = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-P") && i + 1 < argc) user_hp = (int)strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-w")) writes = 1;
         else if (!strcmp(argv[i], "-n")) nommio = 1;
         else {
-            fprintf(stderr, "usage: %s [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-p missPages] [-w] [-n]\n",
+            fprintf(stderr, "usage: %s [-s steps] [-W warmup] [-h hitLines] [-m missLines] "
+                            "[-p missPages] [-P hitPages] [-w] [-n]\n"
+                            "  -p: lines cycling in each MISS set (its working set and reuse distance)\n"
+                            "  -P: lines cycling in each HIT set; ways-P is the empty ways SBC can use\n",
                     argv[0]);
             return 2;
         }
@@ -200,7 +218,22 @@ int main(int argc, char **argv) {
     unsigned sets = 1u << lgSets, half = span / 2, line = 1u << lgBlock;
     if (h > half) h = half;
     if (m > half) m = half;
-    unsigned hp = ways * 3 / 4, mp = user_mp ? user_mp : (ways * 8), need = hp + mp;
+    unsigned hp = (user_hp >= 0) ? (unsigned)user_hp : (ways * 3 / 4);
+    unsigned mp = user_mp ? user_mp : (ways * 8);
+    if (hp == 0) h = 0;                    /* no hit pages means no hit lines to touch */
+    if (mp == 0) { fprintf(stderr, "l2_miss_calib: -p 0 leaves nothing to miss on\n"); return 2; }
+    unsigned need = hp + mp;
+
+    /* The model this program exists to test. One access per set per step, so a set's working set IS
+     * its reuse distance: an H set of HP lines in `ways` ways always hits and leaves ways-HP ways
+     * empty; an M set of MP lines misses every time once MP > ways. */
+    unsigned spare    = (hp < ways) ? ways - hp : 0;          /* empty ways a partner can offer */
+    unsigned overflow = (mp > ways) ? mp - ways : 0;          /* lines a source cannot hold */
+    unsigned combined = ways + spare;                         /* source ways + partner's empty ways */
+    unsigned pairable = (h < m) ? h : m;                      /* the AT is 1:1, so this many pairs */
+    const char *verdict = (mp <= ways) ? "no misses by design (MP <= ways): nothing for SBC to move"
+                        : (overflow <= spare) ? "SBC WIN predicted (overflow fits the partner's empty ways)"
+                        : "SBC LOSS predicted (overflow exceeds the partner: floods it and evicts its hits)";
 
     /* ---- memory: HP hit pages then MP miss pages, each its own frame, all in one set group ---- */
     size_t len = (size_t)need * PAGE;
@@ -271,7 +304,18 @@ int main(int argc, char **argv) {
         printf("  !!! %llu lines are parked from an earlier migrate-ON run. They take ways in the hit sets,\n"
                "  !!! so the 50%% design does not hold here. Reboot for a clean calibration.\n", (ull)parked0);
     if (mig0)
-        printf("  !!! migration is ON - the design assumes OFF\n");
+        printf("  !!! migration is ON - the 50%% design assumes OFF; this is the SBC arm of an A/B\n");
+    printf("  model      : HP=%u -> %u empty way(s) per hit set | MP=%u -> %u overflow line(s) per miss set\n"
+           "               combined capacity %u way(s), %u source/destination pair(s) possible\n"
+           "               %s\n",
+           hp, spare, mp, overflow, combined, pairable, verdict);
+    if (mp <= ways)
+        printf("  !!! -p %u <= %u ways: the miss sets HIT, so this run is not a miss generator\n", mp, ways);
+    if (hp >= ways && h)
+        printf("  !!! -P %u >= %u ways: the hit sets thrash too, so no set has an empty way to donate\n",
+               hp, ways);
+    if (h && m && h != m)
+        printf("  !!! h=%u and m=%u differ: only %u source(s) can be paired 1:1\n", h, m, pairable);
 
     /* ---- warm-up: fill the H sets and cycle the M pages ---- */
     uint64_t chk = run_steps(hbase, mbase, 0, warm, half, line, h, m, hp, mp, writes);
@@ -310,9 +354,12 @@ int main(int argc, char **argv) {
 
     uint64_t dAcc = steps * (h + m), dMiss = steps * m;
     printf("[L2MISS-DESIGN] sets=%u ways=%u line=%u group=%u firstSet=%u h=%u m=%u hpages=%u mpages=%u "
+           "spare=%u overflow=%u combined=%u pairable=%u fits=%d "
            "steps=%llu warmup=%llu writes=%d designedAccesses=%llu designedMisses=%llu "
            "designedMissRate=%.2f%% parkedAtStart=%llu seconds=%.2f checksum=%llx\n",
-           sets, ways, line, q, sb, h, m, hp, mp, (ull)steps, (ull)warm, writes, (ull)dAcc, (ull)dMiss,
+           sets, ways, line, q, sb, h, m, hp, mp, spare, overflow, combined, pairable,
+           (mp > ways && overflow <= spare) ? 1 : 0,
+           (ull)steps, (ull)warm, writes, (ull)dAcc, (ull)dMiss,
            designRate, (ull)parked0, t1 - t0, (ull)chk);
     if (nommio) {
         printf("  (-n: no counters read; wrap with sbc_read --zero -- to measure)\n");
@@ -350,9 +397,17 @@ int main(int argc, char **argv) {
                (ull)v[8], 100.0 * (double)(v[8] - v[9]) / (double)v[8]);
     printf("  memory     : reads %llu, writes %llu, clean releases %llu, L2 cycles %llu\n",
            (ull)v[10], (ull)v[11], (ull)v[13], (ull)v[14]);
-    if (v[19])
+    if (v[19]) {
         printf("  SBC        : migrate %s, migrations %llu, secHits %llu, parked %llu%s\n",
                v[18] ? "ON" : "OFF", (ull)v[15], (ull)v[16], (ull)v[17],
                v[18] ? "  (design assumes migrate OFF)" : "");
+        /* Hits per park is NOT the figure of merit - the -p 19 board win ran at 0.36 while omnetpp
+         * loses at 0.47. Most of the gain is the SOURCE set no longer thrashing, which shows up as
+         * primaryHit above. Printed because it is cheap and separates "parked and reused" from
+         * "parked and thrown away". */
+        if (v[15])
+            printf("               secondary hits per migration %.3f, secondary hits %.2f%% of accesses\n",
+                   (double)v[2] / (double)v[15], acc ? 100.0 * (double)v[2] / (double)acc : 0.0);
+    }
     return 0;
 }
