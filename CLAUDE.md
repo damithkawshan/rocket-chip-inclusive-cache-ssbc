@@ -13,26 +13,68 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status (updated 2026-09-25)
+## Current status — OPTIMIZATION PHASE (updated 2026-09-25)
 
-> **▶ START HERE (2026-09-25).** Branch **`sbc-009-redo`**. Task **012** is active:
-> [TASK](ai-documents/coder/012-reland-destination-eviction/TASK.md) ·
-> [REPORT](ai-documents/coder/012-reland-destination-eviction/REPORT.md) ·
-> [diagram](ai-documents/coder/012-reland-destination-eviction/diagram.md).
+> **▶ START HERE.** Branch **`sbc-009-redo`**. The build phases and the destination-side tasks are done.
+> **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
+> "when does set balancing pay, and can the hardware tell".**
 >
-> - **Task 009 is REVERTED — its bitstream hung the board** (0 of 4 runs completed). The cause is not
->   PLRU: the 008 image completed 2 of 2 PLRU runs (1029 s, 1030 s). Proof, and the two mislabelled
->   bitstreams found along the way, are in [coder/010](ai-documents/coder/010-hang-bisection/REPORT.md).
->   **Anything quoting 009 as built-and-working is wrong.**
-> - **012 C1+C2 are written and sim-green** (V1–V5, including a directed dirty-**guest** test: 9 write-backs,
->   all to the source set's address, plus a random-mode control with 0 events). Commits `97d0162`, `85cb5ff`.
-> - **012 C3 (a CPU still holds the destination line) is deliberately NOT built.** It needs the CPU to
->   answer while the destination row is fenced — the hold-and-wait edge `MSHR.scala:512-516` warns about,
->   and the shape that hung the board.
-> - **Bitstreams — cite the sha256, never the filename** (two files were archived under wrong names):
->   baseline `e41f780c…d177` = `201ebae`; candidate `af11762b…3ec4` = `97d0162` (built 2026-09-25).
-> - **Open decision:** a watchdog that survives into the bitstream (011 §11.4). Every Chisel assert is
->   inside `ifndef SYNTHESIS`, so **the board has no safety net** and the next wedge is as blind as the last.
+> ### The rule that now governs every decision
+>
+> Measured on the board, 2026-09-25, **78 of 80 points (98%)** —
+> [findings](ai-documents/performance/sbc-findings-2026-09-25.md) ·
+> [experiment](ai-documents/performance/board-calib-envelope-2026-09-25.md):
+>
+> > **SBC pays exactly while a hot set's overflow fits the empty ways of its partner:**
+> > **`overflow ≤ spare`, i.e. `MP ≤ 2·ways − HP`**
+>
+> - inside: up to **−41% cycles, −85% memory reads** · outside: up to **+14% cycles, +24% reads**
+> - **half the measured plane loses**, and losing is not free — migrations flood the partner and evict
+>   the lines that were hitting there
+> - omnetpp on our 64 KB 16-way L2 is **far outside** the region. That is why every A/B since August has
+>   come back at parity or worse. It is not a bug in our rules
+>
+> ### Two figures of merit that are WRONG — do not use them
+>
+> - ❌ **"hits per parked line"** (break-even 1.0). Among *winning* points it ranges **0.19 to 295**;
+>   omnetpp's losing 0.47 sits inside that range. It decides nothing
+> - ❌ **"secondary hits are the benefit"**. **77% of the gain is PRIMARY hits** — the source set no
+>   longer thrashing once its excess leaves. The second search is a cost to minimise, not the feature
+>
+> ### What to build next
+>
+> - ✅ **The adaptive throttle (L6)** — now a specified job: *stop migrating when the overflow does not
+>   fit*. The RTL already distinguishes an **invalid** destination way (`dstFree`) from an **overwritten**
+>   one (`dstEvictable`) — that is the direct test for real free space, and the decision currently ignores
+>   the difference. Cheapest first experiment: a runtime bit that allows migration **only into an invalid
+>   way**. No new state, testable in sim before any bitstream
+> - ⛔ **Do NOT build 012 C3** (client-held destination way). It is 45% of a slice worth under 2% of
+>   attempts, and it carries the hold-and-wait shape that hung the board on 009
+> - 🔶 **Geometry**: the paper used 4096 sets / 8 ways, we use 64 / 16, and it warns that fewer, larger
+>   sets leave less to win. 128 KB moves toward its regime (256 KB blocked by B7-2)
+>
+> ### Board and bitstream state
+>
+> - **Cite the sha256, never the filename** (two files were archived under wrong names):
+>   baseline `e41f780c…d177` = `201ebae`; current `af11762b…3ec4` = `97d0162`
+> - **Task 012 is DONE**: sim-green, **board gate 4 of 4** (009's image was 0 of 4), dirty destination
+>   aborts **48,258 → 0** — and **no performance change**, for the reason the rule above explains.
+>   [REPORT](ai-documents/coder/012-reland-destination-eviction/REPORT.md)
+> - **Task 009 is REVERTED — its bitstream hung the board.** Anything quoting 009 as working is wrong
+>   ([coder/010](ai-documents/coder/010-hang-bisection/REPORT.md))
+> - ⚠️ **OPEN:** the board stopped answering ~6 h after the 012 series finished cleanly. Not during a
+>   measured run; cause unknown
+> - ⚠️ **OPEN decision:** a watchdog that survives into the bitstream (011 §11.4). Every Chisel assert is
+>   inside `ifndef SYNTHESIS`, so the board has **no safety net** and the next wedge is as blind as the last
+>
+> ### Measuring when SBC pays
+>
+> `sw/l2_miss_calib.c` is the instrument. It touches **one line per set per step**, so a set's page count
+> is both its working set and its reuse distance — which is what makes the rule falsifiable.
+> `-p` = lines per hot set, `-P` = lines per cold set (so `ways − P` is the empty ways). Every run prints
+> its own predicted verdict. Sweep and figures: `sw/scripts/run_calib_sweep.exp` →
+> `parse_calib_sweep.py` → `plot_calib_sweep.py`. **Keep `-h` equal to `-m`**, or the destinations are
+> not uniform and the point is meaningless (the program warns).
 
 <details>
 <summary>The 2026-09-14 status, kept for the sections that still refer to it</summary>
@@ -153,7 +195,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | L3 | One latent timing window (`[born→gate]`) | **Bug risk:** never reproduced; `sbcGateStallCycles` exists to hunt it | `bug-fix-log.md` |
 | L4 | Task 003 GATE 5 never signed off | **Bug risk:** 6 of its 12 cases never proved their event; the two-core cases never ran. **Moved to the last phase** (2026-09-14) | `coder/003` |
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
-| L6 | No adaptive yield throttle | **Speed gap:** a set keeps migrating even when its parked lines are never reused | not built |
+| L6 | **No adaptive throttle — now the top priority.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | **This is where the performance is** (2026-09-25 sweep). Outside the envelope migration costs up to +14% cycles. Specified job: *stop when the overflow does not fit*. `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite | not built |
 | L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
 | L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful. **⚠️ Verify this week** (due 2026-09-18) | `Directory.scala` computes `displacedOther`, but nothing reads it |
 
@@ -163,12 +205,13 @@ the full table, the literature it comes from, and which counters follow it. This
 |---|---|---|---|
 | G1 | ~~Parked lines are the last choice for eviction~~ **REMOVED 2026-09-16 (task 007 C1)** — a parked line is now an ordinary candidate in the random victim tier | was: they pile up (825 → 1,804 in one board session) and crowd out home lines | `Directory.scala` victim mux |
 | G2 | ~~When the random pick lands on a parked line, eviction takes the **first** home line~~ **REMOVED 2026-09-16 (task 007 C1)** — the tier that did this is deleted, not fixed; the random pick no longer needs a fallback | was: eviction stopped being random on ~44% of evictions | `Directory.scala` victim mux |
-| G3 | A parked line is found only by a second look, and only from its own home set | ~13× fewer hits per slot than a home line | design limit |
+| G3 | ~~A parked line is found only by a second look~~ **RE-READ 2026-09-25:** true but **not the gap**. 77% of SBC's gain is the *source* set no longer thrashing, not parked-line reuse; among winning points hits-per-park runs 0.19–295. The second search is a cost, not the benefit | see [findings](ai-documents/performance/sbc-findings-2026-09-25.md) §5 | design limit |
 | G4 | One migration at a time | Throughput ceiling at millions of migrations | `Scheduler.scala:271-282` |
 | G5 | ~70–80% of migration attempts abort on the board | Wasted probes and directory reads | stale `clients` bit; `acquireBeforeRelease = true` never tried |
 | G6 | Random (LFSR) replacement, not LRU as in the paper; small 8 KB L1 | The paper's "a moved line gets a head start" became "a moved line is never evicted" | `Directory.scala` |
 | G7 | SBU logic is 60 levels deep; its per-set tables are flip-flops | Timing and area cost | `SetBalanceUnit.scala`, `DSS.scala` |
 | G8 | ~~Open question (M11)~~ **CLOSED 2026-09-16: not a gap.** Home +1 on a native miss matches the paper (Fig 2/3); the missing partner −1 changes no decision while paired | none | `Directory.scala:313-315` |
+| G10 | **MEASURED 2026-09-25 — the dominant cause.** The workload is outside the envelope: omnetpp's per-set overflow is hundreds of lines against ≤16 empty ways, so migration cannot relieve the source set and only floods the partner | up to **+14% cycles, +24% reads** in the equivalent sweep corner | [findings](ai-documents/performance/sbc-findings-2026-09-25.md) |
 | G9 | **Hypothesis (2026-09-15, unverified):** a move may only overwrite a *home* line in the destination (`dstEvictable` needs `!displaced`); destinations evict home lines first; pairs never end (L8) → each pair settles at 1 home + 15 moved lines | ~47% of the cache parked at any size (measured 480/1024 and 1903/4096); primary hit rate roughly halves | `ai-documents/performance/why-sbc-loses-2026-09-15.md`; `MSHR.scala:1469-1470`, `Directory.scala:217-226` |
 
 ### Bug patterns that keep coming back (details: `ai-documents/bugs/bug-fix-log.md`)

@@ -1,7 +1,8 @@
 # Coder report 012 — re-land 009's destination eviction, staged and board-gated
 
 **Date:** started 2026-09-24 · **Branch:** `sbc-009-redo` · **Status:** IN PROGRESS — C1 + C2 written,
-**sim gate GREEN (V1–V5, including the directed dirty-guest test)**. **Bitstream BUILT (V6) — not yet on the board.**
+**sim gate GREEN (V1–V5)**, **bitstream BUILT (V6)**, **board gate PASSED (V7: 4 of 4 completions)**.
+**C2 works and is safe — and it buys no performance.** See "V7" and the verdict below.
 C3 (client-held W) not written; the synthesizable watchdog is awaiting a user decision.
 
 > Filled in as the work happens. Task 009's REPORT was left as an empty template and its gates were
@@ -92,7 +93,7 @@ random mode too and destroyed the only control we had. The gate keeps random run
 | **V4** | **PASS** | directed test `dirty_guest_evict_test`, config `SipTestPlruConfig`: **9 `DST-RELEASE guest=1`, every one `home=5` (the source set), never `dstSet=6`** · all 8 ways of D released at least once · H3 held the copy **9 of 9** · read-back **144 lines, 0 mismatches** (the 8 evicted guests were re-fetched from memory) · **0** asserts / TLMonitor / shadow events · **random-mode control: 0 releases, 47,990 aborts**. Details below |
 | V5 | **PASS** | NoSbc counters identical to baseline in both policies (part of V1) |
 | **V6** | **BUILT** | `af11762b…3ec4`, WNS **+0.156 ns**, TNS 0, WHS +0.009 ns, 0 failing endpoints, DRC 54 (= previous build). Not board-tested. Row in "Board run" |
-| V7 | pending | board — 4 consecutive PLRU ON completions |
+| **V7** | **PASS** | board, image `af11762b…3ec4`: **4 of 4 completions**, rc=0, **1032 / 1032 / 1033 / 1032 s** (009's image was 0 of 4). All three 010 §7 identities exact in every run. **`dstAbortDirty = 0` in all four** (baseline: 48,258) — C2 is live on hardware. Transcript `scripts/logs/012-v7-plru-r1-97d0162-20260925-012553.log` |
 
 ### V2 detail — what the new path actually did (SBC config, PLRU, stress test)
 
@@ -177,7 +178,7 @@ is a FAIL").
 | built | 2026-09-17 | 2026-09-25 00:01–00:29 (28 min) |
 | timing | — | WNS **+0.156 ns**, TNS 0, WHS +0.009, 0 failing endpoints (previous build +0.433) |
 | DRC | — | 54 violations, same count as the previous build |
-| board | `plru` ON **1029 s, 1030 s, 1029 s** (3 completions) + one OFF run 1030 s, all rc=0 | **not run** |
+| board | `plru` ON **1029, 1030, 1029 s** (3 completions) + one OFF run 1030 s, all rc=0 | **`plru` ON 1032, 1032, 1033, 1032 s — 4 of 4, all rc=0** |
 | provenance | patches beside it | `…-012-c2-97d0162-2026-09-25.provenance.txt`: commit, sha256 of every RTL source, chipyard state |
 | reports | — | `…-012-c2-97d0162-2026-09-25.reports/` (timing, DRC, utilization, clocks) |
 
@@ -191,10 +192,33 @@ V4 sim config). Elaboration had already produced the Verilog, and the edit adds 
 not in the image; the provenance file's hash of `RocketConfigs.scala` is the pre-edit one, which is what the
 build read.
 
-**Plan (V7), unchanged from `TASK.md` §5:** 4 consecutive `plru` ON completions, then 4 random, on R1, same SPEC
-`520.omnetpp_r --sim-time-limit=0.002s`. Report `memReads` and `memWrites` separately. K3 (`attempted −
-migrations = dstAbortDirty + Held + Both`) is **expected to fail on R1 by design** — a dirty destination is now
-written back instead of aborting — so it works as the fingerprint that R1, not R0, is the image on the board.
+**V7 result — the gate passed, and the feature does not pay.**
+
+| | R0 baseline (`201ebae`) | R1 candidate (`97d0162`) |
+|---|---:|---:|
+| completions | 3 of 3 ON | **4 of 4** |
+| seconds | 1029, 1030, 1029 | 1032, 1032, 1033, 1032 |
+| memReads | ~297.7 M | ~299.0 M |
+| memWrites | ~62.68 M | ~62.90 M |
+| hit rate | 70.56% | 70.50–70.56% |
+| **`dstAbortDirty`** | **48,258** | **0** |
+| total destination aborts | 81,150 | ~16,000 (all client-held) |
+
+**What C2 did:** exactly what it was designed to do. Dirty-only destination aborts are gone, total
+aborts fell ~80%, and the machine ran 4 consecutive workloads where 009's image managed none.
+
+**What C2 did not do:** change performance. Hit rate is flat, and cycles and memory traffic are
+~0.3–0.4% *worse* — small, but on the wrong side in all four runs against all three baseline runs.
+
+**Why, now measured rather than argued** ([envelope sweep](../../performance/board-calib-envelope-2026-09-25.md)):
+destination aborts were only 0.3–1.8% of attempts, so recovering them could never matter. omnetpp on
+this 64 KB 16-way L2 sits far outside the region where set balancing pays at all — its per-set overflow
+is in the hundreds of lines against at most 16 empty ways.
+
+**Therefore C3 should not be built.** It is the remaining 45% of a slice that is itself under 2% of
+attempts, it carries the deadlock shape that hung the board, and the sweep says the whole
+destination-side question is not where the performance is. The lever is the **adaptive throttle**
+(tracker L6): detect that the overflow does not fit and stop migrating.
 
 ## Findings (reported, not fixed)
 

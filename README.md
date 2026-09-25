@@ -1,36 +1,49 @@
 # Rocket Chip SoC Inclusive Cache Generator
 
-> ## This fork: the Set-Balancing Cache (SBC) — status 2026-09-25
+> ## This fork: the Set-Balancing Cache (SBC) — optimization phase, 2026-09-25
 >
-> This is a research fork of SiFive's inclusive L2. It adds the **Set-Balancing Cache**: when one set
-> runs hot, a line is moved into a colder partner set and served from there. Everything below this box
-> is the upstream generator's own README and still applies.
+> A research fork of SiFive's inclusive L2 adding the **Set-Balancing Cache**: when one set runs hot, a
+> line is moved into a colder partner set and served from there. Everything below this box is the
+> upstream generator's own README and still applies.
 >
-> **Where the work stands**
+> ### The main result
+>
+> Measured on an FPGA over 80 A/B points, **set balancing pays exactly while a hot set's overflow fits
+> the empty ways of its partner**:
+>
+> > **`overflow ≤ spare`**  (equivalently `MP ≤ 2·ways − HP`)
+>
+> The rule holds on **78 of 80 points**. Inside the region: up to **−41% cycles** and **−85% memory
+> reads**. Outside: up to **+14% cycles** and **+24% reads** — and half the plane is outside, so being
+> out of range is a real loss, not merely no gain.
+>
+> ![operating envelope](ai-documents/performance/figs-calib-envelope-2026-09-25/envelope.png)
+>
+> ### Where the work stands
 >
 > | | |
 > |---|---|
-> | Correctness | The cache returns correct data with SBC on — simulation tests and real programs |
-> | Speed | SBC is at **parity** with the plain L2, not yet ahead. PLRU replacement on its own **is** ahead (−3.56% cycles, −12.65% memory traffic on the board) |
-> | Active task | **012** — re-landing the destination-eviction change that hung the board as task 009, one stage at a time |
-> | Built and sim-green | The half that needs no help from the CPU (a dirty destination line with no CPU copy is written back, then its slot reused) |
-> | Not built, on purpose | The half where a CPU still holds the line. That needs the CPU to answer while the row is fenced, which is exactly the wait that hung the board |
-> | On the board now | Image `af11762b…3ec4`. Baseline for comparison: `e41f780c…d177` (1029 s and 1030 s, both clean) |
+> | Correctness | Correct data with SBC on — simulation tests, directed tests and real programs |
+> | Speed, synthetic workload inside the envelope | **−41% cycles, −85% memory reads** |
+> | Speed, real workload (omnetpp, 64 KB 16-way) | **parity** — it sits far outside the envelope |
+> | Where the gain comes from | **77% the source set no longer thrashing**, 23% serving moved lines |
+> | Phase | **Optimization.** Build phases and the destination-side tasks are complete |
+> | Next | An adaptive throttle: stop migrating when the overflow does not fit |
 >
-> **Where to read next**
+> ### Where to read next
 >
-> - [ai-documents/README.md](ai-documents/README.md) — the index and the status tracker for every task
+> - [ai-documents/performance/sbc-findings-2026-09-25.md](ai-documents/performance/sbc-findings-2026-09-25.md)
+>   — **start here**: what is settled, what it overturns, what to build
+> - [ai-documents/performance/board-calib-envelope-2026-09-25.md](ai-documents/performance/board-calib-envelope-2026-09-25.md)
+>   — the 80-point experiment, method and caveats
+> - [ai-documents/README.md](ai-documents/README.md) — doc index and per-task status tracker
 > - [CLAUDE.md](CLAUDE.md) — how to build, simulate and measure, and the traps that have cost us time
-> - [ai-documents/coder/012-reland-destination-eviction/](ai-documents/coder/012-reland-destination-eviction/) —
->   the active task: the work order, the report, and a [diagram](ai-documents/coder/012-reland-destination-eviction/diagram.md)
->   of what changed in the migration transaction
 >
-> **Two rules that keep biting us**
+> ### Rules that keep biting us
 >
-> - Name a bitstream by its **sha256**, never by its filename — two files have been found archived under
->   the wrong name.
+> - Name a bitstream by its **sha256**, never its filename — two files were archived under wrong names.
 > - A green simulation is not a green board. Task 009 was sim-green and still hung the FPGA.
-
+> - **"Hits per parked line" decides nothing** — among winning points it ranges 0.19 to 295.
 
 This `block` package contains an RTL generator for creating instances of a coherent, last-level, inclusive cache.
 The `InclusiveCache` controller enforces coherence among a set of caching clients
