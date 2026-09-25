@@ -1,0 +1,119 @@
+#!/usr/bin/expect --
+#
+# run_calib_sweep.exp - map the SBC operating envelope with l2_miss_calib.
+#
+# The model (l2_miss_calib.c header): one access per set per step, so a set's page count IS its
+# working set AND its reuse distance.
+#     hit  set: HP lines in `ways` ways -> always hits, leaves ways-HP ways EMPTY   (-P)
+#     miss set: MP lines in `ways` ways -> misses, overflows by MP-ways             (-p)
+#     SBC should win exactly while   MP - ways <= ways - HP,  i.e.  MP <= 2*ways - HP
+# With 16 ways the predicted cliff sits at MP = 32 - HP, so it must MOVE as -P changes. That moving
+# cliff is the thing this sweep exists to confirm or break.
+#
+# Each point runs twice, migration OFF then ON, from the same cleaned state: drain (thrash every set
+# with migration off so no parked line survives), check SBC_Parked reached 0, then --reset-all.
+# drainedParked is printed for every point, so a point that did NOT start cold says so itself.
+#
+# The board must already be booted and hold sbc_read + l2_miss_calib (reboot_and_handover.exp).
+#
+# Usage: ./run_calib_sweep.exp [-steps 100000] [-label calib-sweep]
+set CY      "/home/damith/Research/repos/chipyard_performance_eval/chipyard"
+set DEVICE  "/dev/ttyUSB2"
+set BAUD    "115200"
+set PROMPT  "# "
+set send_slow {1 .008}
+set STEPS   100000
+set LABEL   "calib-sweep"
+set PLIST   "0 4 8 12 16"
+set MPLIST  "17 18 19 20 21 22 23 24 25 26 27 28 30 32 36 48"
+
+for {set i 0} {$i < $argc} {incr i} {
+    switch -- [lindex $argv $i] {
+        "-steps" { incr i; set STEPS [lindex $argv $i] }
+        "-label" { incr i; set LABEL [lindex $argv $i] }
+        "-P"     { incr i; set PLIST [lindex $argv $i] }
+        "-p"     { incr i; set MPLIST [lindex $argv $i] }
+        default  { puts "unknown arg: [lindex $argv $i]"; exit 2 }
+    }
+}
+set stamp [clock format [clock seconds] -format "%Y%m%d-%H%M%S"]
+set LOGDIR "$CY/scripts/logs"
+catch { file mkdir $LOGDIR }
+set LOGPATH "$LOGDIR/012-$LABEL-$stamp.log"
+log_file -a $LOGPATH
+puts "===== transcript: $LOGPATH"
+puts "===== grid: -P {$PLIST} x -p {$MPLIST} x {off on}, steps=$STEPS"
+
+proc board_cmd {cmd {tmo 60}} {
+    set timeout $tmo
+    send -s "$cmd\r"
+    set probe [string range $cmd 0 59]
+    expect {
+        -ex $probe { return 1 }
+        timeout { puts "\n!!! echo mismatch sending: $cmd"; return 0 }
+    }
+}
+proc bail {m} { global LOGPATH; puts "\n!!! $m"; puts "!!! transcript: $LOGPATH"; exit 1 }
+
+spawn picocom -b $BAUD $DEVICE
+set timeout 60
+expect { -re "Terminal ready" {} timeout { bail "picocom never became ready - is the port busy?" } }
+send "\r"
+set timeout 120
+expect {
+    -re "login:"    { send -s "root\r"; exp_continue }
+    -re "Password:" { send -s "fpga\r"; exp_continue }
+    -re "$PROMPT"   {}
+    timeout         { bail "no shell prompt - is the board booted?" }
+}
+puts "\n===== shell is up"
+if {![board_cmd "cd /root"]} { bail "cd failed" }
+expect -re "$PROMPT"
+if {![board_cmd "test -x ./l2_miss_calib && test -x ./sbc_read && echo TOOLS-OK"]} { bail "echo failed" }
+set timeout 30
+expect { -re "TOOLS-OK" {} timeout { bail "l2_miss_calib or sbc_read missing on the board" } }
+expect -re "$PROMPT"
+
+# Build the sweep on the board, one short line at a time: this UART has no flow control, so a long
+# heredoc loses characters. Each line is echo-verified by board_cmd.
+puts "\n===== writing the sweep script on the board"
+set lines [list \
+  "rm -f /root/sweep.sh" \
+  "echo 'S=\$1' >> /root/sweep.sh" \
+  "echo 'for P in $PLIST; do' >> /root/sweep.sh" \
+  "echo 'for M in $MPLIST; do' >> /root/sweep.sh" \
+  "echo 'for G in off on; do' >> /root/sweep.sh" \
+  "echo './sbc_read --migrate=off > /dev/null' >> /root/sweep.sh" \
+  "echo './l2_miss_calib -n -s 1500 -P 16 -p 48 > /dev/null' >> /root/sweep.sh" \
+  "echo 'K=\$(./sbc_read | grep -o \"parked=\[0-9\]*\" | head -1 | cut -d= -f2)' >> /root/sweep.sh" \
+  "echo './sbc_read --reset-all --migrate=\$G > /dev/null 2>&1 || ./sbc_read --migrate=\$G > /dev/null' >> /root/sweep.sh" \
+  "echo 'echo SWEEP-POINT P=\$P p=\$M migrate=\$G drainedParked=\$K' >> /root/sweep.sh" \
+  "echo './l2_miss_calib -s \$S -P \$P -p \$M -h 32 -m 32' >> /root/sweep.sh" \
+  "echo 'done; done; done' >> /root/sweep.sh" \
+  "echo 'echo SWEEP-DONE' >> /root/sweep.sh" ]
+foreach l $lines {
+    if {![board_cmd $l]} { bail "could not write the sweep script" }
+    set timeout 30
+    expect -re "$PROMPT"
+}
+if {![board_cmd "wc -l /root/sweep.sh"]} { bail "wc failed" }
+set timeout 30
+expect -re "$PROMPT"
+
+puts "\n===== running the sweep (this is the long part)"
+if {![board_cmd "sh /root/sweep.sh $STEPS"]} { bail "could not start the sweep" }
+# A point is ~10 s; allow a long gap but not forever, so a wedge is caught rather than waited out.
+set timeout 900
+set pts 0
+expect {
+    -re {SWEEP-POINT[^\n]*} { incr pts; exp_continue }
+    -re {SWEEP-DONE} { puts "\n===== sweep finished: $pts points" }
+    -re {\[L2MISS-MEASURED\][^\n]*\n} { exp_continue }
+    timeout { puts "\n!!! no output for 900 s after $pts points - treating as a wedge, stopping"
+              puts "!!! transcript: $LOGPATH"; exit 3 }
+}
+set timeout 60
+expect -re "$PROMPT"
+puts "\n===== transcript: $LOGPATH"
+send "\x01\x18"
+expect eof
