@@ -157,3 +157,27 @@ the 256 KB image currently fails Vivado DRC with a combinational loop, unexplain
 - `l2_miss_calib` is static — hot sets stay hot. It says nothing about phase changes or pairing teardown.
 - The board went unresponsive after the 012 V7 series, ~6 h idle after a clean finish. Cause unknown and
   **still open**; it did not occur during a measured run.
+
+---
+
+## 9. Follow-Up: Associativity & Capacity Scaling (2026-09-25 / 2026-09-26)
+
+Following the 64 KB 16-way sweep, we evaluated two further geometries:
+1. **64 KB / 8-way / 128 sets** ([board-calib-envelope-8way-64kb-2026-09-25.md](board-calib-envelope-8way-64kb-2026-09-25.md))
+2. **1024 KB (1 MB) / 8-way / 2048 sets** ([board-calib-envelope-8way-1mb-2026-09-26.md](board-calib-envelope-8way-1mb-2026-09-26.md))
+
+| Metric | 64 KB / 16-way (64 sets) | 64 KB / 8-way (128 sets) | 1024 KB / 8-way (2048 sets) |
+|:---|:---:|:---:|:---:|
+| **Bitstream Commit** | `97d0162` | `c3faa05` | `c3faa05` |
+| **Grid Points** | 80 | 65 | 65 |
+| **Cliff Formula** | $MP \le 32 - HP$ | $MP \le 16 - HP$ | $MP \le 16 - HP$ |
+| **Cliff Invariance** | Confirmed ($4/5$ rows) | Confirmed ($4/5$ rows) | Confirmed ($4/5$ rows) |
+| **Best Read Delta** | **−85.5%** | **−93.1%** | **−99.7%** |
+| **Best Cycle Delta** | **−41.2%** | **−46.5%** | **−48.5%** |
+| **Worst Cycle Penalty** | **+13.6%** | **+4.9%** | **+3.3%** |
+
+### Key Scaling Findings:
+- **Cliff Invariance:** The cliff formula $\text{overflow} \le \text{spare} \iff MP \le 2\cdot\text{ways} - HP$ is strictly invariant with cache capacity, shifting predictably as $HP$ varies.
+- **Asymmetry Diminishes:** As cache capacity grows from 64 KB to 1 MB, the downside risk of being outside the envelope collapses from +13.6% cycles down to just +3.3%.
+- **Pseudo-Associativity:** At 8-way, set-duality pairing allows PLRU to pool 16 ways across paired sets, providing benefits even for moderate overflows beyond the rigid capacity boundary.
+
