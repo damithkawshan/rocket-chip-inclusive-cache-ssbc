@@ -15,7 +15,12 @@
   sha256 `3abaca528fbd...` (see Bitstreams table), no MISMATCH, WNS positive, 54 DRC warnings (routine).
 - C1 (86a8866), C2 (89d9c20), C3 (fed7227) all done, all four gates green each stage, base identity
   held throughout on NoSbc. Control bitstream DONE (sha256 `3abaca52...`).
-- At **stop point (c)**: waiting on the user's go for the candidate bitstream build (from the C3 commit).
+- User gave go at stop point (c) 2026-09-30 ("what happened to previous build? ... continue to latest
+  bitstream build"). Candidate build launched in tmux `sbc013` (commit `ec92d82` = C3 RTL `fed7227` +
+  REPORT.md only, tag `candidate-013c3`). Log:
+  `chipyard/scripts/logs/013-build-candidate-013c3-20260930-233256.log`. Running now.
+- Next: once it lands, fill the Bitstreams table's candidate row, then **stop point (d)** before the
+  board session.
 
 ## Findings
 
