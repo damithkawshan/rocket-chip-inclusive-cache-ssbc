@@ -17,6 +17,19 @@
 
 ## Findings
 
+- **My awk verification scripts (C1-c/C3-c/C3-e) were vacuously passing, not an RTL bug (2026-09-30).**
+  Chisel/Verilator's `%d` printf right-pads a field to the decimal width of the signal's *bit-width*
+  (e.g. a 4-bit `satBits` value gets a 2-char field, so `sat=0->1` prints as `sat= 0-> 1`). Plain `awk`
+  splits on that internal whitespace, so `"lookDemand=              335212"` becomes TWO fields
+  (`"lookDemand="` with an empty value, and a bare `"335212"`), silently zeroing both sides of the
+  comparison so `d=0-0=0` passes regardless of the real values. First caught on C3-e (`D-TAP` arithmetic),
+  which showed 20,729/70,398 "BAD" lines — investigated instead of reported blind, traced to the same
+  padding in the `sat=` field. Fixed by `sed -E 's/=[[:space:]]+/=/g; s/->[[:space:]]+/->/g'` before the
+  `awk`, then re-ran C1-c, C3-c and C3-e: all three now show a *real* `bad 0`. TASK.md's own C1-c/C3-c
+  commands have this same bug — future stages should pipe through the same `sed` fix first. The RTL was
+  never wrong; only my check was. Lesson: when a numeric printf check on a Chisel signal gives a
+  suspiciously round result (like `bad 0` on the first try for a brand-new signal), sanity-check the raw
+  log line with `cat -A` before trusting it.
 - **Operational mistake, not an RTL/design finding (2026-09-30).** Launched the Stage B gate with a
   manual `nohup ... &; disown`, then later tried to stop it by killing the wrapper PID. That killed only
   `run_013_gate.sh` (the loop driver); its already-forked `run_sbc.sh` child for the first config
@@ -157,28 +170,35 @@ real basis and aborted. With advice now answered after the update, on the looked
 
 ## C3 — the second search updates the partner (TASK §10)
 
-Commit: 
+Commit: `<pending>` — `013 C3: a demand second search updates the partner's counter (gap 4)`
 
 | # | status | result |
 |---|---|---|
-| C3-a gate (incl. `case_teardown`) | | |
-| C3-b NoSbc identity ×2 | | |
-| C3-c `satFeedSec` = `secDemand` | | |
-| C3-d `D-TAP` hit=1 / hit=0 lines | | |
-| C3-e `D-TAP` arithmetic | | |
-| C3-f numbers | | see table |
+| C3-a gate (incl. `case_teardown`) | ✅ | all four PASS, 0 asserts. `case_teardown`: PASS (`src=1 dst=2 pairing_gone=yes after 16 partner misses`) |
+| C3-b NoSbc identity ×2 | ✅ | `IDENTICAL` ×2 (base vs c3) |
+| C3-c `satFeedSec` = `secDemand` | ✅ (after fixing my check, see Findings) | `bad 0` on both stress (805 lines) and switch (43 lines) |
+| C3-d `D-TAP` hit=1 / hit=0 lines | ✅ | hit=1: 2,427; hit=0: 67,971 — both > 0 |
+| C3-e `D-TAP` arithmetic | ✅ (after fixing my check, see Findings) | `bad 0` across all 70,398 D-TAP lines |
+| C3-f numbers | ✅ | see table |
 
 | SBC stress run | c2 | c3 | Δ |
 |---|---|---|---|
-| migrations | | | |
-| attempted | | | |
-| aborted | | | |
-| secHits | | | |
-| secMiss | | | |
-| `HOT` lines | | | |
-| `ADVICE-MIG` lines | | | |
-| `SEC-SERVE` lines | | | |
-| `SEC-MISS` lines | | | |
+| migrations | 64,178 | 64,183 | +5 (~flat) |
+| attempted | 64,310 | 64,315 | +5 (~flat) |
+| aborted | 134 | 134 | 0 |
+| secHits | 2,998 | 2,998 | 0 |
+| secMiss | 67,962 | 67,967 | +5 |
+| `HOT` lines | 16,801 | 24,247 | **+44%** |
+| `ADVICE-MIG` lines | 108,293 | 108,296 | +3 (~flat) |
+| `SEC-SERVE` lines | 2,998 | 2,998 | 0 |
+| `SEC-MISS` lines | 67,966 | 67,971 | +5 |
+
+Reading (no pass/fail on direction): `HOT` jumps +44% — with 67,971 second-search misses vs only 2,427
+hits, the partner now heats far more than it cools, so more sets (mostly the partner/destination sets)
+cross `T_hi`. `migrations`/`attempted` barely move: `hotNow` already excludes a set that is someone's
+destination (`!(tEntry.valid && tEntry.sd)`), so heating a destination more does not make it eligible to
+source a migration — it just makes the counter's *history* match the paper's Fig. 2, which was the point
+of this stage. This is a faithfulness fix; no speed claim.
 
 **Stop point (c):** the user's answer on the candidate build:
 

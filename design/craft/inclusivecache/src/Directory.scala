@@ -327,9 +327,10 @@ class Directory(params: InclusiveCacheParameters) extends Module
   io.tap.bits.way := io.result.bits.way
 
   // SBC (013): only demand lookups move the saturation counter. io.tap above stays raw for PerfCounters.
-  io.satTap.valid       := ren2 && demand && !internalRead
+  // 013 C3: a demand access's second search is an access to the partner set (paper Fig. 2).
+  io.satTap.valid       := ren2 && demand && (!internalRead || secondarySearch)
   io.satTap.bits.set    := set
-  io.satTap.bits.hit    := io.result.bits.hit
+  io.satTap.bits.hit    := Mux(secondarySearch, io.result.bits.secondaryHit, io.result.bits.hit)
   io.satTap.bits.way    := io.result.bits.way
   io.satTap.bits.second := secondarySearch
 

@@ -765,9 +765,16 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
             !(request.valid && request.bits.set === scheduleHomeSet)) { popWrongKey := popWrongKey + 1.U }
       val satFeed = RegInit(0.U(64.W))       // demand primary lookups the SBU saw (must equal lookDemand)
       when (directory.io.satTap.valid && !directory.io.satTap.bits.second) { satFeed := satFeed + 1.U }
+      val secDemand  = RegInit(0.U(64.W))    // demand second searches issued
+      val satFeedSec = RegInit(0.U(64.W))    // second-search results the SBU saw (must equal secDemand)
+      when (mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch && schedule.dread.bits.demand) {
+        secDemand := secDemand + 1.U
+      }
+      when (directory.io.satTap.valid && directory.io.satTap.bits.second) { satFeedSec := satFeedSec + 1.U }
       when (dbgCyc(13, 0) === 0.U) {
         printf(p"[SBC] SAT-SUM cyc=$dbgCyc lookDemand=$lookDemand lookOther=$lookOther " +
-               p"repeatDemand=$repeatDemand popWrongKey=$popWrongKey satFeed=$satFeed\n")
+               p"repeatDemand=$repeatDemand popWrongKey=$popWrongKey satFeed=$satFeed " +
+               p"secDemand=$secDemand satFeedSec=$satFeedSec\n")
       }
     }
 

@@ -315,6 +315,9 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
       printf(p"[SBC] ARM   set=${io.arm.bits} sat=${sat(io.arm.bits)} cycle=${cyc}\n")
     }
     when (io.hotNow) { printf(p"[SBC] HOT-NOW set=${tapSet} sat=${cur}\n") }
+    when (io.dirTap.valid && io.dirTap.bits.second) {
+      printf(p"[SBC] D-TAP set=${tapSet} hit=${io.dirTap.bits.hit} sat=${cur}->${nxt}\n")
+    }
 
     // ---- periodic per-set saturation dump + DSS snapshot ----
     // Print every `dumpPeriod` cycles; period is large enough to avoid log explosion.
