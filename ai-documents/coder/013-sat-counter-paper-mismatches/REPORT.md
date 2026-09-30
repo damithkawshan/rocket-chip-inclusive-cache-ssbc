@@ -13,7 +13,9 @@
   `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log`. Running in the background.
 - C1, C2, C3 all done and committed (86a8866, 89d9c20, and C3 pending). Control bitstream DONE:
   sha256 `3abaca528fbd...` (see Bitstreams table), no MISMATCH, WNS positive, 54 DRC warnings (routine).
-- C3 gate running now. Once it lands: **stop point (c)** — ask the user's go for the candidate build.
+- C1 (86a8866), C2 (89d9c20), C3 (fed7227) all done, all four gates green each stage, base identity
+  held throughout on NoSbc. Control bitstream DONE (sha256 `3abaca52...`).
+- At **stop point (c)**: waiting on the user's go for the candidate bitstream build (from the C3 commit).
 
 ## Findings
 
@@ -170,7 +172,7 @@ real basis and aborted. With advice now answered after the update, on the looked
 
 ## C3 — the second search updates the partner (TASK §10)
 
-Commit: `<pending>` — `013 C3: a demand second search updates the partner's counter (gap 4)`
+Commit: `fed7227` — `013 C3: a demand second search updates the partner's counter (gap 4)`
 
 | # | status | result |
 |---|---|---|
