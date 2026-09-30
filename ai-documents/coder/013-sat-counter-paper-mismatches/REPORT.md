@@ -19,8 +19,9 @@
   bitstream build"). Candidate build launched in tmux `sbc013` (commit `ec92d82` = C3 RTL `fed7227` +
   REPORT.md only, tag `candidate-013c3`). Log:
   `chipyard/scripts/logs/013-build-candidate-013c3-20260930-233256.log`. Running now.
-- Next: once it lands, fill the Bitstreams table's candidate row, then **stop point (d)** before the
-  board session.
+- Candidate bitstream DONE: sha256 `1bcba361...`, WNS positive, no MISMATCH. Provenance diff vs
+  control confirms only Directory/Scheduler/MSHR/SetBalanceUnit.scala differ - clean isolated A/B.
+- At **stop point (d)**: waiting on the user's go before the board session (TASK §13).
 
 ## Findings
 
@@ -218,10 +219,16 @@ paper's 32 kB 8-way L1" (adds `SingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`,
 | image | commit | tag | sha256 | WNS | TNS | WHS | DRC | provenance | build log |
 |---|---|---|---|---|---|---|---|---|---|
 | control | `dc96fec` (= C0 RTL `93eee79` + REPORT.md only) | `control-013c0` | `3abaca528fbd48703ba9c10a0eab53b9d7b299d390250a3f51827c6a99e5dbe7` | 0.234 / 0.010 / 0.143 (3 clock groups, all positive) | 0.000 / 0.000 / 0.000 | — | 54 (all Warning: DSP input/output pipelining, IO buffering — pre-existing, unrelated to SBC RTL) | ✅ no MISMATCH, all 27 .scala hashes match | `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log` |
-| candidate | `<pending>` | `candidate-013c3` | | | | | | | |
+| candidate | `ec92d82` (= C3 RTL `fed7227` + REPORT.md only) | `candidate-013c3` | `1bcba361c6fa26cbce017ceb914ef474086057a632f3949c712eecabfcbcca42` | 0.359 / 0.010 / 0.143 (all positive) | 0.000 / 0.000 / 0.000 | — | 54 (same routine profile as control) | ✅ no MISMATCH, all 27 .scala hashes match | `chipyard/scripts/logs/013-build-candidate-013c3-20260930-233256.log` |
 
-Build took ~1h48m (21:11:53 → 22:59:47). Archived:
-`fpga/bitstream_storage/FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU-1MB-8way-L1-32K8W-control-013c0-2026-09-30.bit`
+Build took ~1h48m (21:11:53 → 22:59:47, control) and ~1h13m (23:32:56 → 00:45:34, candidate). Archived:
+`fpga/bitstream_storage/FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU-1MB-8way-L1-32K8W-control-013c0-2026-09-30.bit` /
+`...-candidate-013c3-2026-09-30.bit`.
+
+**Provenance diff, control vs candidate** — confirmed the ONLY `.scala` files that differ are exactly the
+four C1–C3 touched: `Directory.scala`, `Scheduler.scala`, `MSHR.scala`, `SetBalanceUnit.scala`. Every
+other source file (including `PerfCounters.scala`, `Control.scala`) is byte-identical between the two
+images — a clean, isolated A/B.
 
 **Stop point (d):** the user's answer on the board session:
 
