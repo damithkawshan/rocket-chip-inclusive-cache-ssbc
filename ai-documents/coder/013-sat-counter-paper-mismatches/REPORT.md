@@ -1,16 +1,15 @@
 # Coder report 013 — make the saturation counter follow the paper
 
-**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status:** IN PROGRESS — Stage B running
+**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status:** IN PROGRESS — C0 committed (`93eee79`), at stop point (b)
 
 > Fill this in as you go, not at the end. A stage with an empty row is not done. Cite log paths — never
 > paste logs. Anything unexpected goes under "Findings" and you stop and ask.
 
 ## ▶ RESUME HERE
 
-- Stage B SBC-config leg done (8/8 stress, switch PASS, both clean). NoSbc-config leg running now
-  (`sw/verilator_logs/013-gate-base-nosbc.log`) after the operational mistake below. Waiting on it
-  before touching any RTL.
-- Next: once NoSbc leg lands, check §5.2 pass bar on all four run dirs, fill Stage B table, then start C0.
+- Stage B: done, all 4 pass. C0: done, committed `93eee79`, sizing table filled.
+- At **stop point (b)**: waiting on the user's go for C1 (gap 1 fix) and for the control bitstream build
+  (built from this C0 commit, per TASK §12).
 
 ## Findings
 
@@ -66,7 +65,7 @@ printf tail after the final MMIO read). Copy/commit block: `ok`.
 
 ## C0 — sim-only sizing totals (TASK §7)
 
-Commit: `<pending>` — `013 C0: sim-only totals that size the saturation-counter gaps`
+Commit: `93eee79` — `013 C0: sim-only totals that size the saturation-counter gaps`
 
 | # | status | result |
 |---|---|---|
