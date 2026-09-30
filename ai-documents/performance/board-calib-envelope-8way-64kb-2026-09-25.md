@@ -6,7 +6,7 @@
 |---|---|
 | Date | 2026-09-25 |
 | Platform | VCU118, single Rocket, 50 MHz, 2 GB DDR4 |
-| Bitstream | **sha256 `6a73c09b8b6ba00877a6f236a2829ec7d5d259fa1aa5aa67098e9b62649a3c33`** (`FPGASingleRocketVCU118L18K64K8WL2ConfigSBCPLRU-8way-2026-09-25.bit`, commit `c3faa05`) |
+| Bitstream | **sha256 `6a73c09b8b6ba00877a6f236a2829ec7d5d259fa1aa5aa67098e9b62649a3c33`** (`FPGASingleRocketVCU118L18K64K8WL2ConfigSBCPLRU-8way-2026-09-25.bit`, commit `c8cd4bf` — its provenance file's build point; `design/` is identical to `c3faa05`, cited here earlier) |
 | L2 | 64 KB, 8-way, 64 B lines = 128 sets · PLRU (`L2_Replacement = 1`) |
 | Workload | `sw/l2_miss_calib.c`, `-h 64 -m 64 -s 100000`, sweeping `-P` and `-p` |
 | Runs | 5 × 13 × {migration OFF, ON} = **130 runs → 65 A/B points**, ~20 min |

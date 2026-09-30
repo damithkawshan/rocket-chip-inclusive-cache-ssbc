@@ -168,11 +168,13 @@ Following the 64 KB 16-way sweep, we evaluated two further geometries:
 
 | Metric | 64 KB / 16-way (64 sets) | 64 KB / 8-way (128 sets) | 1024 KB / 8-way (2048 sets) |
 |:---|:---:|:---:|:---:|
-| **Bitstream Commit** | `97d0162` | `c3faa05` | `c3faa05` |
+| **Bitstream Commit** | `97d0162` | `c8cd4bf` | **`962fa05`** |
 | **Grid Points** | 80 | 65 | 65 |
 | **Cliff Formula** | $MP \le 32 - HP$ | $MP \le 16 - HP$ | $MP \le 16 - HP$ |
 | **Cliff Invariance** | Confirmed ($4/5$ rows) | Confirmed ($4/5$ rows) | Confirmed ($4/5$ rows) |
 | **Best Read Delta** | **−85.5%** | **−93.1%** | **−99.7%** |
+
+> **Bitstream commits corrected 2026-09-30.** The 1 MB column said `c3faa05`, which cannot build a 2048-set cache — `Control.scala` was dirty in that build. The true fingerprint is `962fa05` (tag `sbc-1mb-8way-linux-booted-2026-09-26`). The 64 KB 8-way column said `c3faa05` too; that image was built at `c8cd4bf`, whose `design/` is identical, so the figures are unaffected.
 | **Best Cycle Delta** | **−41.2%** | **−46.5%** | **−48.5%** |
 | **Worst Cycle Penalty** | **+13.6%** | **+4.9%** | **+3.3%** |
 
