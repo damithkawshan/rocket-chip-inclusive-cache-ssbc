@@ -91,10 +91,10 @@ live in `ai-documents/`.
 >   `log2Ceil(sets) <= 16` instead of silently producing a negative width. Decode only via
 >   `SBC_ATASSOC_SET()` / `SBC_ATASSOC_SD()` (`sw/sbc_mmio.h`) — the three hand-rolled decodes are gone.
 >   ⚠️ **Anything recorded before 2026-09-30 read `sd` at bit 8**, so old transcripts decode differently
-> - ⚠️ **Neither 1 MB image is reproducible from this repo alone.** The `1024K8W` configs exist in **no
->   chipyard commit** (`fpga/src/main/scala/vcu118/Configs.scala`,
->   `generators/chipyard/src/main/scala/config/RocketConfigs.scala`; 0 hits at chipyard HEAD `741996ac`,
->   4 in the working tree), and the provenance files hash only this generator's sources
+> - ✅ **The 1 MB 8-way single-core and 64 KB 8-way dual-core configs are committed.** Chipyard commit
+>   `4a2f8064` (2026-09-30) added `SingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU` (1 MB 8-way, 32 kB 8-way L1)
+>   and the VCU118 wrappers. The two bitstreams built on this repo's RTL commit `c6e59d3` are reproducible from
+>   the files and commits on disk
 > - **Task 012 is DONE**: sim-green, **board gate 4 of 4** (009's image was 0 of 4), dirty destination
 >   aborts **48,258 → 0** — and **no performance change**, for the reason the rule above explains.
 >   [REPORT](ai-documents/coder/012-reland-destination-eviction/REPORT.md)
