@@ -43,7 +43,7 @@ class SBCStats(setBits: Int, satBits: Int) extends Bundle
 class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
 {
   val io = IO(new Bundle {
-    val dirTap = Flipped(Valid(new DirectoryTap(params)))
+    val dirTap = Flipped(Valid(new SatTap(params)))   // 013: demand accesses only
     // advisory queries (stubbed in Phase 0)
     val migrateQuery = Flipped(Valid(UInt(params.setBits.W)))
     // SBC Phase 3: the destination question, keyed to the MSHR that is deciding right now. Split from

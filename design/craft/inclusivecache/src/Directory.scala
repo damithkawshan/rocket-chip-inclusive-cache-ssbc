@@ -49,6 +49,12 @@ class DirectoryTap(params: InclusiveCacheParameters) extends InclusiveCacheBundl
   val way = UInt(params.wayBits.W)
 }
 
+// SBC (013): the saturation-counter feed. `second` = a second-search result, keyed to the partner set.
+class SatTap(params: InclusiveCacheParameters) extends DirectoryTap(params)
+{
+  val second = Bool()
+}
+
 class DirectoryWrite(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
 {
   val set  = UInt(params.setBits.W)
@@ -69,6 +75,8 @@ class DirectoryRead(params: InclusiveCacheParameters) extends InclusiveCacheBund
   // SBC: this read is cache-internal machinery (migrate probe), not a demand access. It must not
   // tag-match and must not reach the observation tap. Baseline reads leave this false.
   val internalRead = Bool()
+  // SBC (013): an inner-A demand access. Only these move the saturation counter (paper section 2).
+  val demand = Bool()
   // SBC (003 Stage 2c): ways in this row that a live MSHR is currently working in, so victim
   // selection can steer around them. Only ever a MASK on a Mux - it never blocks a read and never
   // gates a ready, so it cannot deadlock. Zero for every baseline read.
@@ -103,6 +111,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
     val result = Valid(new DirectoryResult(params))
     val ready  = Bool() // reset complete; can enable access
     val tap    = Valid(new DirectoryTap(params)) // SBC: result-aligned observation tap
+    val satTap = Valid(new SatTap(params)) // SBC (013): the saturation counter's feed
     // 008: PLRU touches in, and the L2_Replacement bit (1 = PLRU victim). Absent when plruReplacement = false.
     val touch   = if (params.micro.plruReplacement) Some(Flipped(Vec(2, Valid(new RecencyTouch(params))))) else None
     val usePlru = if (params.micro.plruReplacement) Some(Input(Bool())) else None
@@ -172,6 +181,7 @@ class Directory(params: InclusiveCacheParameters) extends Module
   val busyWays = params.dirReg(RegEnable(io.read.bits.busyWays, ren), ren1)
   val secondarySearch = params.dirReg(RegEnable(io.read.bits.secondarySearch, ren), ren1)
   val allowDisplacedVictim = params.dirReg(RegEnable(io.read.bits.allowDisplacedVictim, ren), ren1)
+  val demand = params.dirReg(RegEnable(io.read.bits.demand, ren), ren1)
 
   val ways = regout.map(d => d.asTypeOf(new DirectoryEntry(params)))
 
@@ -315,6 +325,13 @@ class Directory(params: InclusiveCacheParameters) extends Module
   io.tap.bits.set := set
   io.tap.bits.hit := io.result.bits.hit
   io.tap.bits.way := io.result.bits.way
+
+  // SBC (013): only demand lookups move the saturation counter. io.tap above stays raw for PerfCounters.
+  io.satTap.valid       := ren2 && demand && !internalRead
+  io.satTap.bits.set    := set
+  io.satTap.bits.hit    := io.result.bits.hit
+  io.satTap.bits.way    := io.result.bits.way
+  io.satTap.bits.second := secondarySearch
 
   // SBC Phase 1 debug: trace every preferEvictable read so we can see whether the flag arrives and
   // whether the set held an eligible (clean, client-free) way for it to pick.

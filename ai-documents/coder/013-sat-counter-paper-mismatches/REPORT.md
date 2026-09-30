@@ -7,9 +7,11 @@
 
 ## ▶ RESUME HERE
 
-- Stage B: done, all 4 pass. C0: done, committed `93eee79`, sizing table filled.
-- At **stop point (b)**: waiting on the user's go for C1 (gap 1 fix) and for the control bitstream build
-  (built from this C0 commit, per TASK §12).
+- User gave go at stop point (b) 2026-09-30: "yes go ahead wth c1 and control bitstream build".
+- Control bitstream build launched in tmux `sbc013` (chipyard commit `9f25ba67`, config
+  `FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`, tag `control-013c0`). Build log:
+  `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log`. Running in the background.
+- Now starting C1 (gap 1 fix) in parallel while the build runs.
 
 ## Findings
 
@@ -96,25 +98,31 @@ were not accesses.
 
 ## C1 — only demand accesses move the counter (TASK §8)
 
-Commit: 
+Commit: `<pending>` — `013 C1: only demand accesses move the saturation counter (gap 1, M18)`
 
 | # | status | result |
 |---|---|---|
-| C1-a gate | | |
-| C1-b NoSbc identity ×2 | | |
-| C1-c `satFeed` = `lookDemand` | | |
-| C1-d numbers | | see table |
+| C1-a gate | ✅ | all four PASS, 0 asserts (stress 8/8 SBC, 7/7 NoSbc; switch PASS both) |
+| C1-b NoSbc identity ×2 | ✅ | `IDENTICAL` ×2 (base vs c1), both NoSbc runs — cycle-for-cycle unchanged, as expected (no SBC hardware built there) |
+| C1-c `satFeed` = `lookDemand` | ✅ | `bad 0` on both stress (804 SAT-SUM lines) and switch (43 lines) SBC runs |
+| C1-d numbers | ✅ | see table. Stress-test cycle count moved 26,422,506 → 26,334,166 (SBC config only) — expected, the migration schedule itself changed |
 
 | SBC stress run | c0 | c1 | Δ |
 |---|---|---|---|
-| migrations | | | |
-| attempted | | | |
-| aborted | | | |
-| secHits | | | |
-| secMiss | | | |
-| l2Accesses | | | |
-| l2Hits | | | |
-| `HOT` lines | | | |
+| migrations | 46551 | 54160 | +16.3% |
+| attempted | 46598 | 55177 | +18.4% |
+| aborted | 196 | 1026 | +5.2x |
+| secHits | 3312 | 3191 | -3.7% |
+| secMiss | 67744 | 67610 | -0.2% |
+| l2Accesses | 434928 | 434994 | +0.02% |
+| l2Hits | 302089 | 303523 | +0.5% |
+| `HOT` lines | 4017 | 16843 | +4.2x |
+
+Reading (no pass/fail on direction, per TASK §8.5): with write-backs and X-flushes no longer falsely
+cooling sets, sets reach `T_hi` far more often (`HOT` 4017→16843) — matching the C0 sizing table's 23.18%
+gap-1 exposure. More hot triggers → more migration attempts (+18.4%) and, since destinations are the same
+finite pool, more aborts (+5.2x). Net hit rate ticked up slightly (l2Hits +0.5%) — consistent with the
+counter now reflecting real demand pressure instead of being diluted by non-access traffic.
 
 ## C2 — test after the update, on the looked-up set (TASK §9)
 

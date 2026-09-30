@@ -673,6 +673,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.schedule.bits.dread.bits.preferInvalid   := !doSearch  // 2b: prefer a free dst way
   io.schedule.bits.dread.bits.preferEvictable := !doSearch  // 2b: else a clean evictable one
   io.schedule.bits.dread.bits.internalRead    := true.B     // neither is a demand access
+  // 013: a demand access's second search counts for the partner (C3); the destination probe never does.
+  io.schedule.bits.dread.bits.demand          := doSearch && request.prio(0) && !request.control
   io.schedule.bits.dread.bits.allowDisplacedVictim := !doSearch  // 007 C2: dst probe only, never a source read
   io.schedule.bits.dread.bits.secondarySearch := doSearch
   // The way-lock mask is computed by the Scheduler for whichever row the read port actually takes,

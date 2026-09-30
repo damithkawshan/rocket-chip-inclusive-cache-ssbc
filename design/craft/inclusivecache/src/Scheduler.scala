@@ -462,6 +462,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   def isDemand(r: QueuedRequest): Bool = r.prio(0) && !r.control
   // The request a primary lookup is for: the popped one (list buffer) or the incoming one.
   val readIsDemand = Mux(mshr_uses_directory_for_lb, isDemand(requests.io.data), isDemand(request.bits))
+  directory.io.read.bits.demand := Mux(mshr_uses_directory_for_dread, schedule.dread.bits.demand, readIsDemand)
   // SBC (007 C2): only the migration destination probe may take a parked way as its victim.
   // 012 C1 (F4) - READ THIS BEFORE TRUSTING THE LINE ABOVE. This flag reaches ONLY `evictableOH`
   // (Directory.scala:200), which feeds ONLY victim tier 1, and tier 1 is reachable only when
@@ -661,7 +662,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val brM = params.inner.client.clients.exists(!_.supports.probe)
     val brR = params.outer.manager.managers.exists(!_.alwaysGrantsT)
     println(s"[SBC][elab] BRANCH reachability: p=$brP m=$brM r=$brR b=${brR || brP} (b false => secPerm=0 is correct)")
-    sbu.io.dirTap     := directory.io.tap
+    sbu.io.dirTap     := directory.io.satTap
     sbu.io.migrateEnable := io.migrateEnable
     sbu.io.anyMigrating  := anyMigrating
     sbu.io.satReadSet := io.sbcSatReadSet
@@ -768,9 +769,11 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       when (will_reload && !mshr_uses_directory && reloadIsDemand) { repeatDemand := repeatDemand + 1.U }
       when (mshr_uses_directory_for_lb && isDemand(requests.io.data) &&
             !(request.valid && request.bits.set === scheduleHomeSet)) { popWrongKey := popWrongKey + 1.U }
+      val satFeed = RegInit(0.U(64.W))       // demand primary lookups the SBU saw (must equal lookDemand)
+      when (directory.io.satTap.valid && !directory.io.satTap.bits.second) { satFeed := satFeed + 1.U }
       when (dbgCyc(13, 0) === 0.U) {
         printf(p"[SBC] SAT-SUM cyc=$dbgCyc lookDemand=$lookDemand lookOther=$lookOther " +
-               p"repeatDemand=$repeatDemand popWrongKey=$popWrongKey\n")
+               p"repeatDemand=$repeatDemand popWrongKey=$popWrongKey satFeed=$satFeed\n")
       }
     }
 
