@@ -11,7 +11,9 @@
 - Control bitstream build launched in tmux `sbc013` (chipyard commit `9f25ba67`, config
   `FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`, tag `control-013c0`). Build log:
   `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log`. Running in the background.
-- Now starting C1 (gap 1 fix) in parallel while the build runs.
+- C1, C2, C3 all done and committed (86a8866, 89d9c20, and C3 pending). Control bitstream DONE:
+  sha256 `3abaca528fbd...` (see Bitstreams table), no MISMATCH, WNS positive, 54 DRC warnings (routine).
+- C3 gate running now. Once it lands: **stop point (c)** — ask the user's go for the candidate build.
 
 ## Findings
 
@@ -126,7 +128,7 @@ counter now reflecting real demand pressure instead of being diluted by non-acce
 
 ## C2 — test after the update, on the looked-up set (TASK §9)
 
-Commit: `<pending>` — `013 C2: test for hot after the update, on the looked-up set (gaps 2+3, M17)`
+Commit: `89d9c20` — `013 C2: test for hot after the update, on the looked-up set (gaps 2+3, M17)`
 
 | # | status | result |
 |---|---|---|
@@ -182,12 +184,17 @@ Commit:
 
 ## Bitstreams (TASK §12)
 
-chipyard commit (configs + build script): 
+chipyard commit (configs + build script): `9f25ba67` — "013: single-core 1 MB 8-way config with the
+paper's 32 kB 8-way L1" (adds `SingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`,
+`FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`, `build_1mb_8w_l132k.sh`).
 
 | image | commit | tag | sha256 | WNS | TNS | WHS | DRC | provenance | build log |
 |---|---|---|---|---|---|---|---|---|---|
-| control | | `control-013c0` | | | | | | | |
-| candidate | | `candidate-013c3` | | | | | | | |
+| control | `dc96fec` (= C0 RTL `93eee79` + REPORT.md only) | `control-013c0` | `3abaca528fbd48703ba9c10a0eab53b9d7b299d390250a3f51827c6a99e5dbe7` | 0.234 / 0.010 / 0.143 (3 clock groups, all positive) | 0.000 / 0.000 / 0.000 | — | 54 (all Warning: DSP input/output pipelining, IO buffering — pre-existing, unrelated to SBC RTL) | ✅ no MISMATCH, all 27 .scala hashes match | `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log` |
+| candidate | `<pending>` | `candidate-013c3` | | | | | | | |
+
+Build took ~1h48m (21:11:53 → 22:59:47). Archived:
+`fpga/bitstream_storage/FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU-1MB-8way-L1-32K8W-control-013c0-2026-09-30.bit`
 
 **Stop point (d):** the user's answer on the board session:
 
