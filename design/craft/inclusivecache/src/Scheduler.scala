@@ -458,6 +458,10 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   directory.io.read.bits.preferInvalid   := mshr_uses_directory_for_dread && schedule.dread.bits.preferInvalid
   directory.io.read.bits.internalRead    := mshr_uses_directory_for_dread && schedule.dread.bits.internalRead
   directory.io.read.bits.secondarySearch := mshr_uses_directory_for_dread && schedule.dread.bits.secondarySearch
+  // 013: a demand access is what the paper's counter counts (cache-terminology.md "access").
+  def isDemand(r: QueuedRequest): Bool = r.prio(0) && !r.control
+  // The request a primary lookup is for: the popped one (list buffer) or the incoming one.
+  val readIsDemand = Mux(mshr_uses_directory_for_lb, isDemand(requests.io.data), isDemand(request.bits))
   // SBC (007 C2): only the migration destination probe may take a parked way as its victim.
   // 012 C1 (F4) - READ THIS BEFORE TRUSTING THE LINE ABOVE. This flag reaches ONLY `evictableOH`
   // (Directory.scala:200), which feeds ONLY victim tier 1, and tier 1 is reachable only when
@@ -746,6 +750,27 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
       }
       when (mshrs.map(_.io.dstClaim.valid).reduce(_ || _)) {
         printf(p"[SBC][SCHED] MIG-CLAIM dstSet=${dstOfferSet}\n")
+      }
+    }
+
+    // 013: sim-only totals that size the counter gaps. Printed every 16384 cycles; the last line is the total.
+    if (params.micro.sbcDebug) {
+      val dbgCyc       = RegInit(0.U(64.W))
+      val lookDemand   = RegInit(0.U(64.W))  // primary lookups for a demand access
+      val lookOther    = RegInit(0.U(64.W))  // primary lookups for inner C or X (gap 1)
+      val repeatDemand = RegInit(0.U(64.W))  // demand accesses served with no lookup (gap 5)
+      val popWrongKey  = RegInit(0.U(64.W))  // popped demand lookups whose advice came from another set (gap 3)
+      dbgCyc := dbgCyc + 1.U
+      val primaryRead    = directory.io.read.valid && !mshr_uses_directory_for_dread
+      val reloadIsDemand = Mux(bypass, isDemand(request.bits), isDemand(requests.io.data))
+      when (primaryRead &&  readIsDemand) { lookDemand := lookDemand + 1.U }
+      when (primaryRead && !readIsDemand) { lookOther  := lookOther  + 1.U }
+      when (will_reload && !mshr_uses_directory && reloadIsDemand) { repeatDemand := repeatDemand + 1.U }
+      when (mshr_uses_directory_for_lb && isDemand(requests.io.data) &&
+            !(request.valid && request.bits.set === scheduleHomeSet)) { popWrongKey := popWrongKey + 1.U }
+      when (dbgCyc(13, 0) === 0.U) {
+        printf(p"[SBC] SAT-SUM cyc=$dbgCyc lookDemand=$lookDemand lookOther=$lookOther " +
+               p"repeatDemand=$repeatDemand popWrongKey=$popWrongKey\n")
       }
     }
 
