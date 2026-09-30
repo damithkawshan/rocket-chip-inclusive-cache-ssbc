@@ -98,7 +98,7 @@ were not accesses.
 
 ## C1 — only demand accesses move the counter (TASK §8)
 
-Commit: `<pending>` — `013 C1: only demand accesses move the saturation counter (gap 1, M18)`
+Commit: `86a8866` — `013 C1: only demand accesses move the saturation counter (gap 1, M18)`
 
 | # | status | result |
 |---|---|---|
@@ -126,26 +126,32 @@ counter now reflecting real demand pressure instead of being diluted by non-acce
 
 ## C2 — test after the update, on the looked-up set (TASK §9)
 
-Commit: 
+Commit: `<pending>` — `013 C2: test for hot after the update, on the looked-up set (gaps 2+3, M17)`
 
 | # | status | result |
 |---|---|---|
-| C2-a gate (incl. the new assert) | | |
-| C2-b NoSbc identity ×2 | | |
-| C2-c `HOT-NOW` lines | | |
-| C2-d `HOT-NOW … sat=14` lines | | |
-| C2-e numbers | | see table |
-| leftover grep (`migrateQuery`, `migrateResp.migrate`, `isDemandA`, `hotOK`) | | |
+| C2-a gate (incl. the new assert) | ✅ | all four PASS, 0 asserts. The mis-keying assert never fired |
+| C2-b NoSbc identity ×2 | ✅ | `IDENTICAL` ×2 (base vs c2) |
+| C2-c `HOT-NOW` lines | ✅ | stress 108,293; switch 1,493 — both > 0 |
+| C2-d `HOT-NOW … sat=14` lines | ✅ | 16,735 > 0 on the stress run — advice given exactly on the miss that takes a set to `T_hi`, a path that was impossible before C2 |
+| C2-e numbers | ✅ | see table |
+| leftover grep (`migrateQuery`, `migrateResp.migrate`, `isDemandA`, `hotOK`) | ✅ | prints nothing |
 
 | SBC stress run | c1 | c2 | Δ |
 |---|---|---|---|
-| migrations | | | |
-| attempted | | | |
-| aborted | | | |
-| secHits | | | |
-| secMiss | | | |
-| `HOT` lines | | | |
-| `ADVICE-MIG` lines | | | |
+| migrations | 54,160 | 64,178 | +18.5% |
+| attempted | 55,177 | 64,310 | +16.6% |
+| aborted | 1,026 | 134 | **-87%** |
+| secHits | 3,191 | 2,998 | -6.0% |
+| secMiss | 67,610 | 67,962 | +0.5% |
+| `HOT` lines | 16,843 | 16,801 | ~flat (expected — `HOT` observes `crossedHot`, unchanged by C2) |
+| `ADVICE-MIG` lines | 91,605 | 108,293 | +18.2% |
+
+Reading (no pass/fail on direction): the big number here is **aborted, -87%**. Before C2, advice could be
+stale (tested at arrival, not after this access's own update) or mis-keyed to the wrong set (M17,
+popWrongKey ~1.87% of lookups in C0's sizing). Both defects could advise a migration that then found no
+real basis and aborted. With advice now answered after the update, on the looked-up set, migrations rose
++18.5% while aborts fell 8x — advice quality improved, not just advice volume.
 
 ## C3 — the second search updates the partner (TASK §10)
 

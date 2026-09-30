@@ -5,7 +5,7 @@
  * and the DSS. It answers queries and exposes read-only stats, but holds NO BankedStore/Directory
  * ports — the migration datapath lives in MSHR/Scheduler/BankedStore. See ai-documents/.
  *
- * Phase 0: pure observation. Migration is OFF (migrateResp.migrate == false), the AT is inert.
+ * Migration advice (hotNow) is answered on each demand lookup's own set, after its update (013).
  */
 
 package sifive.blocks.inclusivecache
@@ -44,17 +44,14 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
 {
   val io = IO(new Bundle {
     val dirTap = Flipped(Valid(new SatTap(params)))   // 013: demand accesses only
-    // advisory queries (stubbed in Phase 0)
-    val migrateQuery = Flipped(Valid(UInt(params.setBits.W)))
-    // SBC Phase 3: the destination question, keyed to the MSHR that is deciding right now. Split from
-    // migrateQuery because the two questions are about two different sets once pairings exist.
+    // SBC (013): hot-source advice for the set whose demand lookup lands this cycle (paper 3.3).
+    val hotNow = Output(Bool())
+    // SBC Phase 3: the destination question, keyed to the MSHR deciding right now.
     val destQuery    = Flipped(Valid(UInt(params.setBits.W)))
     val migrateResp  = Output(new Bundle {
-      val migrate = Bool()
       val destSet = UInt(params.setBits.W)
       // SBC Phase 2.5b: destination-side validity on its own. The Scheduler publishes a live
       // destination offer built from this, so it does not have to re-derive the T_lo threshold.
-      // `migrate` keeps its old meaning: source hot AND a destination exists.
       val destOk  = Bool()
     })
     val assocQuery = Flipped(Valid(UInt(params.setBits.W)))
@@ -146,22 +143,25 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
   val armed = RegInit(VecInit(Seq.fill(sets)(false.B)))
   val tHi   = params.micro.migrationThreshold.U
   val tLo   = params.micro.migrationClearThreshold.U
+  require(params.micro.migrationThreshold >= 1, "SBC: T_hi must be at least 1")
+  val tHiMinus1 = (params.micro.migrationThreshold - 1).U
   when (io.dirTap.valid && nxt < tLo) { armed(tapSet)     := false.B } // cooled -> disarm
   when (io.arm.valid)                 { armed(io.arm.bits) := true.B }  // SW arm (wins same-cycle)
 
   // ---- SBC Phase 2/3: two questions, two keys -------------------------------------------------
-  // Advice ("is the ALLOCATING set a hot source that could spill somewhere") is latched at allocate.
+  // Advice ("is the set whose demand lookup lands NOW a hot source") is answered at that result (013).
   // Destination ("where does the DECIDING MSHR's migration actually go") is read many cycles later by
   // a different MSHR. Phase 2 could merge them because the answer ignored the asker; under pinning the
   // answer IS the asker's partner, so they must be keyed separately.
-  val qSet      = io.migrateQuery.bits
-  val qEntry    = at(qSet)
   val dssPick   = dss.io.coldestSet
   // A fresh pairing may only consume a set that is genuinely cold AND in no pairing (strict 1:1).
   val dssOK     = dss.io.coldestValid && (dss.io.coldestLevel < tLo) && !at(dssPick).valid
-  val hotOK     = io.migrateEnable && (params.micro.sbcAutoMigrate.B || armed(qSet)) && (sat(qSet) >= tHi)
-  io.migrateResp.migrate := hotOK && !(qEntry.valid && qEntry.sd) &&
-                            Mux(qEntry.valid && !qEntry.sd, true.B, dssOK)
+  // SBC (013): paper 3.3, update then test, on the looked-up set. `cur` is this access's pre-update
+  // level, so a miss reaches T_hi exactly when cur >= T_hi-1. The MSHR still requires the miss.
+  val tEntry    = at(tapSet)
+  val hotSrc    = io.migrateEnable && (params.micro.sbcAutoMigrate.B || armed(tapSet)) && (cur >= tHiMinus1)
+  io.hotNow    := io.dirTap.valid && !io.dirTap.bits.second && hotSrc &&
+                  !(tEntry.valid && tEntry.sd) && Mux(tEntry.valid && !tEntry.sd, true.B, dssOK)
 
   val dSet      = io.destQuery.bits
   val dEntry    = at(dSet)
@@ -314,6 +314,7 @@ class SetBalanceUnit(params: InclusiveCacheParameters) extends Module
     when (io.arm.valid) {
       printf(p"[SBC] ARM   set=${io.arm.bits} sat=${sat(io.arm.bits)} cycle=${cyc}\n")
     }
+    when (io.hotNow) { printf(p"[SBC] HOT-NOW set=${tapSet} sat=${cur}\n") }
 
     // ---- periodic per-set saturation dump + DSS snapshot ----
     // Print every `dumpPeriod` cycles; period is large enough to avoid log explosion.

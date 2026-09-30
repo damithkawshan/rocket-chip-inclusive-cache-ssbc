@@ -171,9 +171,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // compile-time flag, so it ran in random mode too and destroyed the random-mode control. Runtime,
     // always. None when the flag is off, so a flag-off build elaborates no new hardware.
     val usePlru = if (params.micro.plruReplacement) Some(Input(Bool())) else None
-    // SBC Phase 2: migrate advice latched at allocate. SOURCE-SIDE ONLY: "my set is a hot migration
-    // source". The destination used to ride along here and was read many cycles later; it does not
-    // any more (see migOffer/migWant/migGrant below).
+    // SBC (013): hot-source advice for the set whose directory result lands THIS cycle (paper 3.3:
+    // update, then test). Used in that cycle; latched for the search-resume path.
     val migAdvice = Input(Bool())
     // SBC Phase 2.5b (late destination binding). The destination is read at the moment the migration
     // actually starts, never latched at allocate.
@@ -325,7 +324,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // sent anyway and decide afterwards. While this is set the migrate/release decision is still
   // open: neither `migrating` nor `s_release` has been committed.
   val migDeferred      = RegInit(false.B)
-  // SBC Phase 2: migrate advice latched at allocate. Source-side only — "this set is hot".
+  // SBC (013): the plan-cycle advice, kept for the search-resume decision.
   val migAdviceValidReg = RegInit(false.B)
   // SBC Phase 3: this set's pairing, latched on the directory result (002 C1).
   val pairValidReg      = RegInit(false.B)
@@ -1106,8 +1105,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // The CYCLE selectors deliberately stay separate below. Naming the condition once is this repo's
   // rule, but "which metadata" and "which cycle" are different questions - the same distinction that
   // makes probeVictimNow and probingVictim two wires rather than one.
-  def migFastTerms(m: DirectoryResult): (Bool, Bool) = {
-    val base = params.micro.enableSetBalancing.B && migAdviceValidReg &&
+  def migFastTerms(m: DirectoryResult, advice: Bool): (Bool, Bool) = {
+    val base = params.micro.enableSetBalancing.B && advice &&
                request.prio(0) && !request.control &&                // A-channel demand
                !m.hit && m.state =/= INVALID &&                      // eviction needed
                !m.dirty && !m.displaced &&                           // migClean
@@ -1119,8 +1118,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val migPlanCycle   = io.directory.valid && !(migrating && !w_dread) && !(searching && !w_ssearch)
   // The resume cycle: the search has answered and the decision we deferred is now due.
   val migResumeCycle = io.directory.valid && searching && !w_ssearch && secDefer
-  val (planWant,   planDecline)   = migFastTerms(io.directory.bits)
-  val (resumeWant, resumeDecline) = migFastTerms(meta)
+  // 013: the advice describes our set only in our own lookup's result cycle. Register-derived: loop-free.
+  val planAdvice = migPlanCycle && io.migAdvice
+  val (planWant,   planDecline)   = migFastTerms(io.directory.bits, planAdvice)
+  val (resumeWant, resumeDecline) = migFastTerms(meta, migAdviceValidReg)
   migFastWantW := migPlanCycle && planWant
   // Same shape as migFastWantW and equally register-derived, so the loop-freedom argument carries:
   // `meta`, `secDefer`, `searching`, `w_ssearch` are all registers and none touches io.allocate.bits.
@@ -1151,7 +1152,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   //
   // `m` is the metadata to judge: `new_meta` at plan time, `meta` at resume time (the victim we
   // deliberately did not evict, still intact because secDefer armed nothing).
-  def armEviction(m: DirectoryResult, wantMigrate: Bool, srcSet: UInt): Unit = {
+  def armEviction(m: DirectoryResult, wantMigrate: Bool, srcSet: UInt, advice: Bool): Unit = {
     //   migClean    - decidable up front. Dirty and already-displaced victims can never migrate, and
     //                 no probe changes that.
     //   migEligible - the fast path: already client-free, so migrate at once with no probe.
@@ -1162,7 +1163,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     val migEligible = migClean && !m.clients.orR
     val migProbe    = migClean && (!params.firstLevel).B && m.clients.orR
     if (params.micro.sbcDebug) {
-      printf(p"[SBC] EVICT-ASSESS srcSet=${srcSet} way=${m.way} adviceValid=${migAdviceValidReg} offerValid=${io.migOffer.valid} offerSet=${io.migOffer.bits} eligible=${migEligible} dirty=${m.dirty} clients=${m.clients} displaced=${m.displaced}\n")
+      printf(p"[SBC] EVICT-ASSESS srcSet=${srcSet} way=${m.way} adviceValid=${advice} offerValid=${io.migOffer.valid} offerSet=${io.migOffer.bits} eligible=${migEligible} dirty=${m.dirty} clients=${m.clients} displaced=${m.displaced}\n")
     }
     when (wantMigrate) {
       if (params.micro.sbcDebug) {
@@ -1174,7 +1175,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       s_dread    := false.B  // 2nd dir-read of dstSet (preferInvalid) picks dstWay or falls back
       w_dread    := false.B
       migAttempt := true.B   // attempted++
-    } .elsewhen (params.micro.enableSetBalancing.B && migAdviceValidReg && migProbe) {
+    } .elsewhen (params.micro.enableSetBalancing.B && advice && migProbe) {
       // Schedule the eviction probe and STOP. Deliberately do NOT set s_release/w_releaseack here
       // (that would commit to throwing the line away) and do NOT set migrating (that would reserve a
       // destination before we know the victim is really migratable). The deferred-probe block resumes
@@ -1467,11 +1468,12 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     assert (!request_valid || (no_wait && io.schedule.fire))
     request_valid := true.B
     request := io.allocate.bits
-    // SBC Phase 2: latch migrate advice for this set (suppressed on repeat allocations).
-    migAdviceValidReg := io.migAdvice && !io.allocate.bits.repeat
+    migAdviceValidReg := false.B   // 013: set on our own lookup's result, below
     searchedReg       := false.B
     txnCtr            := txnCtr + 1.U
   }
+  // 013: keep the plan-cycle advice for the search-resume path. A same-cycle reload wins (it clears it).
+  when (migPlanCycle && !io.allocate.valid) { migAdviceValidReg := io.migAdvice }
 
   // SBC Phase 3 (002 C1): latch the pairing on the directory result, and hold otherwise. A reload
   // with no dir-read cannot have changed our set, so it cannot have changed our partner.
@@ -1503,7 +1505,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
       // SBC (003 Stage 2e): serving in place needs NO home way, so the deferred eviction is simply
       // not armed. That is the payoff the whole deferral was built for - the victim we held back is
       // never evicted at all, rather than evicted and then found to have been unnecessary.
-      when (!willServe) { armEviction(meta, migResumeWantW, request.set) }
+      when (!willServe) { armEviction(meta, migResumeWantW, request.set, migAdviceValidReg) }
     }
     val secTip = io.directory.bits.secondaryEntry.state === TIP
     when (io.directory.bits.secondaryHit && !pairStale) {
@@ -1839,7 +1841,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
           // The `!(allocate.valid && repeat)` guard makes new_meta === io.directory.bits, which is the
           // form migFastWantW was evaluated from — see the loop-freedom note at its definition.
           armEviction(new_meta, migFastWantW && !(io.allocate.valid && io.allocate.bits.repeat),
-                      new_request.set)
+                      new_request.set, planAdvice && !(io.allocate.valid && io.allocate.bits.repeat))
         }
       }
       // Do we need an acquire?

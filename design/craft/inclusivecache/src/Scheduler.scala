@@ -427,7 +427,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val alloc_uses_directory = request.valid && request_alloc_cases
 
   // 005 commit 1: L2_AccessA (cache-terminology.md) - an inner-A request accepted this cycle.
-  // Outside the enableSetBalancing block on purpose (unlike isDemandA below, which is inside it) so
+  // Outside the enableSetBalancing block on purpose (unlike the SBC advice below, which is inside it) so
   // this counts identically whether SBC is built or not.
   val accessA = request.valid && request.ready && request.bits.prio(0) && !request.bits.control
 
@@ -695,16 +695,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     sbu.io.migReject.bits  := migRejectSet
     io.sbcStats       := sbu.io.stats
 
-    // SBC Phase 2: migrate advice for the demand-allocating set. The SBU reports the source set is
-    // hot and a cold destination exists; here we add the demand-A filter and the one-migration token.
-    // SBC Phase 2.5b: the advice latched at allocate is now SOURCE-SIDE ONLY ("this set is hot").
-    // Every destination-side condition moved to the live offer below, evaluated in the same cycle the
-    // MSHR takes it. That deleted migTokenPending/migTokenDstSet/migPendCtr: all three existed purely
-    // to survive the allocate→gate window with a pre-committed destination, and there is no such
-    // window any more.
-    val isDemandA = request.bits.prio(0) && !request.bits.control
-    sbu.io.migrateQuery.valid := request.valid
-    sbu.io.migrateQuery.bits  := request.bits.set
+    // SBC Phase 2.5b: the advice is source-side only; every destination condition is checked live, below.
     // SBC Phase 3: who takes a destination this cycle - a migration already in flight (deferred path),
     // else the MSHR whose directory result lands now (fast path). `migrantOH` is all-zero in the exact
     // cycle a fast-path MSHR decides, which is why this needs both terms and not one query port.
@@ -717,14 +708,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
             "SBC: destination claimed by an MSHR the destination query was not made for")
     // SBC debug repro: sbcForceDstSet (>=0) pins every migration's destination to a fixed set so the
     // dst-collision race is reproducible. Off (-1) = normal DSS pick (Scala if -> zero hardware off).
-    // We override only WHERE a migration goes, not WHETHER — `migrateResp.migrate` (source must be
+    // We override only WHERE a migration goes, not WHETHER — `hotNow` (source must be
     // hot) and the `dstOfferOwned` guard below are preserved, so the natural race is unchanged.
     val coldDst = if (params.micro.sbcForceDstSet >= 0) params.micro.sbcForceDstSet.U(params.setBits.W)
                   else sbu.io.migrateResp.destSet
-    // SBC Phase 2: source-side advice only — is this a demand miss on a hot set, with no migration
-    // already in flight. Latched by the allocating MSHR; staleness here is harmless (it only means an
-    // MSHR may ask for a destination and be told no).
-    adviceMigrate := isDemandA && sbu.io.migrateResp.migrate && !anyMigrating
+    // SBC (013): advice for the set whose demand lookup lands now, used by the MSHR taking that result
+    // in the same cycle. Keyed by the tap, never by the incoming request (M17).
+    adviceMigrate := sbu.io.hotNow && !anyMigrating
+    // 013: so the MSHR taking a demand lookup's result must own the looked-up set.
+    assert (!(directory.io.satTap.valid && !directory.io.satTap.bits.second && directoryFanout.orR) ||
+            Mux1H(directoryFanout, mshrs.map(_.io.status.bits.homeSet)) === directory.io.satTap.bits.set,
+            "SBC: a demand lookup result went to an MSHR of another set (advice mis-keyed)")
 
     // SBC Phase 2b (Q1 gate), now evaluated LIVE at the moment the destination is taken rather than
     // at allocate: never hand out a destination that an active MSHR already owns as its primary set,
@@ -746,8 +740,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     dstOfferSet   := coldDst
 
     if (params.micro.sbcDebug) {
-      when (request.valid && request.ready && alloc && adviceMigrate) {
-        printf(p"[SBC][SCHED] ADVICE-MIG srcSet=${request.bits.set} offerValid=${dstOfferValid} offerSet=${dstOfferSet}\n")
+      when (adviceMigrate) {
+        printf(p"[SBC][SCHED] ADVICE-MIG srcSet=${directory.io.satTap.bits.set} offerValid=${dstOfferValid} offerSet=${dstOfferSet}\n")
       }
       when (mshrs.map(_.io.dstClaim.valid).reduce(_ || _)) {
         printf(p"[SBC][SCHED] MIG-CLAIM dstSet=${dstOfferSet}\n")
