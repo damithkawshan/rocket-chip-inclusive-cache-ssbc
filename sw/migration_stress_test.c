@@ -294,8 +294,8 @@ static void at_entry(int s, int *valid, int *sd, int *assoc) {
     sbc_wr(SBC_SETSEL, (uint64_t)s);
     uint64_t as = sbc_rd(SBC_ATASSOC);
     *valid = (int)((sbc_rd(SBC_STATUS) >> 2) & 1);
-    *sd    = (int)((as >> 8) & 1);
-    *assoc = (int)(as & 0xFF);
+    *sd    = SBC_ATASSOC_SD(as);
+    *assoc = (int)SBC_ATASSOC_SET(as);
 }
 
 static int case_teardown(void) {

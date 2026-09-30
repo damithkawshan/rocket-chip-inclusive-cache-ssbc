@@ -33,7 +33,11 @@
 #define SBC_DISPDROP     (L2_CTRL_BASE + 0x380)  /* R   clean parked lines released with no data        */
 #define SBC_SECC         (L2_CTRL_BASE + 0x388)  /* R   serves raised by a C-channel Release           */
 #define SBC_HOMEBRANCH   (L2_CTRL_BASE + 0x390)  /* R   requests that found their HOME line in BRANCH  */
-#define SBC_ATASSOC      (L2_CTRL_BASE + 0x398)  /* R   AT[sel]: bits[7:0]=assocSet, bit8=sd           */
+#define SBC_ATASSOC      (L2_CTRL_BASE + 0x398)  /* R   AT[sel]: bits[15:0]=assocSet, bit16=sd         */
+/* Decode SBC_ATASSOC through these, never by hand: sd sits at a fixed bit so the decode does not
+   depend on the cache's set count. Before 2026-09-30 sd was at bit 8 - older logs read that way. */
+#define SBC_ATASSOC_SET(v)  ((unsigned)((v) & 0xFFFFu))
+#define SBC_ATASSOC_SD(v)   ((int)(((v) >> 16) & 1u))
 #define SBC_PARKED       (L2_CTRL_BASE + 0x3A0)  /* R   live displaced lines currently resident        */
 /* 004 total L2 hit-rate counters — free-running, always active (NOT SBC-gated), NOT reset by SBC_Reset */
 #define SBC_L2_ACCESSES  (L2_CTRL_BASE + 0x3A8)  /* R   total primary directory lookups (hit+miss)     */

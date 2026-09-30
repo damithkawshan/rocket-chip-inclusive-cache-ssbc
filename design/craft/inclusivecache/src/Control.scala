@@ -161,14 +161,14 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       RegFieldDesc("SBC_SecC", "Serves raised by a C-channel Release", volatile=true))
     val sbcHomeBranchField = RegField.r(64, io.perfStats.homeBranch,
       RegFieldDesc("SBC_HomeBranch", "Requests that found their own HOME line in BRANCH", volatile=true))
-    // bits [7:0] = AT[sel].assocSet, bit 8 = sd (0 = source side) when sbcSetBits <= 8.
-    // For sbcSetBits > 8: bits [sbcSetBits-1:0] = assocSet, bit sbcSetBits = sd.
-    val atAssocWidth = (sbcSetBits max 8) + 1
-    val atAssocPad   = (8 - sbcSetBits) max 0
-    val sbcAtAssocField = RegField.r(atAssocWidth,
-      if (atAssocPad > 0) Cat(io.sbc_stats.atSd, 0.U(atAssocPad.W), io.sbc_stats.atAssocSet)
-      else Cat(io.sbc_stats.atSd, io.sbc_stats.atAssocSet),
-      RegFieldDesc("SBC_AtAssoc", "AT[sel]: assocSet and sd", volatile=true))
+    // bits [15:0] = AT[sel].assocSet, bit 16 = sd (0 = source side). sd sits at a FIXED bit so the
+    // software decode never depends on the set count - see sw/sbc_mmio.h SBC_ATASSOC_SET/_SD.
+    val atAssocSdBit = 16
+    require(sbcSetBits <= atAssocSdBit,
+      s"SBC_AtAssoc: $sbcSetBits set-index bits do not fit below the sd bit at $atAssocSdBit")
+    val sbcAtAssocField = RegField.r(atAssocSdBit + 1,
+      Cat(io.sbc_stats.atSd, 0.U((atAssocSdBit - sbcSetBits).W), io.sbc_stats.atAssocSet),
+      RegFieldDesc("SBC_AtAssoc", "AT[sel]: bits[15:0]=assocSet, bit16=sd", volatile=true))
     // 008 C2: destination-probe aborts by reason. Cleared by SBC_StatsReset and SBC_Reset, held by L2_StatsHold.
     val sbcDstAbortDirtyField = RegField.r(64, io.perfStats.dstAbortDirty,
       RegFieldDesc("SBC_DstAbortDirty", "Destination-probe aborts: the way was dirty, no client", volatile=true))

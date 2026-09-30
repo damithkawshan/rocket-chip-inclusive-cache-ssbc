@@ -71,8 +71,8 @@ static int paired_5_6(void) {
     sbc_wr(SBC_SETSEL, HOT_SET);
     fence_rw();
     uint64_t v = sbc_rd(SBC_ATASSOC);
-    int assoc = (int)(v & 0xff);
-    int sd    = (int)((v >> 8) & 1);
+    int assoc = (int)SBC_ATASSOC_SET(v);
+    int sd    = SBC_ATASSOC_SD(v);
     return (assoc == PARTNER) && (sd == 0);
 }
 
