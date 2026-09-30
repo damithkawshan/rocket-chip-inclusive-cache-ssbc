@@ -6,7 +6,7 @@
 |---|---|
 | Date | 2026-09-26 |
 | Platform | VCU118, single Rocket, 50 MHz, 2 GB DDR4 |
-| Bitstream | **sha256 `585dbde13aff513d74f3e0b2f9f1100495194ab4c547c87bce33a4a49f383138`** (`FPGASingleRocketVCU118L18K1024K8WL2ConfigSBCPLRU-1MB-8way-2026-09-25.bit`, commit `c3faa05`) |
+| Bitstream | **sha256 `585dbde13aff513d74f3e0b2f9f1100495194ab4c547c87bce33a4a49f383138`** (`FPGASingleRocketVCU118L18K1024K8WL2ConfigSBCPLRU-1MB-8way-2026-09-25.bit`, RTL commit **`962fa05`**, tag `sbc-1mb-8way-linux-booted-2026-09-26` — the provenance file's `c3faa05` is wrong, `Control.scala` was dirty in that build) |
 | L2 | 1024 KB (1 MB), 8-way, 64 B lines = 2048 sets · PLRU (`L2_Replacement = 1`) |
 | Workload | `sw/l2_miss_calib.c`, `-h 64 -m 64 -s 100000`, sweeping `-P` and `-p` |
 | Runs | 5 × 13 × {migration OFF, ON} = **130 runs → 65 A/B points**, ~22 min |

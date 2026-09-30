@@ -1,9 +1,9 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated **2026-09-25** (section 0 and the trackers in 1b/3b). **Folders applied on 2026-09-14** — the layout is in section 10.
+Updated **2026-09-30** (week close: section 0, trackers 1b/1c, sections 4, 5 and 6). **Folders applied on 2026-09-14** — the layout is in section 10.
 
-> ## ⚠️ VERIFY THIS WEEK — due Friday 2026-09-18
+> ## ⚠️ OVERDUE — was due Friday 2026-09-18, still unchecked on 2026-09-27
 >
 > Two findings from 2026-09-14 may explain why SBC is slower. **Do not build a fix on either one until
 > it is checked.**
@@ -36,21 +36,31 @@ Updated **2026-09-25** (section 0 and the trackers in 1b/3b). **Folders applied 
 
 ---
 
-## 0. Where we are (updated 2026-09-25)
+## 0. Where we are (updated 2026-09-30)
 
-> **Today, in one paragraph.** PLRU replacement is in and it helps the plain L2. SBC on top of it is at
-> parity, not yet a win. The change meant to make it win (evict the destination's least-recent line,
-> task 009) **hung the board** and was reverted. Task **012** is re-landing it in stages: the half that
-> needs no help from the CPU is built and passes every simulation check, including a directed test for
-> the one dangerous case; its FPGA image is built and is **on the board now**. The other half, where a
-> CPU still holds the line, is deliberately **not built** — that is the shape that hung the board.
+> **This week, in one paragraph.** We built the paper's own configuration — 1 MB 8-way with a **32 kB
+> L1** — ran omnetpp on it, and **reproduced the paper's miss rate** (24.58% against its 28%). SBC was
+> still at **parity**: 617,145 lines moved, **2 still parked at the end**, 0.34 hits per move. Chasing
+> that we confirmed a real defect in what feeds the decision (**M18 gap 1**): write-backs and flushes
+> move the saturation counters, which biases omnetpp heavily and `l2_miss_calib` barely — so part of the
+> synthetic-vs-real gap is a **measurement** defect, not only a workload one. **M18 is now the top
+> suspect, ahead of the adaptive throttle.** Caveat: that run was dual core and **96.7% of failed moves
+> failed on a client-held destination**, so a single-core re-run is owed before it is quoted as final.
+> Week: [weekly-report/2026-09-30.md](weekly-report/2026-09-30.md).
 
 - **Branch now:** `sbc-009-redo` (cut from the fallback). `sbc-paper-aligned` is still the main line;
   `sbc-sampling` holds the 010/011 documents.
 - **Two images that matter.** Quote the **hash**, never the filename — two files were found archived
   under wrong names (010 §8.5):
   - baseline, board-proven: `e41f780c…d177` (commit `201ebae`) — PLRU runs 1029 s and 1030 s, both rc=0
-  - candidate, built 2026-09-25: `af11762b…3ec4` (commit `97d0162`) — timing met, board result pending
+  - candidate, built 2026-09-25: `af11762b…3ec4` (commit `97d0162`) — **board gate 4 of 4, PASSED**
+  - 1 MB 8-way single-core, built 2026-09-25: `585dbde1…3138` — used for the 1 MB envelope sweep
+  - 1 MB 8-way **dual-core**, built 2026-09-26: `98aedafa…929e` — **boots Linux**, ran the
+    paper-configuration omnetpp A/B
+  - ⚠️ **Both 1 MB images = commit `962fa05`**, tag `sbc-1mb-8way-linux-booted-2026-09-26`. Their
+    provenance files say `c3faa05` / `de88ddc`; both are wrong, because `Control.scala` was dirty in
+    both builds and neither commit elaborates at 2048 sets. Fixed and committed 2026-09-30.
+    Still not reproducible standalone: the `1024K8W` configs are in no chipyard commit
 - **What is still true from before:** SBC is correct but not yet faster on real workloads; every earlier
   number below stands unless a later line replaces it.
 - **NEW 2026-09-25 — the design's operating envelope is measured:**
@@ -133,24 +143,24 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 002 | Fix a one-cycle timing bug in set pairing | ✅ | — | 2026-08-28 |
 | 003 | Use a moved line right where it sits | 🟡 | final tests (GATE 5) ⏭ moved to the last phase | 2026-09-14 |
 | 004 | Count all cache hits and misses | ✅ | — | 2026-09-02 |
-| 005 | Count hits honestly + sample counters over time | 🔴 next — ready to start | rewritten 2026-09-14 as one clean work order: counters in one place behind one switch, counters that follow the hit and miss words, strict timing rules, three fixes, snapshots; not started | 2026-09-14 |
+| 005 | Count hits honestly + sample counters over time | 🟡 **half done** | **Commits 0 (`a1f4cbd`) and 1 (`b3bd6e4`) landed** — every counter in `PerfCounters` behind one switch, plus the eight terminology counters (`0x3F0`–`0x428`) with `PopCount` fan-in and `L2_StatsHold`; board-verified, all four identities exact. **Commits 2 and 3 (the three counter fixes + the interval sampler) not started**, which is why M8 and M15 are still open. Row said "not started" until 2026-09-27 | 2026-09-27 |
 | 006 | On/off switch + count trips to main memory | ✅ 2026-09-14 | closed (`e4c5d53`). A new FPGA image is still owed — one image after task 005 | 2026-09-14 |
 | 007 | Follow the paper's placement and eviction rules | ✅ 2026-09-16 | closed. Moved lines can be evicted, a move may reuse a moved-line slot, pairings end. Turned a big loss into near-parity | 2026-09-16 |
 | 008 | Pick the evicted line by recency (PLRU) instead of at random | ✅ 2026-09-18 | closed (`201ebae`). On the board PLRU alone won on the plain L2 (−3.56% cycles, −12.65% memory traffic); SBC on top still only ties | 2026-09-18 |
 | 009 | Evict the destination's least-recent line whatever its state | ⛔ **reverted** | **Its image hung the board** — 0 of 4 runs finished. Reverted on the fallback branch. The design rule it broke is written in the RTL: fencing the destination before the CPU answers adds a wait the baseline does not have | 2026-09-24 |
 | 010 | Find out which change hung the board | ✅ 2026-09-24 | closed. The hang belongs to 009, not to PLRU: the 008 image finished 2 of 2 PLRU runs (1029 s, 1030 s) while 009's finished 0 of 4. Also found two bitstreams archived under wrong names — cite hashes, never filenames | 2026-09-24 |
 | 011 | Plan how to re-land 009 safely | ✅ 2026-09-24 | the staged plan 012 follows | 2026-09-24 |
-| 012 | Re-land 009's destination eviction, one stage at a time | 🟡 **active** | [TASK](coder/012-reland-destination-eviction/TASK.md) · [REPORT](coder/012-reland-destination-eviction/REPORT.md) · [diagram](coder/012-reland-destination-eviction/diagram.md). C1 + C2 written and **sim-green (V1–V5)**; candidate image built (`af11762b…`). **On the board now.** C3 (the CPU-holds-it case) not written; a watchdog that survives into the image is waiting on a decision | 2026-09-25 |
+| 012 | Re-land 009's destination eviction, one stage at a time | ✅ **C1+C2 done 2026-09-25** | Board gate **4 of 4** (009's image was 0 of 4); dirty destination aborts **48,258 → 0**; **no speed change** — the envelope explains why. C3 (the CPU-holds-it case) **deliberately not built**; on dual-core it is now **96.7% of all aborts** (M22). Watchdog still waiting on a decision | 2026-09-25 |
 
 ### 1c. Measure and improve (current phase)
 
 | # | Item | Status | Notes |
 |---|---|---|---|
 | M1 | Same-work speed test on the board, feature on vs off | ✅ 2026-09-13 | 3 tests: 32–51% slower, 2.5–7× more trips to memory |
-| M2 | Repeat each test 3 times | 🔴 | every number so far comes from one run |
+| M2 | Repeat each test 3 times | 🔴 | every number so far comes from one run — including the 2026-09-26 dual-core omnetpp A/B (M22) |
 | M3 | Watch moved lines pile up for one hour | 🔴 | workplan step 2 |
 | M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | ⛔ replaced 2026-09-16 | folded into the fix plan: the "first slot" fallback disappears on its own once moved lines can be evicted. See [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) C1 |
-| M5 | Count hits honestly (task 005) | 🔴 next | needed before quoting any hit rate. The words are fixed: [cache-terminology.md](guides/cache-terminology.md) |
+| M5 | Count hits honestly (task 005) | ✅ 2026-09-16 (005 c1) | The exact counters exist and are board-verified, so **a hit rate may now be quoted** from `L2_PrimaryHit` + `L2_SecondaryHit` ÷ `L2_AccessA`. The §0 line below saying "do not quote a hit rate" is superseded. Words: [cache-terminology.md](guides/cache-terminology.md) |
 | M6 | 64-bit counters | 🟡 | ✅ saved and passing in simulation 2026-09-14 (`06fcca8`). Still owed: a new FPGA image — build one image after task 005 |
 | M7 | Is the cache's cycle counter the same clock as the CPU? | 🔴 | the on/off comparison is fair either way |
 | M8 | The "moves attempted" counter does not add up | 🟡 cause found 2026-09-14 | the "aborted" count also includes moves that were turned down before they started, and two in the same cycle count once. Fix is in task 005 |
@@ -159,11 +169,13 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M11 | Which heat counter a partner hit should change | ✅ settled 2026-09-16 | Read from the paper PDF (Figures 2 and 3): home **+1** on a native miss even when the partner search hits, partner **−1**. We match the home half; the partner half changes no decision while paired. **No RTL change.** [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) section 0a |
 | M12 | Board check 1: after an SBC run, read every set — paired or not, and how hot | 🔴 | analysis §6 check 1. Predicts every set paired and destinations near maximum heat. **Also verifies L8** |
 | M20 | Map when SBC pays: sweep spare ways x overflow lines on the board | ✅ 2026-09-25 | **Done, 80 points.** Rule `overflow <= spare` holds on 78/80. [envelope](performance/board-calib-envelope-2026-09-25.md). Turns L6 (adaptive throttle) from a hunch into a specified job: detect "my overflow does not fit" and stop |
+| M21 | Envelope at other geometries: 64 KB 8-way and 1 MB 8-way | ✅ 2026-09-25/26 | The rule `overflow <= spare` holds at all three geometries. More sets and fewer ways shrink the downside: worst-case cycles **+13.61%** (64 KB 16-way) → **+4.95%** (64 KB 8-way) → **+3.27%** (1 MB 8-way). [64 KB 8-way](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · [1 MB 8-way](performance/board-calib-envelope-8way-1mb-2026-09-26.md) |
+| M22 | omnetpp in the paper's own configuration (1 MB 8-way, 32 kB L1, dual core) | ✅ 2026-09-26, n=1 | **Reproduced the paper's regime**: L2 miss 24.58% vs the paper's 28% for omnetpp. SBC still at **parity** — cycles −0.010%, reads +0.182%, writes +0.011%, hit rate −0.07 pts. Mechanism: **617,145 migrations, 2 lines parked at the end**, 0.34 hits per park, 0.004% of accesses served from a parked line, 93.3% of second searches wasted. 44% of migrations overwrote another guest (inferred — `migCommitReuse` has no counter). **52% of attempts aborted, 96.7% of them client-held** — a dual-core effect, so re-run single-core before judging. Log: `chipyard/scripts/logs/board_session_20260926-155336.log` |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
-| M16 | 🐞 The moved-line count can be decremented for the wrong set | 🔴 found 2026-09-16 | `Scheduler.scala:689-693` ORs the erase pulses and `Mux1H`es the home set: two at once decrement one wrong set. Harmless today, a **data bug** once pairings end on that count. Prerequisite P0 of the [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) |
+| M16 | 🐞 The moved-line count can be decremented for the wrong set | ✅ **fixed — verified in RTL 2026-09-27** | The OR + `Mux1H` this row described is **gone**. `Scheduler.scala:752-756` latches each MSHR's erase pulse **with its own home set** in a per-MSHR pending slot (`grantOnePerCycle`, `Scheduler.scala:669-684`) and drains one per cycle, with an assert on the only remaining loss case. Fixed by 007 c0; the row was simply never updated. `PerfCounters` still moves the global level by `PopCount`, which is correct |
 | M17 | 🐞 Migrate advice can be checked against the wrong set | 🔴 found 2026-09-17, not verified in sim | A request popped from the per-MSHR queue latches `migAdvice` built from the incoming sink request's set (`Scheduler.scala` `migrateQuery.bits := request.bits.set`). Can start a migration from a set that is not at max. Also see [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 9–12: the other ways our heat counter differs from the paper |
-| M18 | Make the heat counters follow the paper | ⏸ deferred 2026-09-17 | Four gaps: write-backs and flushes count as hits; the hot test runs before this miss is added; M17; the second search never updates the partner. [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 7, 9–12. **PLRU goes first; this is the next lever if PLRU does not win** |
+| M18 | Make the saturation ("heat") counters follow the paper | 🐞 **gap 1 CONFIRMED in RTL 2026-09-27** | `Directory.scala:314` taps **every** directory read (`ren2 && !internalRead`), so inner-C write-backs and X-channel flushes update the saturation counter — and a write-back to a resident line reads as a **hit**, cooling the set by 1. Board 2026-09-26: `L2_Accesses` 6,270,326,354 vs `L2_AccessA` 4,931,117,515 → **21.4% of heat-counter events are not demand accesses**. Those 1.34 G non-demand lookups are the pollution. It bites write-heavy workloads hardest, because Rocket drops clean L1 victims silently, so inner-C Releases are mostly dirty write-backs: omnetpp moved **514 M** dirty blocks to memory, `l2_miss_calib` a few thousand — so the instrument the envelope was measured with is barely affected and the real workload is. Other three gaps unchanged (hot test runs before this miss is added; M17; the second search never updates the partner). **Now the top suspect, ahead of the throttle** |
 | M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
 | M19 | 🐞 A pairing can end while a migration is still deferred for that source, and the migration then claims the wrong destination | 🔴 found 2026-09-17 (task 008), pre-existing since 007 C3 | RTL assert fires: "SBC: paired source migrated outside its partner set". Proven not an 008 bug — reproduces identically on a build with no PLRU code at all. Not fixed yet, does not block 008. [bug-fix-log.md](bugs/bug-fix-log.md) B8-1 |
 
@@ -230,6 +242,10 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 
 ## 4. Speed and improvement — `performance/`
 
+- 🟢 [sbc-findings-2026-09-25.md](performance/sbc-findings-2026-09-25.md) — **start here**: what the envelope settles, the two figures of merit it overturns, and what to build.
+- 🟢 [board-calib-envelope-2026-09-25.md](performance/board-calib-envelope-2026-09-25.md) — the 80-point envelope sweep, 64 KB 16-way. Method and caveats.
+- 🟢 [board-calib-envelope-8way-64kb-2026-09-25.md](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · 🟢 [board-calib-envelope-8way-1mb-2026-09-26.md](performance/board-calib-envelope-8way-1mb-2026-09-26.md) — the same sweep at 128 and 2048 sets. ⚠️ Both hold the **per-set** overflow fixed while scaling the cache, so they say "if a workload has this shape, SBC helps at any size" — **not** "a real workload will have this shape at that size".
+- 🟢 [board-dualcore-l2miss-calib-2026-09-24.md](performance/board-dualcore-l2miss-calib-2026-09-24.md) — the calib instrument on two cores.
 - 🟢 [board-128kb-omnetpp-2026-09-17.md](performance/board-128kb-omnetpp-2026-09-17.md) — first 128 KB board A/B (tag `sbc-007-c2-breakeven` behaviour, no B7-1 fix): break-even, +0.16% memory traffic, +0.15% cycles; 7.9% of accesses pay a second search that almost never hits. Has the exact commands.
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
 - 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
@@ -250,13 +266,19 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 📘 [2026-09-03](daily-summary/2026-09-03.md) — bug fixed, first fair on/off number, gap to the paper.
 - 📘 [2026-09-08](daily-summary/2026-09-08.md) — feature-off build; what SBC costs in area and timing.
 - 📘 [2026-09-10](daily-summary/2026-09-10.md) — first board test; why the hit rates cannot be trusted yet.
-- 📘 [2026-09-11](daily-summary/2026-09-11.md) — task 006 built. **Latest day log** (none for 09-12 / 09-13 — those runs are in the 2026-09-14 weekly report).
+- 📘 [2026-09-11](daily-summary/2026-09-11.md) — task 006 built (none for 09-12 / 09-13 — those runs are in the 2026-09-14 weekly report).
+- 📘 [2026-09-17](daily-summary/2026-09-17.md) — PLRU on the board: it wins on the plain L2, SBC on top still ties.
+- 📘 [2026-09-24](daily-summary/2026-09-24.md) — which image hung the board, proved by hash.
+- 🟢 [2026-09-26](daily-summary/2026-09-26.md) — the envelope at three geometries, and **omnetpp in the paper's own configuration**: its miss rate reproduced, SBC still at parity.
+- 🟢 [2026-09-27](daily-summary/2026-09-27.md) — **latest**: the paper's Tables 1 and 2 read from the PDF, **M18 gap 1 confirmed in the RTL**, and two tracker rows corrected.
 
 ## 6. Weekly reports — `weekly-report/`
 
 - 📘 [2026-08-21.md](weekly-report/2026-08-21.md) (+ `.html`) — moving lines works end to end.
 - 📘 [2026-08-31.md](weekly-report/2026-08-31.md) (+ `.html`) — a moved line served real data for the first time.
-- 🟢 [2026-09-14.md](weekly-report/2026-09-14.md) (+ `.html`) — first fair test on the board: SBC is slower. Replaces the 09-08 weekly plan. **Its "Next steps" section is this week's plan** (week of 15 Sep).
+- 📘 [2026-09-14.md](weekly-report/2026-09-14.md) (+ `.html`) — first fair test on the board: SBC is slower. Replaces the 09-08 weekly plan.
+- 📘 [2026-09-25.md](weekly-report/2026-09-25.md) — the operating envelope, and the start of the optimization phase.
+- 🟢 [2026-09-30.md](weekly-report/2026-09-30.md) — **latest**: the paper's configuration reached, SBC still at parity, and the saturation-counter defect. **Its section 6 is next week's plan.**
 
 ## 7. Design notes and diagrams — `design/`
 

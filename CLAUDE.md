@@ -13,7 +13,7 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status — OPTIMIZATION PHASE (updated 2026-09-25)
+## Current status — OPTIMIZATION PHASE (updated 2026-09-30)
 
 > **▶ START HERE.** Branch **`sbc-009-redo`**. The build phases and the destination-side tasks are done.
 > **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
@@ -41,22 +41,59 @@ live in `ai-documents/`.
 > - ❌ **"secondary hits are the benefit"**. **77% of the gain is PRIMARY hits** — the source set no
 >   longer thrashing once its excess leaves. The second search is a cost to minimise, not the feature
 >
+> ### ⚠️ NEW 2026-09-27 — the decision is fed the wrong events (M18 gap 1, CONFIRMED in RTL)
+>
+> `Directory.scala:314` is `io.tap.valid := ren2 && !internalRead` — the tap fires on **every** directory
+> read, so **inner-C write-backs and X flushes update the saturation counters**, and a write-back to a
+> resident line reads as a **hit** (−1). Measured: `L2_Accesses` 6,270,326,354 vs `L2_AccessA`
+> 4,931,117,515 → **21.4% of the events driving the counters are not accesses**. A cooled set then looks
+> like a good *destination* when it is not.
+>
+> **It hits omnetpp hard and `l2_miss_calib` barely** (Rocket drops clean L1 victims silently, so
+> inner-C Releases are mostly dirty write-backs: omnetpp 514 M dirty blocks, calib a few thousand). So
+> part of the synthetic-vs-real gap is a **measurement** defect, not only a workload one.
+>
 > ### What to build next
 >
-> - ✅ **The adaptive throttle (L6)** — now a specified job: *stop migrating when the overflow does not
->   fit*. The RTL already distinguishes an **invalid** destination way (`dstFree`) from an **overwritten**
->   one (`dstEvictable`) — that is the direct test for real free space, and the decision currently ignores
->   the difference. Cheapest first experiment: a runtime bit that allows migration **only into an invalid
->   way**. No new state, testable in sim before any bitstream
-> - ⛔ **Do NOT build 012 C3** (client-held destination way). It is 45% of a slice worth under 2% of
->   attempts, and it carries the hold-and-wait shape that hung the board on 009
-> - 🔶 **Geometry**: the paper used 4096 sets / 8 ways, we use 64 / 16, and it warns that fewer, larger
->   sets leave less to win. 128 KB moves toward its regime (256 KB blocked by B7-2)
+> - 🥇 **Fix the tap first (M18 gap 1)** — ahead of the throttle. One field on `DirectoryRead`, one
+>   pipeline line, one condition on the tap, one drive at the single call site (`Scheduler.scala:451-479`;
+>   `isDemandA` already exists at `:700`). One design call: whether an MSHR's *re-read* taps, or only the
+>   allocating read (a re-read double-counts one access). **Falsifiable** — it should move omnetpp a lot
+>   and calib almost not at all. Sim first, no bitstream
+> - 🥈 **The adaptive throttle (L6)** — still the right job, but do it on a clean signal. *Stop migrating
+>   when the overflow does not fit.* The RTL already distinguishes an **invalid** destination way
+>   (`dstFree`) from an **overwritten** one (`dstEvictable`); the decision ignores the difference.
+>   Cheapest experiment: a runtime bit allowing migration **only into an invalid way**
+> - 🥉 **Per-set profiler** (~30 lines of C, `SBC_SetSel` 0x300 / `SBC_SetSat` 0x308) — reproduces the
+>   paper's Figure 4 on our board and answers whether omnetpp has hot *and* cold sets at 2048 sets at all
+> - ⛔ **Do NOT build 012 C3** (client-held destination way) — it carries the hold-and-wait shape that
+>   hung the board on 009. ⚠️ **But note:** on **dual core** it is now **96.7% of all aborts**
+>   (2026-09-26). The old "under 2% of attempts" figure was single-core only
+> - 🔶 **Geometry, updated:** the paper used **2 MB / 8-way / 4096 sets** with a **32 kB L1** (Table 1,
+>   read from the PDF 2026-09-27). We now build **1 MB / 8-way / 2048 sets** with a 32 kB L1 — within 2×.
+>   256 KB / 16-way is still blocked by B7-2; 1 MB / 8-way is not
 >
 > ### Board and bitstream state
 >
 > - **Cite the sha256, never the filename** (two files were archived under wrong names):
->   baseline `e41f780c…d177` = `201ebae`; current `af11762b…3ec4` = `97d0162`
+>   baseline `e41f780c…d177` = `201ebae`; 012 candidate `af11762b…3ec4` = `97d0162` (**board gate 4/4**)
+> - **1 MB 8-way, the paper's geometry — both images = commit `962fa05`**, tag
+>   **`sbc-1mb-8way-linux-booted-2026-09-26`**: single-core `585dbde1…3138` (envelope sweep),
+>   dual-core `98aedafa…929e` (**boots Linux**, the paper-configuration omnetpp A/B).
+>   ⚠️ Their provenance files name `c3faa05` / `de88ddc` — **both wrong**: `Control.scala` was dirty in
+>   both builds, so neither commit can rebuild them. `962fa05` holds the version they contain
+>   (`689cbe7a…`), and `design/` is identical across `c3faa05..de88ddc`, so one commit covers both
+> - ✅ **The `Control.scala` width fix is COMMITTED** (`962fa05`, 2026-09-30). `SBC_AtAssoc` computed its
+>   pad as `0.U((8 - sbcSetBits).W)` — a negative width at 2048 sets, so **no cache above 256 sets
+>   elaborated, baseline included** (the field is not gated by `enablePerfCounters`)
+> - ⚠️ **STILL OPEN — the software decode of `SBC_AtAssoc` is wrong above 256 sets.** `sd` now sits at
+>   bit `sbcSetBits` (bit 11 at 2048 sets), but `sw/sip_common.h:74`, `sw/migration_stress_test.c:295`,
+>   `sw/sbc_mmio.h:36` and the register table below all still read `v & 0xff` / `(v >> 8) & 1`. Open
+>   design call: fix in place, or pin `sd` to a fixed bit so software stops depending on geometry
+> - ⚠️ **Neither 1 MB image is reproducible from this repo alone.** The `1024K8W` configs exist in **no
+>   chipyard commit** (`fpga/src/main/scala/vcu118/Configs.scala`,
+>   `generators/chipyard/src/main/scala/config/RocketConfigs.scala`; 0 hits at chipyard HEAD `741996ac`,
+>   4 in the working tree), and the provenance files hash only this generator's sources
 > - **Task 012 is DONE**: sim-green, **board gate 4 of 4** (009's image was 0 of 4), dirty destination
 >   aborts **48,258 → 0** — and **no performance change**, for the reason the rule above explains.
 >   [REPORT](ai-documents/coder/012-reland-destination-eviction/REPORT.md)
@@ -195,7 +232,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | L3 | One latent timing window (`[born→gate]`) | **Bug risk:** never reproduced; `sbcGateStallCycles` exists to hunt it | `bug-fix-log.md` |
 | L4 | Task 003 GATE 5 never signed off | **Bug risk:** 6 of its 12 cases never proved their event; the two-core cases never ran. **Moved to the last phase** (2026-09-14) | `coder/003` |
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
-| L6 | **No adaptive throttle — now the top priority.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | **This is where the performance is** (2026-09-25 sweep). Outside the envelope migration costs up to +14% cycles. Specified job: *stop when the overflow does not fit*. `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite | not built |
+| L6 | **No adaptive throttle.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | Still the right job, but **M18 gap 1 goes first** (2026-09-27): building a throttle on a polluted saturation counter would tune against a defect. Then: *stop when the overflow does not fit*; `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite | not built |
 | L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
 | L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful. **⚠️ Verify this week** (due 2026-09-18) | `Directory.scala` computes `displacedOther`, but nothing reads it |
 
