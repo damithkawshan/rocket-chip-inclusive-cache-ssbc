@@ -1,27 +1,26 @@
 # Coder report 013 — make the saturation counter follow the paper
 
-**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status:** IN PROGRESS — C0 committed (`93eee79`), at stop point (b)
+**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status:** IN PROGRESS — all RTL (C0-C3) and
+both bitstreams done; parked at stop point (d), waiting on the board session go-ahead
 
 > Fill this in as you go, not at the end. A stage with an empty row is not done. Cite log paths — never
 > paste logs. Anything unexpected goes under "Findings" and you stop and ask.
 
 ## ▶ RESUME HERE
 
-- User gave go at stop point (b) 2026-09-30: "yes go ahead wth c1 and control bitstream build".
-- Control bitstream build launched in tmux `sbc013` (chipyard commit `9f25ba67`, config
-  `FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU`, tag `control-013c0`). Build log:
-  `chipyard/scripts/logs/013-build-control-013c0-20260930-211153.log`. Running in the background.
-- C1, C2, C3 all done and committed (86a8866, 89d9c20, and C3 pending). Control bitstream DONE:
-  sha256 `3abaca528fbd...` (see Bitstreams table), no MISMATCH, WNS positive, 54 DRC warnings (routine).
-- C1 (86a8866), C2 (89d9c20), C3 (fed7227) all done, all four gates green each stage, base identity
-  held throughout on NoSbc. Control bitstream DONE (sha256 `3abaca52...`).
-- User gave go at stop point (c) 2026-09-30 ("what happened to previous build? ... continue to latest
-  bitstream build"). Candidate build launched in tmux `sbc013` (commit `ec92d82` = C3 RTL `fed7227` +
-  REPORT.md only, tag `candidate-013c3`). Log:
-  `chipyard/scripts/logs/013-build-candidate-013c3-20260930-233256.log`. Running now.
-- Candidate bitstream DONE: sha256 `1bcba361...`, WNS positive, no MISMATCH. Provenance diff vs
-  control confirms only Directory/Scheduler/MSHR/SetBalanceUnit.scala differ - clean isolated A/B.
-- At **stop point (d)**: waiting on the user's go before the board session (TASK §13).
+- All four RTL stages committed and gated green: C0 `93eee79`, C1 `86a8866`, C2 `89d9c20`, C3 `fed7227`.
+  NoSbc config byte-identical to baseline throughout.
+- Both 1 MB 8-way bitstreams built and verified (see Bitstreams table): control `3abaca52...` (C0 RTL),
+  candidate `1bcba361...` (C3 RTL). Provenance diff confirms the only `.scala` difference between them is
+  exactly Directory/Scheduler/MSHR/SetBalanceUnit.scala.
+- **At stop point (d)** since 2026-09-30: waiting on the user's go for the board session (TASK §13) —
+  the omnetpp A/B and calib sweep on these two images. **Not yet run.**
+- 2026-10-01: session time went to a user-directed **standalone side task outside this task's scope** —
+  a 256 KB 8-way single-core image (avoids the 16-way-only B7-2 DRC bug) built from the same C3 RTL, plus
+  a PARSEC benchmark eval on the board. Not part of task 013's control/candidate A/B; its own findings
+  (chipyard commits, `run_parsec_session.exp` rewrite, board results) live outside this file. Logged here
+  only so the time gap before the real board session is accounted for.
+- Next: get the go-ahead and run TASK §13 on the two 1 MB images.
 
 ## Findings
 
