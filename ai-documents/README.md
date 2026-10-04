@@ -1,7 +1,7 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated **2026-09-30** (week close: section 0, trackers 1b/1c, sections 4, 5 and 6). **Folders applied on 2026-09-14** — the layout is in section 10.
+Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, section 3b). **Folders applied on 2026-09-14** — the layout is in section 10.
 
 > ## ⚠️ OVERDUE — was due Friday 2026-09-18, still unchecked on 2026-09-27
 >
@@ -47,9 +47,15 @@ Updated **2026-09-30** (week close: section 0, trackers 1b/1c, sections 4, 5 and
 > suspect, ahead of the adaptive throttle.** Caveat: that run was dual core and **96.7% of failed moves
 > failed on a client-held destination**, so a single-core re-run is owed before it is quoted as final.
 > Week: [weekly-report/2026-09-30.md](weekly-report/2026-09-30.md).
+>
+> **Since then (2026-09-30):** task 013 **fixed all four saturation-counter gaps in RTL** — C0 `93eee79`,
+> C1 `86a8866`, C2 `89d9c20`, C3 `fed7227`, every stage gated green in simulation, and the feature-off
+> build byte-identical to baseline throughout. Two 1 MB 8-way single-core images are built and verified
+> per `.scala` file against their commits. **The board A/B has not been run** — that measurement is what
+> the week now owes. [013 REPORT](coder/013-sat-counter-paper-mismatches/REPORT.md).
 
-- **Branch now:** `sbc-009-redo` (cut from the fallback). `sbc-paper-aligned` is still the main line;
-  `sbc-sampling` holds the 010/011 documents.
+- **Branch now:** `sbc-013-sat-counter` (cut from `sbc-009-redo`). `sbc-paper-aligned` is still the main
+  line; `sbc-sampling` holds the 010/011 documents.
 - **Two images that matter.** Quote the **hash**, never the filename — two files were found archived
   under wrong names (010 §8.5):
   - baseline, board-proven: `e41f780c…d177` (commit `201ebae`) — PLRU runs 1029 s and 1030 s, both rc=0
@@ -61,6 +67,12 @@ Updated **2026-09-30** (week close: section 0, trackers 1b/1c, sections 4, 5 and
     provenance files say `c3faa05` / `de88ddc`; both are wrong, because `Control.scala` was dirty in
     both builds and neither commit elaborates at 2048 sets. Fixed and committed 2026-09-30.
     Still not reproducible standalone: the `1024K8W` configs are in no chipyard commit
+  - **task 013's A/B pair, 1 MB 8-way single core, built 2026-09-30** — every `.scala` checked against
+    the commit: control `3abaca52…4870` = C0 `93eee79`, candidate `1bcba361…26cb` = C3 `fed7227`. The
+    only difference between them is the four files the fix touches. **Neither has been on the board yet**
+  - 1 MB 8-way dual core `bb0d3d0b…9095` (2026-09-30) = clean **pre-013** RTL, commit `cd7924b`
+  - 256 KB 8-way, from **C3** RTL: single `5ace4125…9108`, dual `71fa886e…e418` — the standalone PARSEC
+    side task, **not** part of 013's A/B
 - **What is still true from before:** SBC is correct but not yet faster on real workloads; every earlier
   number below stands unless a later line replaces it.
 - **NEW 2026-09-25 — the design's operating envelope is measured:**
@@ -151,6 +163,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 010 | Find out which change hung the board | ✅ 2026-09-24 | closed. The hang belongs to 009, not to PLRU: the 008 image finished 2 of 2 PLRU runs (1029 s, 1030 s) while 009's finished 0 of 4. Also found two bitstreams archived under wrong names — cite hashes, never filenames | 2026-09-24 |
 | 011 | Plan how to re-land 009 safely | ✅ 2026-09-24 | the staged plan 012 follows | 2026-09-24 |
 | 012 | Re-land 009's destination eviction, one stage at a time | ✅ **C1+C2 done 2026-09-25** | Board gate **4 of 4** (009's image was 0 of 4); dirty destination aborts **48,258 → 0**; **no speed change** — the envelope explains why. C3 (the CPU-holds-it case) **deliberately not built**; on dual-core it is now **96.7% of all aborts** (M22). Watchdog still waiting on a decision | 2026-09-25 |
+| 013 | Make the heat counter follow the paper (4 gaps) | 🟡 **RTL done, board owed** | All four stages committed and gated green in simulation: C0 `93eee79`, C1 `86a8866` (only demand accesses move the counter), C2 `89d9c20` (test for hot *after* the update, on the *looked-up* set — fixes M17), C3 `fed7227` (a demand second search updates the partner). Control + candidate 1 MB images built and verified. **What is left is the measurement**: the omnetpp A/B and the calib sweep, predictions written first | 2026-10-04 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -174,8 +187,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | ✅ **fixed — verified in RTL 2026-09-27** | The OR + `Mux1H` this row described is **gone**. `Scheduler.scala:752-756` latches each MSHR's erase pulse **with its own home set** in a per-MSHR pending slot (`grantOnePerCycle`, `Scheduler.scala:669-684`) and drains one per cycle, with an assert on the only remaining loss case. Fixed by 007 c0; the row was simply never updated. `PerfCounters` still moves the global level by `PopCount`, which is correct |
-| M17 | 🐞 Migrate advice can be checked against the wrong set | 🔴 found 2026-09-17; confirmed in the RTL 2026-09-30 (the queue-pop path) · **fix = task 013 C2** | A request popped from the per-MSHR queue latches `migAdvice` built from the incoming sink request's set (`Scheduler.scala` `migrateQuery.bits := request.bits.set`). Can start a migration from a set that is not at max. Also see [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 9–12: the other ways our heat counter differs from the paper |
-| M18 | Make the saturation ("heat") counters follow the paper | 🐞 **gap 1 CONFIRMED in RTL 2026-09-27** · **task 013 filed 2026-09-30** (gaps 1–4; gap 5 measured only) | `Directory.scala:314` taps **every** directory read (`ren2 && !internalRead`), so inner-C write-backs and X-channel flushes update the saturation counter — and a write-back to a resident line reads as a **hit**, cooling the set by 1. Board 2026-09-26: `L2_Accesses` 6,270,326,354 vs `L2_AccessA` 4,931,117,515 → **21.4% of heat-counter events are not demand accesses**. Those 1.34 G non-demand lookups are the pollution. It bites write-heavy workloads hardest, because Rocket drops clean L1 victims silently, so inner-C Releases are mostly dirty write-backs: omnetpp moved **514 M** dirty blocks to memory, `l2_miss_calib` a few thousand — so the instrument the envelope was measured with is barely affected and the real workload is. Other three gaps unchanged (hot test runs before this miss is added; M17; the second search never updates the partner). **Now the top suspect, ahead of the throttle** |
+| M17 | 🐞 Migrate advice can be checked against the wrong set | ✅ **fixed in RTL 2026-09-30 — task 013 C2 (`89d9c20`)**, gated green; board A/B still owed. Found 2026-09-17, confirmed in the RTL 2026-09-30 (the queue-pop path). The fix also adds an assert that catches a mis-keyed lookup | A request popped from the per-MSHR queue latches `migAdvice` built from the incoming sink request's set (`Scheduler.scala` `migrateQuery.bits := request.bits.set`). Can start a migration from a set that is not at max. Also see [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) §1 rows 9–12: the other ways our heat counter differs from the paper |
+| M18 | Make the saturation ("heat") counters follow the paper | ✅ **gaps 1–4 FIXED in RTL 2026-09-30 — task 013 C1–C3**, all gated green; **the board A/B is still owed**, so the effect is predicted, not measured. Gap 5 (repeat reloads are never counted) is **measured only — do not build a fix**. The diagnosis that led here: | `Directory.scala:314` taps **every** directory read (`ren2 && !internalRead`), so inner-C write-backs and X-channel flushes update the saturation counter — and a write-back to a resident line reads as a **hit**, cooling the set by 1. Board 2026-09-26: `L2_Accesses` 6,270,326,354 vs `L2_AccessA` 4,931,117,515 → **21.4% of heat-counter events are not demand accesses**. Those 1.34 G non-demand lookups are the pollution. It bites write-heavy workloads hardest, because Rocket drops clean L1 victims silently, so inner-C Releases are mostly dirty write-backs: omnetpp moved **514 M** dirty blocks to memory, `l2_miss_calib` a few thousand — so the instrument the envelope was measured with is barely affected and the real workload is. Other three gaps unchanged (hot test runs before this miss is added; M17; the second search never updates the partner). **Now the top suspect, ahead of the throttle** |
 | M15 | The "served a write" counter also counts lines the CPU cache hands back | 🐞 found 2026-09-14 | a counting mistake only — the cache itself works correctly. Two message types share the same number. Fix is in task 005 |
 | M19 | 🐞 A pairing can end while a migration is still deferred for that source, and the migration then claims the wrong destination | 🔴 found 2026-09-17 (task 008), pre-existing since 007 C3 | RTL assert fires: "SBC: paired source migrated outside its partner set". Proven not an 008 bug — reproduces identically on a build with no PLRU code at all. Not fixed yet, does not block 008. [bug-fix-log.md](bugs/bug-fix-log.md) B8-1 |
 
@@ -239,7 +252,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - ⚠️ [009](coder/009-evict-destination-lru/) — **reverted**: its image hung the board. Read 010 before reusing anything from it.
 - 📘 [010](coder/010-hang-bisection/) — which image hung, proved by hash and by counter identity. 📘 [011](coder/011-fix-009-destination-eviction/) — the re-land plan.
 - 📘 [012](coder/012-reland-destination-eviction/) — C1+C2 landed, board gate 4/4, no performance change; C3 not built.
-- 🟢 [013](coder/013-sat-counter-paper-mismatches/) — **active**: make the saturation counter follow the paper (gaps 1–4), then a control and a candidate single-core 1 MB image on the board.
+- 🟢 [013](coder/013-sat-counter-paper-mismatches/) — **active**: make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green; both 1 MB images are built and verified. The board A/B is the open item** — see the REPORT's "RESUME HERE".
 
 ## 4. Speed and improvement — `performance/`
 
