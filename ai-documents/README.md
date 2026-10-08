@@ -36,7 +36,7 @@ Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, sectio
 
 ---
 
-## 0. Where we are (updated 2026-09-30)
+## 0. Where we are (updated 2026-10-09)
 
 > **This week, in one paragraph.** We built the paper's own configuration — 1 MB 8-way with a **32 kB
 > L1** — ran omnetpp on it, and **reproduced the paper's miss rate** (24.58% against its 28%). SBC was
@@ -46,13 +46,21 @@ Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, sectio
 > synthetic-vs-real gap is a **measurement** defect, not only a workload one. **M18 is now the top
 > suspect, ahead of the adaptive throttle.** Caveat: that run was dual core and **96.7% of failed moves
 > failed on a client-held destination**, so a single-core re-run is owed before it is quoted as final.
-> Week: [weekly-report/2026-09-30.md](weekly-report/2026-09-30.md).
+> Week: [weekly-report/2026-10-07.md](weekly-report/2026-10-07.md).
 >
 > **Since then (2026-09-30):** task 013 **fixed all four saturation-counter gaps in RTL** — C0 `93eee79`,
 > C1 `86a8866`, C2 `89d9c20`, C3 `fed7227`, every stage gated green in simulation, and the feature-off
 > build byte-identical to baseline throughout. Two 1 MB 8-way single-core images are built and verified
 > per `.scala` file against their commits. **The board A/B has not been run** — that measurement is what
 > the week now owes. [013 REPORT](coder/013-sat-counter-paper-mismatches/REPORT.md).
+>
+> **Since then (2026-10-07 to 10-09), task 015:** the pair headline of the 10-07 weekly report (−12.58%)
+> was mostly board age. Fresh-vs-fresh it is **−1.99%** (p = 0.073). LU alone, fresh-vs-fresh (18 boots):
+> SBC cuts memory accesses 3–5% where the working set overflows, 12.9% at n=512 b=64, nothing where it
+> fits. Two LU programs on one core (model-chosen pairs, 8 windows): they make up to +72% more memory
+> accesses than alone, and SBC recovers only 6%, 2% and −3% of that in the three large pairs.
+> Reading so far (interim; S2–S7 not run): SBC helps a program whose own working set overflows;
+> co-running is one way to cause that. [015 REPORT](coder/015-pair-verification-campaign/REPORT.md) (F11, F15).
 
 - **Branch now:** `sbc-013-sat-counter` (cut from `sbc-009-redo`). `sbc-paper-aligned` is still the main
   line; `sbc-sampling` holds the 010/011 documents.
@@ -164,6 +172,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 011 | Plan how to re-land 009 safely | ✅ 2026-09-24 | the staged plan 012 follows | 2026-09-24 |
 | 012 | Re-land 009's destination eviction, one stage at a time | ✅ **C1+C2 done 2026-09-25** | Board gate **4 of 4** (009's image was 0 of 4); dirty destination aborts **48,258 → 0**; **no speed change** — the envelope explains why. C3 (the CPU-holds-it case) **deliberately not built**; on dual-core it is now **96.7% of all aborts** (M22). Watchdog still waiting on a decision | 2026-09-25 |
 | 013 | Make the heat counter follow the paper (4 gaps) | 🟡 **RTL done, board owed** | All four stages committed and gated green in simulation: C0 `93eee79`, C1 `86a8866` (only demand accesses move the counter), C2 `89d9c20` (test for hot *after* the update, on the *looked-up* set — fixes M17), C3 `fed7227` (a demand second search updates the partner). Control + candidate 1 MB images built and verified. **What is left is the measurement**: the omnetpp A/B and the calib sweep, predictions written first | 2026-10-04 |
+| 014 | Build SPLASH-2 `radix` and `fft` for the board (host-only) | ✅ 2026-10-07 | both static; they feed task 015 S6 | 2026-10-07 |
+| 015 | Multi-application SBC verification: interference, or low hit rate? | 🟡 **parked at stop (c)** | R0 + S1 done. Pair headline −12.58% was board age: fresh-vs-fresh **−1.99%** (p 0.073). Side studies 2026-10-08: LU sweep 18/18, LU pair, LU pair search 8/8 (SBC recovers 6% / 2% / −3% of the interference). **S2 dose-response not started** | 2026-10-09 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -184,6 +194,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M20 | Map when SBC pays: sweep spare ways x overflow lines on the board | ✅ 2026-09-25 | **Done, 80 points.** Rule `overflow <= spare` holds on 78/80. [envelope](performance/board-calib-envelope-2026-09-25.md). Turns L6 (adaptive throttle) from a hunch into a specified job: detect "my overflow does not fit" and stop |
 | M21 | Envelope at other geometries: 64 KB 8-way and 1 MB 8-way | ✅ 2026-09-25/26 | The rule `overflow <= spare` holds at all three geometries. More sets and fewer ways shrink the downside: worst-case cycles **+13.61%** (64 KB 16-way) → **+4.95%** (64 KB 8-way) → **+3.27%** (1 MB 8-way). [64 KB 8-way](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · [1 MB 8-way](performance/board-calib-envelope-8way-1mb-2026-09-26.md) |
 | M22 | omnetpp in the paper's own configuration (1 MB 8-way, 32 kB L1, dual core) | ✅ 2026-09-26, n=1 | **Reproduced the paper's regime**: L2 miss 24.58% vs the paper's 28% for omnetpp. SBC still at **parity** — cycles −0.010%, reads +0.182%, writes +0.011%, hit rate −0.07 pts. Mechanism: **617,145 migrations, 2 lines parked at the end**, 0.34 hits per park, 0.004% of accesses served from a parked line, 93.3% of second searches wasted. 44% of migrations overwrote another guest (inferred — `migCommitReuse` has no counter). **52% of attempts aborted, 96.7% of them client-held** — a dual-core effect, so re-run single-core before judging. Log: `chipyard/scripts/logs/board_session_20260926-155336.log` |
+| M23 | Is SBC's benefit on two co-running programs an interference effect, or a low-hit-rate effect? (task 015) | 🟡 interim 2026-10-09 | Pair fresh-vs-fresh **−1.99%** (p 0.073), not −12.58% (board age). LU alone fresh sweep: −3 to −5% where the working set overflows, −12.9% at n=512 b=64, nothing where it fits. LU+LU pairs: SBC recovers **6% / 2% / −3%** of the interference. S2 dose-response, S3–S7 not run. [REPORT](coder/015-pair-verification-campaign/REPORT.md) F11, F15 |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicts steps of ~15 as pairs form, then flat, never falling. Overlaps M3 |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | ✅ **fixed — verified in RTL 2026-09-27** | The OR + `Mux1H` this row described is **gone**. `Scheduler.scala:752-756` latches each MSHR's erase pulse **with its own home set** in a per-MSHR pending slot (`grantOnePerCycle`, `Scheduler.scala:669-684`) and drains one per cycle, with an assert on the only remaining loss case. Fixed by 007 c0; the row was simply never updated. `PerfCounters` still moves the global level by `PopCount`, which is correct |
@@ -253,6 +264,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 📘 [010](coder/010-hang-bisection/) — which image hung, proved by hash and by counter identity. 📘 [011](coder/011-fix-009-destination-eviction/) — the re-land plan.
 - 📘 [012](coder/012-reland-destination-eviction/) — C1+C2 landed, board gate 4/4, no performance change; C3 not built.
 - 🟢 [013](coder/013-sat-counter-paper-mismatches/) — **active**: make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green; both 1 MB images are built and verified. The board A/B is the open item** — see the REPORT's "RESUME HERE".
+- 📘 [014](coder/014-splash2-radix-fft-build/) — SPLASH-2 `radix` and `fft` built static for the board (host-only); feeds 015 S6.
+- 🟢 [015](coder/015-pair-verification-campaign/) — **active, parked at stop (c)**: multi-application verification. Pair headline corrected to −1.99% fresh-vs-fresh (F11); LU sweep, LU pair and pair search done (F14, F15); S2 dose-response is next. Read its "RESUME HERE".
 
 ## 4. Speed and improvement — `performance/`
 
@@ -260,6 +273,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 🟢 [board-calib-envelope-2026-09-25.md](performance/board-calib-envelope-2026-09-25.md) — the 80-point envelope sweep, 64 KB 16-way. Method and caveats.
 - 🟢 [board-calib-envelope-8way-64kb-2026-09-25.md](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · 🟢 [board-calib-envelope-8way-1mb-2026-09-26.md](performance/board-calib-envelope-8way-1mb-2026-09-26.md) — the same sweep at 128 and 2048 sets. ⚠️ Both hold the **per-set** overflow fixed while scaling the cache, so they say "if a workload has this shape, SBC helps at any size" — **not** "a real workload will have this shape at that size".
 - 🟢 [board-dualcore-l2miss-calib-2026-09-24.md](performance/board-dualcore-l2miss-calib-2026-09-24.md) — the calib instrument on two cores.
+- ⚠️ [lu-single-app-2026-10-02.md](performance/lu-single-app-2026-10-02.md) — LU single-application sweep, one boot for 72 runs. **Its small-point results are wrong** (board age); note at the top gives the fresh-vs-fresh numbers.
+- ⚠️ [lu-streamcluster-pair-2026-10-05.md](performance/lu-streamcluster-pair-2026-10-05.md) — LU + streamcluster on one L2. **The −12.5% headline was mostly board age** (fresh-vs-fresh −1.99%); note at the top.
 - 🟢 [board-128kb-omnetpp-2026-09-17.md](performance/board-128kb-omnetpp-2026-09-17.md) — first 128 KB board A/B (tag `sbc-007-c2-breakeven` behaviour, no B7-1 fix): break-even, +0.16% memory traffic, +0.15% cycles; 7.9% of accesses pay a second search that almost never hits. Has the exact commands.
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
 - 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
@@ -293,7 +308,13 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 📘 [2026-08-31.md](weekly-report/2026-08-31.md) (+ `.html`) — a moved line served real data for the first time.
 - 📘 [2026-09-14.md](weekly-report/2026-09-14.md) (+ `.html`) — first fair test on the board: SBC is slower. Replaces the 09-08 weekly plan.
 - 📘 [2026-09-25.md](weekly-report/2026-09-25.md) — the operating envelope, and the start of the optimization phase.
-- 🟢 [2026-09-30.md](weekly-report/2026-09-30.md) — **latest**: the paper's configuration reached, SBC still at parity, and the saturation-counter defect. **Its section 6 is next week's plan.**
+- 📘 [2026-09-30.md](weekly-report/2026-09-30.md) — the paper's configuration reached, SBC still at
+  parity, and the saturation-counter defect.
+- ⚠️ [2026-10-07.md](weekly-report/2026-10-07.md) — **latest; headline corrected 2026-10-08**: the pair
+  result (−12.58%, 29.5% of interference repaired) was mostly board age; fresh-vs-fresh it is **−1.99%**
+  (p = 0.073). Also: the counter chain is identity-verified and the "−3.77% best single-app" figure is
+  **withdrawn**. The open question (multi-application effect, or just a low hit rate?) is task 015's;
+  its section 7 is the plan.
 
 ## 7. Design notes and diagrams — `design/`
 

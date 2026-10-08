@@ -1,0 +1,10 @@
+label,kind,wl_a,wl_b,cpu_a,cpu_b,policy,migrate,rep,status,rc,window_s,wall_a,wall_b,overlap_s,overlap_frac,ra,rb,migrations,secHits,secMiss,attempted,aborted,parked,dispDrop,dispRelease,accessA,primaryHit,secondaryHit,probedHit,dataMiss,upgradeMiss,secondSearch,secondaryMiss,memReads,memWrites,L2_Accesses,L2_Hits,L2_Cycles,dstAbortDirty,dstAbortHeld,dstAbortBoth
+solo-lu,solo,lu,,0,0,plru,off,1,OK,0,22.70,22.64,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,14181931,10695256,0,0,3486675,0,0,0,3486675,2693278,21653515,18166840,1176677749,0,0,0
+solo-lu,solo,lu,,0,0,plru,off,2,OK,0,22.79,22.74,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,14248541,10664507,0,0,3584034,0,0,0,3584034,2778059,21766286,18182252,1181810317,0,0,0
+solo-lu,solo,lu,,0,0,plru,off,3,OK,0,22.95,22.90,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,14277609,10460779,0,0,3816830,0,0,0,3816830,2981826,21795417,17978587,1189747066,0,0,0
+solo-streamcluster,solo,streamcluster,,0,0,plru,off,1,OK,0,21.14,21.09,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,15291719,14097037,0,0,1194682,0,0,0,1194682,186748,16697964,15503282,1099647834,0,0,0
+solo-streamcluster,solo,streamcluster,,0,0,plru,off,2,OK,0,21.07,21.01,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,15174192,14001230,0,0,1172962,0,0,0,1172962,187337,16568362,15395400,1095433548,0,0,0
+solo-streamcluster,solo,streamcluster,,0,0,plru,off,3,OK,0,21.16,21.11,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,15261378,14026796,0,0,1234582,0,0,0,1234582,194673,16679840,15445258,1100525562,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,0,plru,off,1,OK,0,49.10,49.04,47.24,47.24,0.962,0,0,0,0,0,0,0,0,0,0,33058576,24738668,0,0,8319908,0,0,0,8319908,4437857,42669687,34349779,2501775363,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,0,plru,off,2,OK,0,49.96,49.90,48.49,48.49,0.971,0,0,0,0,0,0,0,0,0,0,33253718,23837855,0,0,9415863,0,0,0,9415863,4694130,42892727,33476864,2545786439,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,0,plru,off,3,OK,0,49.88,49.82,48.31,48.31,0.969,0,0,0,0,0,0,0,0,0,0,33228777,23885837,0,0,9342940,0,0,0,9342940,4740161,42845321,33502381,2540918104,0,0,0

@@ -13,11 +13,17 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status — OPTIMIZATION PHASE (updated 2026-10-04)
+## Current status — OPTIMIZATION PHASE (updated 2026-10-09)
 
 > **▶ START HERE.** Branch **`sbc-013-sat-counter`**. The build phases and the destination-side tasks are done.
 > **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
 > "when does set balancing pay, and can the hardware tell".**
+>
+> **▶ Task 015 (multi-application), state 2026-10-09.** Parked at stop (c); nothing committed. The 2026-10-05 pair headline
+> (−12.58%) was mostly board age: fresh-vs-fresh it is **−1.99%** (p = 0.073). Fresh-vs-fresh LU alone: −3 to −5% where the
+> working set overflows, nothing where it fits. Two LU programs on one core: SBC recovers only 6% / 2% / −3% of the extra memory
+> accesses they cause. **A/B rule: one measured window per fresh boot, OFF and ON on matched board history.**
+> [015 REPORT](ai-documents/coder/015-pair-verification-campaign/REPORT.md) (F11, F15).
 >
 > ### The rule that now governs every decision
 >
@@ -210,6 +216,43 @@ Both `origin` and `myfork` point to the same GitHub fork:
 - `sbc-sampling` — testing branch, local only, cut from `sbc-paper-aligned`; to be merged back into it.
 - `set_migration_refactored` — older SBC branch (to 2026-08-26), an ancestor of the active branch.
 - `main`, `perf_counter`, `coherency_aware_replacement`, `TL_signal_analysis` — separate lines of work.
+
+## The Linux on the board (read from boot logs, 2026-10-04)
+
+What the VCU118 actually runs, taken from the board's own boot output
+(`chipyard/scripts/logs/lu_session_20261004-065147.log`) and from its busybox — not from a source tree.
+
+- **Kernel: Linux 6.6.0-00004-g67bc4513761f**, `#3 SMP Sun Apr 26 17:11:11 AEST 2026`, built with
+  riscv64-unknown-linux-gnu-gcc 13.2.0. It is FireMarshal's board Linux tree (`git describe`: `v6.6-4-g67bc4513761`).
+  Under it: OpenSBI v1.2 (SBI spec 1.0). Machine model `ucb-bar,chipyard`; ISA reported `acdfim`
+  (no vector).
+- **SMP follows the bitstream.** The dual-core bitstream logs `smp: Brought up 1 node, 2 CPUs`
+  (OpenSBI: `Platform HART Count : 2`). The kernel also logs that unaligned accesses are slow.
+- **Memory and storage:** 2 GiB DRAM (`2017648K/2097152K available`). SD card `mmcblk0` with two
+  partitions; the second is ext4 and is mounted on `/mnt`.
+  HugeTLB registers a 2 MiB page size.
+- **Boot chain:** bootrom → OpenSBI → kernel with an embedded (`nodisk`) initramfs → FireMarshal's
+  `/init` → `exec /sbin/init` (Buildroot). Prompt `buildroot login:`, user `root`, password `fpga`.
+- **Network start fails.** `Starting network: ip: socket: Function not implemented … FAIL` appears
+  on the boot. Files go over zmodem, not the network.
+- **busybox v1.36.0 (2026-04-26 15:27:44 AEST)**, 281 entries in its applet table. Has `taskset`, `nproc`, `time`, `chrt`,
+  `nice`, `md5sum`, `sha256sum`, `bc`, `dc`, `devmem`, `seq`, `usleep`, `watch`, `hexdump`. **No
+  `timeout`.** `wait` is an `ash` builtin. This is `software/firemarshal/wlutil/initramfs/nodisk/bin/busybox`.
+
+**Traps when checking what the board has:**
+
+1. **Two busybox builds exist in the tree; only one reaches the board.**
+   `boards/default/distros/br/buildroot/output/target/bin/busybox` is v1.36.1 and has no `taskset` —
+   it is Buildroot's own build, not what the board reports. Check the `wlutil/initramfs/nodisk` binary.
+2. **Do not trust a string match for an applet.** `timeout` is a standalone string in the binary but
+   not an applet. The applet names are one sorted, NUL-separated table; read that.
+3. **Call it as `busybox taskset -c N cmd`.** Neither source tree has a `taskset` symlink, so a bare
+   `taskset` may give `not found`. `busybox taskset -c top` was run on the board and printed taskset's usage, so the applet is there. To settle the
+   bare form: `ls -l $(command -v taskset)` on the board.
+4. **The flashed image file is not identified.** The `br-base` nodisk images on this machine (in the
+   `chipyard_genesys2` checkout, built 2026-04-30 20:26) and the `ccbench-cache-sweep` one (2026-05-14
+   16:25) carry different kernel build stamps from the board's `#3 … Apr 26 17:11:11`.
+   `images/prototype/br-base/` does not exist in this repo. Quote the kernel line above, not an image path.
 
 ## Cache terminology — use these words (agreed 2026-09-14)
 

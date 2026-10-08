@@ -1,0 +1,10 @@
+label,kind,wl_a,wl_b,cpu_a,cpu_b,policy,migrate,rep,status,rc,window_s,wall_a,wall_b,overlap_s,overlap_frac,ra,rb,migrations,secHits,secMiss,attempted,aborted,parked,dispDrop,dispRelease,accessA,primaryHit,secondaryHit,probedHit,dataMiss,upgradeMiss,secondSearch,secondaryMiss,memReads,memWrites,L2_Accesses,L2_Hits,L2_Cycles,dstAbortDirty,dstAbortHeld,dstAbortBoth
+solo-lu,solo,lu,,0,1,plru,off,1,OK,0,23.48,23.44,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,15040471,10596240,0,23301,4444231,0,0,0,4444231,3486317,22649374,18205143,1213969396,0,0,0
+solo-lu,solo,lu,,0,1,plru,off,2,OK,0,23.76,23.71,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,14998225,10170253,0,19226,4827972,0,0,0,4827972,3843858,22603778,17775806,1226637733,0,0,0
+solo-lu,solo,lu,,0,1,plru,off,3,OK,0,23.51,23.47,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,15112287,10590842,0,28409,4521445,0,0,0,4521445,3552273,22733222,18211777,1214839722,0,0,0
+solo-streamcluster,solo,streamcluster,,1,1,plru,off,1,OK,0,22.30,22.25,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,16198511,13292050,0,29652,2906461,0,0,0,2906461,293206,17721851,14815390,1154811947,0,0,0
+solo-streamcluster,solo,streamcluster,,1,1,plru,off,2,OK,0,22.18,22.13,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,16263063,13539911,0,33448,2723152,0,0,0,2723152,309991,17807410,15084258,1148543755,0,0,0
+solo-streamcluster,solo,streamcluster,,1,1,plru,off,3,OK,0,22.58,22.53,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,16301084,12998982,0,34350,3302102,0,0,0,3302102,298147,17837831,14535729,1167888978,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,1,plru,off,1,OK,0,25.18,25.13,23.03,23.03,0.915,0,0,0,0,0,0,0,0,0,0,29298954,18829738,0,127957,10469216,0,0,0,10469216,5473813,38035167,27565951,1302334965,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,1,plru,off,2,OK,0,24.68,24.64,24.09,24.09,0.976,0,0,0,0,0,0,0,0,0,0,29354877,18190151,0,133882,11164726,0,0,0,11164726,5547422,38119474,26954748,1277128382,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,1,plru,off,3,OK,0,24.64,24.60,23.47,23.47,0.953,0,0,0,0,0,0,0,0,0,0,29206588,18864980,0,127769,10341608,0,0,0,10341608,5487049,37949996,27608388,1275900279,0,0,0

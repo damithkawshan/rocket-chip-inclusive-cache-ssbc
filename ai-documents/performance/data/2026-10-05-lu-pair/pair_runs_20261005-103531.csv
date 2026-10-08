@@ -1,0 +1,4 @@
+label,kind,wl_a,wl_b,cpu_a,cpu_b,policy,migrate,rep,status,rc,window_s,wall_a,wall_b,overlap_s,overlap_frac,ra,rb,migrations,secHits,secMiss,attempted,aborted,parked,dispDrop,dispRelease,accessA,primaryHit,secondaryHit,probedHit,dataMiss,upgradeMiss,secondSearch,secondaryMiss,memReads,memWrites,L2_Accesses,L2_Hits,L2_Cycles,dstAbortDirty,dstAbortHeld,dstAbortBoth
+solo-lu,solo,lu,,0,1,plru,off,1,OK,0,22.96,22.92,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,16642505,15275682,0,22790,1366823,0,0,0,1366823,626293,24937412,23570589,1187061446,0,0,0
+solo-streamcluster,solo,streamcluster,,1,1,plru,off,1,OK,0,21.81,21.78,NA,NA,NA,0,NA,0,0,0,0,0,0,0,0,16065694,13856492,0,26576,2209202,0,0,0,2209202,267550,17570178,15360976,1129757755,0,0,0
+pair-lu+streamcluster,pair,lu,streamcluster,0,1,plru,off,1,OK,0,23.54,23.51,22.05,22.05,0.937,0,0,0,0,0,0,0,0,0,0,30521752,26018097,0,101890,4503655,0,0,0,4503655,1036997,39891858,35388203,1220494321,0,0,0

@@ -1,0 +1,3 @@
+label,axis,bench,policy,p,n,b,migrate,rep,status,rc,migrations,secHits,secMiss,attempted,aborted,parked,dispDrop,dispRelease,accessA,primaryHit,secondaryHit,probedHit,dataMiss,upgradeMiss,secondSearch,secondaryMiss,memReads,memWrites,L2_Accesses,L2_Hits,L2_Cycles,dstAbortDirty,dstAbortHeld,dstAbortBoth
+lu-p2-n768-b128-plru,centre,lu_ncb,plru,2,768,128,off,1,OK,0,0,0,0,0,0,0,0,0,42826833,24021117,0,454888,18805716,0,0,0,18805716,16139728,65903467,47097751,2465123792,0,0,0
+lu-p2-n768-b128-plru,centre,lu_ncb,plru,2,768,128,on,1,OK,0,590091,2436570,8909884,925239,335733,66,97213,606,42601763,22424975,2427201,388454,17749587,0,11337085,8909884,17749587,15993055,65665474,45479317,2453095457,0,308190,26958

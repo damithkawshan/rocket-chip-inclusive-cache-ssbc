@@ -1,0 +1,7 @@
+label,axis,bench,policy,p,n,b,migrate,rep,status,rc,migrations,secHits,secMiss,attempted,aborted,parked,dispDrop,dispRelease,accessA,primaryHit,secondaryHit,probedHit,dataMiss,upgradeMiss,secondSearch,secondaryMiss,memReads,memWrites,L2_Accesses,L2_Hits,L2_Cycles,dstAbortDirty,dstAbortHeld,dstAbortBoth
+lu-ref,cal,lu_ncb,plru,1,512,128,off,1,OK,0,0,0,0,0,0,0,0,0,13486713,6700262,0,19330,6786451,0,0,0,6786451,5904329,20586818,13800367,1206650722,0,0,0
+sc-dev,cal,streamcluster,plru,,,,off,1,OK,0,0,0,0,0,0,0,0,0,204783,164331,0,2281,40452,0,0,0,40452,9956,240265,199813,11685669,0,0,0
+sc-d16-c1024-n32768,cal,streamcluster,plru,,,,off,1,OK,0,0,0,0,0,0,0,0,0,8834696,8497248,0,53754,337448,0,0,0,337448,96654,9860022,9522574,737319757,0,0,0
+sc-d16-c2048-n32768,cal,streamcluster,plru,,,,off,1,OK,0,0,0,0,0,0,0,0,0,12178585,10719747,0,30916,1458838,0,0,0,1458838,174927,13247454,11788616,864284050,0,0,0
+sc-d32-c2048-n32768,cal,streamcluster,plru,,,,off,1,OK,0,0,0,0,0,0,0,0,0,18933959,11249596,0,37083,7684363,0,0,0,7684363,322747,20615275,12930912,1579647991,0,0,0
+sc-d16-c4096-n32768,cal,streamcluster,plru,,,,off,1,OK,0,0,0,0,0,0,0,0,0,12185079,6950769,0,22865,5234310,0,0,0,5234310,298724,13336007,8101697,964957205,0,0,0

@@ -1,7 +1,9 @@
 # Coder exchange
 
 One task at a time. **The highest-numbered directory is the active one.** (010 is an exception —
-a board investigation, not an RTL task; it carries `PROGRESS.md` beside its two files.)
+a board investigation, not an RTL task; it carries `PROGRESS.md` beside its two files. **014 is an
+exception too** — a host-only benchmark build with no FPGA or board step, so it runs in parallel with
+the active 015 rather than ahead of it.)
 
 ```
 coder/
@@ -52,3 +54,5 @@ For every task across the project — phases, leftovers, hygiene — see the sta
 | 011 | Re-land 009's destination eviction safely (it hangs the board as built) | **open** (2026-09-24). **Fallback taken:** branch `sbc-009-redo`, `739bd2a` RTL reverted (`f385555`), verified byte-identical to `201ebae`. Task is now a staged **re-land** (§11), not a patch. Needs **D5** (re-land shape; (b) restructure recommended) and D3/D4. Six leads, one certain (F1: `evictW` is compile-time, so random mode runs the new path — contradicts 009's U2). Gate is 4 consecutive PLRU board completions, not a green sim |
 | 012 | Re-land 009's destination eviction, staged and board-gated | **C1 + C2 landed** (`97d0162`), image `af11762b…3ec4`: board gate 4 of 4 completions, dirty destination aborts 48k → 0, **no performance change**. C3 (client-held destination) not built, by decision after the 2026-09-25 envelope result |
 | 013 | Make the saturation counter follow the paper: demand accesses only (gap 1, M18), test after the update on the looked-up set (gaps 2+3, M17), the second search updates the partner (gap 4); gap 5 measured only. Then a control and a candidate single-core 1 MB image with the paper's 32 kB 8-way L1, A/B on the board | **open** (2026-09-30) |
+| 014 | Build SPLASH-2 `radix` and `fft` for the board (host-only, no FPGA) | **open** (2026-10-07) — recipe verified before the task was written: both compile and link statically. `parsecmgmt` alone is NOT enough — the SPLASH-2 makefiles hard-assign `LDFLAGS = -lpthread -lm` and discard the bldconf's `-static`, which is why `inst/lu_ncb` is dynamic while `staged/lu_ncb` is static. Feeds task 015 §S6 |
+| 015 | Multi-application SBC verification campaign: does the benefit come from interference, or from a low hit rate? | **parked at stop (c)** (2026-10-09) — the active task. Prerequisite fixes, R0 and S1 done; the 2026-10-05 headline (−12.58%) was mostly board age: **fresh-vs-fresh −1.99%, p 0.073** (F11). Side studies on request, 2026-10-08: LU single-core sweep (18 of 18 valid), LU pair (2 runs), LU pair search (8 of 8 windows; SBC recovers **6% / 2% / −3%** of the interference, F15). **S2 the aggressor dose-response curve (the deciding measurement) not started.** S7 (dual core, per-app attribution) is the only route past the no-per-app-counter limit |
