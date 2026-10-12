@@ -1,6 +1,6 @@
 # Coder report 013 — make the saturation counter follow the paper
 
-**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status:** IN PROGRESS — all RTL (C0-C3) and
+**Started:** 2026-09-30 · **Branch:** `sbc-013-sat-counter` · **Status (2026-10-12):** RTL DONE; 1 MB board A/B SET ASIDE (user decision) · **Status before that:** IN PROGRESS — all RTL (C0-C3) and
 both bitstreams done; parked at stop point (d), waiting on the board session go-ahead
 
 > Fill this in as you go, not at the end. A stage with an empty row is not done. Cite log paths — never
@@ -8,6 +8,10 @@ both bitstreams done; parked at stop point (d), waiting on the board session go-
 
 ## ▶ RESUME HERE
 
+- **2026-10-12 — the 1 MB board A/B (TASK §13) is SET ASIDE (user decision).** Neither image below was ever on the
+  board. The next config is 512 KB 8-way L2 + 32 kB 8-way L1, single core, C3 RTL (CLAUDE.md, top box). The C3 RTL
+  itself is in every image since 2026-10-01, so every fresh-boot result (`performance/fresh-boot-experiments-2026-10-09.md`,
+  task 016) ran with the fix. The lines below are the state as of 2026-10-01
 - All four RTL stages committed and gated green: C0 `93eee79`, C1 `86a8866`, C2 `89d9c20`, C3 `fed7227`.
   NoSbc config byte-identical to baseline throughout.
 - Both 1 MB 8-way bitstreams built and verified (see Bitstreams table): control `3abaca52...` (C0 RTL),

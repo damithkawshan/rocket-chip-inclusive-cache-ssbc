@@ -13,17 +13,42 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status — OPTIMIZATION PHASE (updated 2026-10-09)
+## Current status — OPTIMIZATION PHASE (updated 2026-10-12)
 
 > **▶ START HERE.** Branch **`sbc-013-sat-counter`**. The build phases and the destination-side tasks are done.
 > **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
 > "when does set balancing pay, and can the hardware tell".**
 >
-> **▶ Task 015 (multi-application), state 2026-10-09.** Parked at stop (c); nothing committed. The 2026-10-05 pair headline
-> (−12.58%) was mostly board age: fresh-vs-fresh it is **−1.99%** (p = 0.073). Fresh-vs-fresh LU alone: −3 to −5% where the
-> working set overflows, nothing where it fits. Two LU programs on one core: SBC recovers only 6% / 2% / −3% of the extra memory
-> accesses they cause. **A/B rule: one measured window per fresh boot, OFF and ON on matched board history.**
-> [015 REPORT](ai-documents/coder/015-pair-verification-campaign/REPORT.md) (F11, F15).
+> **▶ NEXT CONFIG (user decision 2026-10-12): 512 KB 8-way L2 (1024 sets) + 32 KB 8-way L1, single core, C3 RTL.**
+> - Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` (chipyard `RocketConfigs.scala` / `vcu118/Configs.scala`, **uncommitted**)
+> - First build started 2026-10-12 13:22, tmux `build512single`, log
+>   `chipyard/fpga/build-logs/FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-20261012-132203.log`. No sha256 yet
+> - **The 1 MB runs are set aside**, including task 013's 1 MB A/B (it never reached the board)
+> - ⚠️ Against the 256 KB image of every fresh-boot result, **both** the L2 (256 → 512 KB) and the L1 (8 → 32 KB) change,
+>   so old and new numbers do not compare directly
+> - What to run on it first: not decided yet
+>
+> **▶ Fresh-boot results so far** — 256 KB 8-way L2, 8 KB L1, single core, image `5ace4125…`, **100 valid windows**
+> (2026-10-05 → 10-10). Memory accesses, SBC on vs off; most settings one window per arm, LU noise 0.5–0.9%:
+> - LU alone: **b64 −12.9%** · b128 −3.2 to −4.7% at every n · b256 −1.3% · b16 / b32 ≈ 0
+> - LU + LU: b64+b64 −9.9% · b32+b128 −4.3% · b64+b256 −3.9% · b32+b32 −1.0%
+> - LU + FFT: with b64 −5.0 to −8.8% · with b128 −3.0 to −4.0% · with b32 ≈ 0 · FFT alone ≈ 0
+> - LU b64 + streamcluster: −2.0% (the old −12.6% headline was board age)
+> - bodytrack (task 016): centre −0.4% · −1.2 to −1.9% around 400 particles · **+4.1% / +3.7% at 1600 / 4000 particles** ·
+>   +1.1 to +2.4% at the low-hit corner. No repeats yet
+> - Run time (L2 cycles) moves ≤ ~1.2% everywhere: a DRAM read costs only ~38 L2 cycles at 50 MHz
+>
+> **Decisions these changed:**
+> - **A/B rule: one measured window per fresh boot, OFF and ON on matched board history.** One-boot results do not count
+> - A low hit rate does **not** predict a win (bodytrack at 79–83% lost; LU at 75% saved)
+> - SBC does **not** win back a co-runner's interference (under 10% in 10 of 14 cases); a pair's gain ≈ the sum of the
+>   two programs' gains alone
+> - bodytrack's losses are lost **primary** hits (2.5–3.4 per migration at 1600 / 4000): the "partner flooded" signature
+>   of the rule below
+>
+> Results: ⭐ [fresh-boot-experiments-2026-10-09.md](ai-documents/performance/fresh-boot-experiments-2026-10-09.md) ·
+> [016 REPORT](ai-documents/coder/016-bodytrack-sbc-sweep/REPORT.md) · [015 REPORT](ai-documents/coder/015-pair-verification-campaign/REPORT.md)
+> (F11, F15). **New chat on this method: read [fresh-boot-campaign-handoff.md](ai-documents/guides/fresh-boot-campaign-handoff.md) first.**
 >
 > ### The rule that now governs every decision
 >
@@ -59,7 +84,8 @@ live in `ai-documents/`.
 > inner-C Releases are mostly dirty write-backs: omnetpp 514 M dirty blocks, calib a few thousand). So
 > part of the synthetic-vs-real gap is a **measurement** defect, not only a workload one.
 >
-> **The fix — task 013, four gaps, four commits, all gated green** (sim only; the board A/B is still owed):
+> **The fix — task 013, four gaps, four commits, all gated green** (sim only; the 1 MB board A/B was set aside
+> 2026-10-12, but the C3 RTL is in every image since 2026-10-01, so every fresh-boot result above ran with it):
 > `86a8866` C1 only demand accesses move the counter (gap 1, M18) · `89d9c20` C2 test for hot *after* the
 > update, on the *looked-up* set (gaps 2+3, M17) · `fed7227` C3 a demand second search updates the
 > partner (gap 4) · `93eee79` C0 baseline instrumentation + `sw/scripts/run_013_gate.sh`.
@@ -68,23 +94,22 @@ live in `ai-documents/`.
 >
 > ### What to build next
 >
-> - 🥇 **Run task 013's board A/B** (TASK §13) — the RTL is done and gated; **the measurement is not**.
->   Two 1 MB 8-way single-core images are built and provenance-checked, differing only in the four
->   `.scala` files above: control `3abaca52…` (C0 RTL) · candidate `1bcba361…` (C3 RTL). Owed: the
->   omnetpp A/B and the calib sweep, with predictions written **before** the first run. **Falsifiable** —
->   it should move omnetpp a lot and calib almost not at all
+> - 🥇 **Build and measure the 512 KB 8-way / 32 KB L1 image** (box above), fresh-boot method. Workloads not decided yet
+> - ⏸ **Task 013's 1 MB A/B — set aside 2026-10-12 (user decision).** Control `3abaca52…` (C0) and candidate
+>   `1bcba361…` (C3) stay archived; neither was ever on the board
 > - 🥈 **The adaptive throttle (L6)** — still the right job, but do it on a clean signal. *Stop migrating
 >   when the overflow does not fit.* The RTL already distinguishes an **invalid** destination way
 >   (`dstFree`) from an **overwritten** one (`dstEvictable`); the decision ignores the difference.
 >   Cheapest experiment: a runtime bit allowing migration **only into an invalid way**
-> - 🥉 **Per-set profiler** (~30 lines of C, `SBC_SetSel` 0x300 / `SBC_SetSat` 0x308) — reproduces the
->   paper's Figure 4 on our board and answers whether omnetpp has hot *and* cold sets at 2048 sets at all
+> - 🥉 **Per-set profiler** (`SBC_SetSel` 0x300 / `SBC_SetSat` 0x308) — [sw/sat_snap.c](sw/sat_snap.c) already takes one
+>   snapshot of every set's counter, optionally the instant a command exits. Reproduces the paper's Figure 4 on our
+>   board; first open use: which sets lose the primary hits in bodytrack at 1600 particles
 > - ⛔ **Do NOT build 012 C3** (client-held destination way) — it carries the hold-and-wait shape that
 >   hung the board on 009. ⚠️ **But note:** on **dual core** it is now **96.7% of all aborts**
 >   (2026-09-26). The old "under 2% of attempts" figure was single-core only
 > - 🔶 **Geometry, updated:** the paper used **2 MB / 8-way / 4096 sets** with a **32 kB L1** (Table 1,
->   read from the PDF 2026-09-27). We now build **1 MB / 8-way / 2048 sets** with a 32 kB L1 — within 2×.
->   256 KB / 16-way is still blocked by B7-2; 1 MB / 8-way is not
+>   read from the PDF 2026-09-27). **Next: 512 KB / 8-way / 1024 sets with a 32 kB 8-way L1** (user decision
+>   2026-10-12): the paper's L1, an L2 4× smaller. The 1 MB images are set aside. 256 KB / 16-way is still blocked by B7-2
 >
 > ### Board and bitstream state
 >
@@ -101,12 +126,17 @@ live in `ai-documents/`.
 >   `Directory`/`MSHR`/`Scheduler`/`SetBalanceUnit.scala`:
 >   - **control** `3abaca52…4870` = C0 `93eee79` (pre-fix behaviour + the sim-only totals)
 >   - **candidate** `1bcba361…26cb` = C3 `fed7227` (all four saturation-counter gaps fixed)
->   - ⚠️ **Neither has been on the board yet.** This A/B is the owed measurement
+>   - ⏸ **Never on the board; set aside 2026-10-12 (user decision)**
 > - **1 MB 8-way dual core** `bb0d3d0b…9095`, built 2026-09-30 = **clean pre-013 RTL**, commit `cd7924b`
 >   (all four files match it exactly — unlike the 09-26 pair, this one *is* reproducible)
 > - **256 KB 8-way** (avoids B7-2, which is 16-way only) — built from **C3 RTL `fed7227`**, verified
 >   per file: single core `5ace4125…9108` (2026-10-01), dual core `71fa886e…e418` (2026-10-02).
->   ⚠️ From the **standalone PARSEC side task**, not task 013's A/B — do not mix the two
+>   **The single-core `5ace4125…` is the image of every fresh-boot result** (100 windows, 2026-10-05 → 10-10).
+>   Not part of task 013's A/B
+> - **512 KB 8-way single core, 32 kB 8-way L1 — building 2026-10-12** (the next config, box at the top). C3 RTL:
+>   this repo at `ca7508e`, `design/` identical to `fed7227`. The chipyard config is uncommitted (the provenance file
+>   carries a `.config.diff`). No sha256 yet. A stock-core variant (`FPGAStockRocket…`, `WithNHugeCores`) was aborted
+>   the same day
 > - ✅ **The `Control.scala` width fix is COMMITTED** (`962fa05`, 2026-09-30). `SBC_AtAssoc` computed its
 >   pad as `0.U((8 - sbcSetBits).W)` — a negative width at 2048 sets, so **no cache above 256 sets
 >   elaborated, baseline included** (the field is not gated by `enablePerfCounters`)
@@ -294,7 +324,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | L3 | One latent timing window (`[born→gate]`) | **Bug risk:** never reproduced; `sbcGateStallCycles` exists to hunt it | `bug-fix-log.md` |
 | L4 | Task 003 GATE 5 never signed off | **Bug risk:** 6 of its 12 cases never proved their event; the two-core cases never ran. **Moved to the last phase** (2026-09-14) | `coder/003` |
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
-| L6 | **No adaptive throttle.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | **Unblocked 2026-09-30:** M18's gaps are fixed in RTL (task 013 C1-C3), so the saturation counter is now a clean signal to throttle on. Next: *stop when the overflow does not fit*; `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite. Measure 013 on the board first | not built |
+| L6 | **No adaptive throttle.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | **Unblocked 2026-09-30:** M18's gaps are fixed in RTL (task 013 C1-C3), so the saturation counter is now a clean signal to throttle on. Next: *stop when the overflow does not fit*; `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite. bodytrack at 1600–4000 particles (+4%, lost primary hits) is a real-program case to test it on | not built |
 | L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
 | L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful. **⚠️ Verify this week** (due 2026-09-18) | `Directory.scala` computes `displacedOther`, but nothing reads it |
 

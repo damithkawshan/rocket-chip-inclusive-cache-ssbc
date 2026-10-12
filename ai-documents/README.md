@@ -1,7 +1,7 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, section 3b). **Folders applied on 2026-09-14** — the layout is in section 10.
+Updated **2026-10-12** (next config 512 KB; 1 MB set aside; all fresh-boot results in one list: section 0, tracker 1b, section 3). **Folders applied on 2026-09-14** — the layout is in section 10.
 
 > ## ⚠️ OVERDUE — was due Friday 2026-09-18, still unchecked on 2026-09-27
 >
@@ -36,8 +36,35 @@ Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, sectio
 
 ---
 
-## 0. Where we are (updated 2026-10-09)
+## 0. Where we are (updated 2026-10-12)
 
+> **▶ NEW 2026-10-12 — the next setup (your decision):**
+> - **512 KB L2 (8 ways) with a 32 KB L1 (8 ways), one core**, same cache logic as every recent run
+> - The first FPGA build started 2026-10-12 13:22 (tmux `build512single`)
+> - **The 1 MB runs are put aside**, including the planned before/after test of the heat-counter fix
+>   (task 013). That test never ran on the board
+> - Both the L2 and the L1 get bigger than in the runs below, so the new numbers will not compare one-to-one
+> - What to run on it first: not decided yet
+>
+> **All fresh-boot results so far** (256 KB L2, 8 KB L1, one core, 100 valid runs, 2026-10-05 to 10-10).
+> Change in memory accesses with SBC on vs off (negative = fewer = better):
+> - LU alone: −12.9% at block size 64 · about −4% at block 128 · −1.3% at 256 · about 0 at 16 and 32
+> - Two LU programs together: −1% to −10% (best: two LU b64)
+> - LU with FFT: −5% to −9% with LU b64 · about −3.5% with LU b128 · about 0 with LU b32 · FFT alone about 0
+> - LU with streamcluster: −2.0%
+> - bodytrack: about 0 at the default · −1% to −2% around 400 particles · **+4% (worse) at 1600 and 4000 particles**
+> - Run time barely moves (1.2% or less): on this board memory is fast compared with the core
+> - Most of these are one run each way; bodytrack has no repeats yet
+>
+> **What these runs changed:**
+> - Every measured run must start from a fresh boot; runs on a board that has been up a while are not trusted
+> - A low hit rate does **not** mean SBC will help
+> - SBC does **not** win back the slowdown that a second program causes
+>
+> Details: [performance/fresh-boot-experiments-2026-10-09.md](performance/fresh-boot-experiments-2026-10-09.md) ·
+> bodytrack: [coder/016 REPORT](coder/016-bodytrack-sbc-sweep/REPORT.md)
+>
+> ---
 > **This week, in one paragraph.** We built the paper's own configuration — 1 MB 8-way with a **32 kB
 > L1** — ran omnetpp on it, and **reproduced the paper's miss rate** (24.58% against its 28%). SBC was
 > still at **parity**: 617,145 lines moved, **2 still parked at the end**, 0.34 hits per move. Chasing
@@ -61,6 +88,13 @@ Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, sectio
 > accesses than alone, and SBC recovers only 6%, 2% and −3% of that in the three large pairs.
 > Reading so far (interim; S2–S7 not run): SBC helps a program whose own working set overflows;
 > co-running is one way to cause that. [015 REPORT](coder/015-pair-verification-campaign/REPORT.md) (F11, F15).
+>
+> **⭐ 2026-10-09 — the most important set of experiments so far:**
+> [performance/fresh-boot-experiments-2026-10-09.md](performance/fresh-boot-experiments-2026-10-09.md). Every SBC on/off
+> result with one fresh boot per window, in one place: LU alone (9 points), LU + LU (6 pairs), LU + FFT (3 × 3 grid),
+> LU + streamcluster. Interference depends on the victim (LU b64), not the partner; SBC's gain on a pair ≈ the sum of
+> the two programs' gains alone (10 of 14 recovered values below 10%); with streamcluster the pair keeps only ~27% of
+> LU's gain alone. One lead to repeat: pairs where LU b128 suffers recover 12–23% (4 of 5, weak band, 0.13–0.34 M). To continue in a new chat, start with [guides/fresh-boot-campaign-handoff.md](guides/fresh-boot-campaign-handoff.md).
 
 - **Branch now:** `sbc-013-sat-counter` (cut from `sbc-009-redo`). `sbc-paper-aligned` is still the main
   line; `sbc-sampling` holds the 010/011 documents.
@@ -77,10 +111,11 @@ Updated **2026-10-04** (task 013's RTL landed: section 0, trackers 1b/1c, sectio
     Still not reproducible standalone: the `1024K8W` configs are in no chipyard commit
   - **task 013's A/B pair, 1 MB 8-way single core, built 2026-09-30** — every `.scala` checked against
     the commit: control `3abaca52…4870` = C0 `93eee79`, candidate `1bcba361…26cb` = C3 `fed7227`. The
-    only difference between them is the four files the fix touches. **Neither has been on the board yet**
+    only difference between them is the four files the fix touches. **Never on the board; put aside 2026-10-12**
   - 1 MB 8-way dual core `bb0d3d0b…9095` (2026-09-30) = clean **pre-013** RTL, commit `cd7924b`
-  - 256 KB 8-way, from **C3** RTL: single `5ace4125…9108`, dual `71fa886e…e418` — the standalone PARSEC
-    side task, **not** part of 013's A/B
+  - 256 KB 8-way, from **C3** RTL: single `5ace4125…9108`, dual `71fa886e…e418`. **The single-core one ran
+    every fresh-boot result** (100 runs, 2026-10-05 to 10-10); not part of 013's A/B
+  - **512 KB 8-way, 32 KB 8-way L1, single core, C3 RTL — building 2026-10-12.** The next setup; no hash yet
 - **What is still true from before:** SBC is correct but not yet faster on real workloads; every earlier
   number below stands unless a later line replaces it.
 - **NEW 2026-09-25 — the design's operating envelope is measured:**
@@ -171,9 +206,10 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 010 | Find out which change hung the board | ✅ 2026-09-24 | closed. The hang belongs to 009, not to PLRU: the 008 image finished 2 of 2 PLRU runs (1029 s, 1030 s) while 009's finished 0 of 4. Also found two bitstreams archived under wrong names — cite hashes, never filenames | 2026-09-24 |
 | 011 | Plan how to re-land 009 safely | ✅ 2026-09-24 | the staged plan 012 follows | 2026-09-24 |
 | 012 | Re-land 009's destination eviction, one stage at a time | ✅ **C1+C2 done 2026-09-25** | Board gate **4 of 4** (009's image was 0 of 4); dirty destination aborts **48,258 → 0**; **no speed change** — the envelope explains why. C3 (the CPU-holds-it case) **deliberately not built**; on dual-core it is now **96.7% of all aborts** (M22). Watchdog still waiting on a decision | 2026-09-25 |
-| 013 | Make the heat counter follow the paper (4 gaps) | 🟡 **RTL done, board owed** | All four stages committed and gated green in simulation: C0 `93eee79`, C1 `86a8866` (only demand accesses move the counter), C2 `89d9c20` (test for hot *after* the update, on the *looked-up* set — fixes M17), C3 `fed7227` (a demand second search updates the partner). Control + candidate 1 MB images built and verified. **What is left is the measurement**: the omnetpp A/B and the calib sweep, predictions written first | 2026-10-04 |
+| 013 | Make the heat counter follow the paper (4 gaps) | 🟡 **RTL done; 1 MB board test put aside 2026-10-12** — the fixed RTL is in every image since 2026-10-01 | All four stages committed and gated green in simulation: C0 `93eee79`, C1 `86a8866` (only demand accesses move the counter), C2 `89d9c20` (test for hot *after* the update, on the *looked-up* set — fixes M17), C3 `fed7227` (a demand second search updates the partner). Control + candidate 1 MB images built and verified, never on the board. The omnetpp A/B and calib sweep on them are put aside (user decision 2026-10-12) | 2026-10-12 |
 | 014 | Build SPLASH-2 `radix` and `fft` for the board (host-only) | ✅ 2026-10-07 | both static; they feed task 015 S6 | 2026-10-07 |
 | 015 | Multi-application SBC verification: interference, or low hit rate? | 🟡 **parked at stop (c)** | R0 + S1 done. Pair headline −12.58% was board age: fresh-vs-fresh **−1.99%** (p 0.073). Side studies 2026-10-08: LU sweep 18/18, LU pair, LU pair search 8/8 (SBC recovers 6% / 2% / −3% of the interference). **S2 dose-response not started** | 2026-10-09 |
+| 016 | bodytrack SBC off vs on and a one-parameter-at-a-time sweep (fresh boot per window) | 🟡 **one sweep done, repeats pending** | 2026-10-10: 36 of 36 windows valid. SBC costs 3.7–4.1% at 1600–4000 particles, small savings (1.2–1.9%) only around 400 particles, nothing at the centre (−0.4%). Task written 2026-10-09. Host checks first: `frames` unusable, `particles` < 5 hangs, `main()` always exits 0 (checker reads output + `poses.txt` md5). ~35 windows, about 18 h. Report in the shape of the LU sweep | 2026-10-09 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -239,6 +275,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 🟢 [guides/fpga-linux-run.md](guides/fpga-linux-run.md) — build the FPGA image, boot Linux on the board, read the counters. **Section 7: the full clean → build → archive → board A/B commands.**
 - 🟢 [guides/devmem-register-map.md](guides/devmem-register-map.md) — every counter and switch the cache exposes.
 - 🟢 [guides/priority-orders.md](guides/priority-orders.md) — who goes first when two parts of the cache want the same thing.
+- 🟢 [guides/fresh-boot-campaign-handoff.md](guides/fresh-boot-campaign-handoff.md) — **restart point for task 015**: build config and bitstream, flow of one fresh-boot window, counters, tools, standing rules, state, next experiments.
 - 🟢 [guides/cache-terminology.md](guides/cache-terminology.md) — **the words we use** for hit, miss, secondary hit and the rest, where they come from, and which counters follow them.
 
 ## 3. Task documents — `tasks/` and `coder/`
@@ -263,18 +300,20 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - ⚠️ [009](coder/009-evict-destination-lru/) — **reverted**: its image hung the board. Read 010 before reusing anything from it.
 - 📘 [010](coder/010-hang-bisection/) — which image hung, proved by hash and by counter identity. 📘 [011](coder/011-fix-009-destination-eviction/) — the re-land plan.
 - 📘 [012](coder/012-reland-destination-eviction/) — C1+C2 landed, board gate 4/4, no performance change; C3 not built.
-- 🟢 [013](coder/013-sat-counter-paper-mismatches/) — **active**: make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green; both 1 MB images are built and verified. The board A/B is the open item** — see the REPORT's "RESUME HERE".
+- ⏸ [013](coder/013-sat-counter-paper-mismatches/) — make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green, and that RTL is in every image since 2026-10-01. The 1 MB board A/B was put aside on 2026-10-12** (next setup: 512 KB, see section 0).
 - 📘 [014](coder/014-splash2-radix-fft-build/) — SPLASH-2 `radix` and `fft` built static for the board (host-only); feeds 015 S6.
 - 🟢 [015](coder/015-pair-verification-campaign/) — **active, parked at stop (c)**: multi-application verification. Pair headline corrected to −1.99% fresh-vs-fresh (F11); LU sweep, LU pair and pair search done (F14, F15); S2 dose-response is next. Read its "RESUME HERE".
+- 🟡 [016](coder/016-bodytrack-sbc-sweep/) — **one sweep done 2026-10-10, repeats pending** (SBC +3.7 to +4.1% at 1600–4000 particles; small savings only around 400): bodytrack SBC off vs on, then each parameter (cameras, particles, layers, threads, serial model, BMP output) one at a time; LU-sweep method and report shape.
 
 ## 4. Speed and improvement — `performance/`
 
+- ⭐ 🟢 [fresh-boot-experiments-2026-10-09.md](performance/fresh-boot-experiments-2026-10-09.md) — **the most important set of experiments so far**: every SBC on/off result with one fresh boot per window (LU alone sweep, LU + LU pairs, LU + FFT grid, LU + streamcluster), the observations across them, and the open questions. Data: `performance/data/2026-10-09-fresh-boot/`.
 - 🟢 [sbc-findings-2026-09-25.md](performance/sbc-findings-2026-09-25.md) — **start here**: what the envelope settles, the two figures of merit it overturns, and what to build.
 - 🟢 [board-calib-envelope-2026-09-25.md](performance/board-calib-envelope-2026-09-25.md) — the 80-point envelope sweep, 64 KB 16-way. Method and caveats.
 - 🟢 [board-calib-envelope-8way-64kb-2026-09-25.md](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · 🟢 [board-calib-envelope-8way-1mb-2026-09-26.md](performance/board-calib-envelope-8way-1mb-2026-09-26.md) — the same sweep at 128 and 2048 sets. ⚠️ Both hold the **per-set** overflow fixed while scaling the cache, so they say "if a workload has this shape, SBC helps at any size" — **not** "a real workload will have this shape at that size".
 - 🟢 [board-dualcore-l2miss-calib-2026-09-24.md](performance/board-dualcore-l2miss-calib-2026-09-24.md) — the calib instrument on two cores.
-- ⚠️ [lu-single-app-2026-10-02.md](performance/lu-single-app-2026-10-02.md) — LU single-application sweep, one boot for 72 runs. **Its small-point results are wrong** (board age); note at the top gives the fresh-vs-fresh numbers.
-- ⚠️ [lu-streamcluster-pair-2026-10-05.md](performance/lu-streamcluster-pair-2026-10-05.md) — LU + streamcluster on one L2. **The −12.5% headline was mostly board age** (fresh-vs-fresh −1.99%); note at the top.
+- ⚠️ [lu-single-app-2026-10-02.md](performance/lu-single-app-2026-10-02.md) — LU single-application sweep, one boot for 72 runs. **Its small-point results are wrong** (board age); note at the top gives the fresh-vs-fresh numbers. Replaced by the ⭐ fresh-boot report.
+- ⚠️ [lu-streamcluster-pair-2026-10-05.md](performance/lu-streamcluster-pair-2026-10-05.md) — LU + streamcluster on one L2. **The −12.5% headline was mostly board age** (fresh-vs-fresh −1.99%); note at the top. Replaced by the ⭐ fresh-boot report.
 - 🟢 [board-128kb-omnetpp-2026-09-17.md](performance/board-128kb-omnetpp-2026-09-17.md) — first 128 KB board A/B (tag `sbc-007-c2-breakeven` behaviour, no B7-1 fix): break-even, +0.16% memory traffic, +0.15% cycles; 7.9% of accesses pay a second search that almost never hits. Has the exact commands.
 - 🟢 [fpga-ab-baseline-2026-09-11.md](performance/fpga-ab-baseline-2026-09-11.md) — board numbers. **Section 4 is the main result.**
 - 🟢 [why-sbc-loses-2026-09-15.md](performance/why-sbc-loses-2026-09-15.md) — **start here 2026-09-15**: why our SBC loses where the paper wins. Not yet verified.
