@@ -1,11 +1,13 @@
 # Coder report 015 — multi-application SBC verification campaign
 
-**Started:** 2026-10-07 · **Status:** PARKED AT STOP POINT (c) — R0, S1, fresh ON and fresh OFF done; headline re-measured fresh-vs-fresh at −1.99% (F11); S2 not started. Side studies on request, 2026-10-08: LU single-core sweep (18 of 18 valid), LU pair (2 runs), LU pair search (8 of 8 windows valid, F15)
+**Started:** 2026-10-07 · **Status:** PARKED AT STOP POINT (c) — R0, S1, fresh ON and fresh OFF done; headline re-measured fresh-vs-fresh at −1.99% (F11); S2 not started. Side studies on request, 2026-10-08: LU single-core sweep (18 of 18 valid), LU pair (2 runs), LU pair search (8 of 8 windows valid, F15). 2026-10-09: LU + FFT grid, 24 of 24 windows valid (results only in `performance/fresh-boot-experiments-2026-10-09.md`). 2026-10-12: this task's docs committed; the next config is 512 KB 8-way + 32 kB 8-way L1 (CLAUDE.md, top box)
 
 > Fill this in as you go, not at the end. A stage with an empty row is not done. Cite log paths —
 > never paste logs. Anything unexpected goes under "Findings" and you stop and ask.
 
 ## ▶ RESUME HERE
+
+**New chat: start with [../../guides/fresh-boot-campaign-handoff.md](../../guides/fresh-boot-campaign-handoff.md)** (config, flow, counters, rules, state, next steps). Results of every fresh-boot window, including the LU + FFT grid of 2026-10-09 (not described in this box): [fresh-boot-experiments-2026-10-09.md](../../performance/fresh-boot-experiments-2026-10-09.md).
 
 Task 014 is done first, as the user asked (`staged/radix` and `staged/fft` are static; see
 [014 REPORT](../014-splash2-radix-fft-build/REPORT.md)). Then §4 P1 and P2 were written in
