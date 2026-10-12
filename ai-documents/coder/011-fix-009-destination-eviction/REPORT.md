@@ -1,5 +1,8 @@
 # Coder report 011 — fix the 009 C2 destination-eviction path
 
+> **Note 2026-10-12:** this report was never started. The plan in TASK.md was carried out as task 012
+> ([012 REPORT](../012-reland-destination-eviction/REPORT.md)): C1 + C2 landed, board gate 4 of 4.
+
 **Date:** · **Author:** coder session · **Status:** OPEN — not started
 
 > Template. Fill it in as you go, not at the end. A task that stops early still gets a report saying

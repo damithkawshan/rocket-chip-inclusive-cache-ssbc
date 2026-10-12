@@ -5,8 +5,11 @@
 
 > **Update 2026-10-12:**
 > - The L2 repo's docs are committed (user's request)
-> - **Next config (user decision): 512 KB 8-way L2 + 32 KB 8-way L1, single core, C3 RTL.** A new image is being built,
->   so "use existing bitfiles" no longer holds for it. Section 2 describes the 256 KB image of every result so far
+> - **Next config (user decision): 512 KB 8-way L2 + 32 KB 8-way L1, single core, C3 RTL.** Image **built 2026-10-12
+>   14:01**, sha256 `37923e6bb32606e6e082bb6ba65ba2a4533ca5d48c72744a23a2ae3f7282d3ee`, archived in `fpga/bitstream_storage/`
+>   (`FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-512KB-8way-L1-32K8W-c3-2026-10-12.*`). Not on the board yet.
+>   Section 2 describes the 256 KB image of every result so far. A campaign on the new image needs its launcher's
+>   `BIT1` / `BIT1_SHA` changed
 > - The 1 MB runs (task 013's A/B) are set aside
 > - bodytrack (task 016, 36 windows) used this same method and image: section 6, row 2.7
 
@@ -53,7 +56,7 @@
 - RTL = task 013 C3 `fed7227`; chipyard HEAD `4b250e5`, L2 HEAD `73508c5` on branch `sbc-013-sat-counter`; `git diff fed7227 HEAD -- design` is empty, so later commits are docs only
 - **SBC off = the same bitstream with migrations gated off.** There is no SBC-free twin of this geometry; the off arm is a plain PLRU L2 with the SBC hardware idle (zero migrations, checked on every off window)
 - Dual-core twin (not used by the fresh-boot campaign): `…DualRocketVCU118L18K256K8WL2ConfigSBCPLRU-dual-256KB-8way-2026-10-02.bit`, sha `71fa886e…e418`. Its Scala configs are **uncommitted** edits in `RocketConfigs.scala` and `Configs.scala`
-- Rebuild (not needed, standing instruction is to use existing bit files): `scripts/ssbc_scripts/build_256kb_8w.sh <tag>` → `bistream_gen_vcu118.sh`; it deletes that config's `fpga/generated-src` first; ~25 min; never `make clean` in `fpga/`; archive the `.bit` and write its provenance. Recipe: [fpga-linux-run.md](fpga-linux-run.md)
+- Rebuild: since 2026-10-12 use `scripts/ssbc_scripts/build_bitstream.sh <FPGAConfig> <tag>`. It replaces `build_256kb_8w.sh`, archives the `.bit` with its provenance, and refuses to start while another build runs. Never `make clean` in `fpga/`. Recipe: [fpga-linux-run.md](fpga-linux-run.md) section 1
 
 ## 3. Programs on the board
 

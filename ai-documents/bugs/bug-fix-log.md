@@ -1,7 +1,8 @@
 # SBC — Bug-Fix Log (by phase)
 
 **Branch:** started on `set_migration_refactored`; now `sbc-sampling`
-**Updated:** 2026-06-30 · **Status lines re-checked:** 2026-09-14 (P1, P2, P5 marked closed to match the 003 REPORT)
+**Updated:** 2026-06-30 · **Status lines re-checked:** 2026-09-14 (P1, P2, P5 marked closed to match the 003 REPORT);
+2026-10-12 (B7-2 and B8-1 still open, a dated line added to each)
 **Scope:** Every bug we have hit building SBC, grouped by the phase it was found in — cause, fix, and
 status. This is the consolidated record so nobody has to re-read the phase docs to know "what did we
 already fix?" Newest understanding wins.
@@ -198,6 +199,8 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
   teardown worked; N2 is now a printf (user decision). Board effect on wasted searches: not measured yet.
 
 ### 🔴 B8-1 — teardown races a deferred migration's stale partner claim ("migrated outside its partner set")
+- **Status 2026-10-12:** still open, no fix designed. Every board image since 2026-09-17 carries the race;
+  board images have no asserts, so whether it fires on the board is unknown.
 - **Found:** 2026-09-17, coder task 008 commit-1 gate, finding F5. **Pre-existing** — present since 007 C3
   (teardown) landed (`744fabb`); not caused by task 008. Full write-up: coder/008 REPORT finding **F5**.
 - **Symptom:** `migration_stress_test` on `VerilatorRocket8KL116KL2Config`, `case_bankstore_saturation`
@@ -231,6 +234,9 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Fix:** not designed yet.
 
 ### 🔴 B7-2 — combinational loop: 256 KB bitstream refused by Vivado DRC
+- **Status 2026-10-12:** still open, not traced. Avoided rather than fixed: only 256 KB **16-way** is known to
+  fail. 64 KB 16-way still builds (012's image, 2026-09-25), and every image since 2026-09-26 is **8-way**
+  (256 KB, 512 KB, 1 MB); each wrote its `.bit`.
 - **Found:** 2026-09-17 02:41, 256 KB build of `251c9d7` (tag `sbc-007-c2-breakeven-2026-09-16`, config
   `FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled`). Log:
   `chipyard/fpga/build-logs/FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled-20260917-021836.log` line 7953.

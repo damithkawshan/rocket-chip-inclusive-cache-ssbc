@@ -1,11 +1,12 @@
 # Running the SBC L2 on VCU118 under Linux
 
 End-to-end recipe to build a bitstream that contains this L2, boot Linux on the VCU118, and read the
-SBC / L2 counters from userspace. This is the **performance-eval path** — the real geometry (64, 128 or
-256 KB L2, 16 ways, 64 B lines), not the 8-set Verilator toy used for correctness.
+SBC / L2 counters from userspace. This is the **performance-eval path** — the real geometry (64 KB to
+1 MB L2, 8 or 16 ways, 64 B lines), not the 8-set Verilator toy used for correctness.
 
-**For a measurement, use section 7** (`run_board_session.exp -ab`). It does steps 2–6 for you. Steps 2–6
-are the manual path, for debugging.
+**Updated 2026-10-12:** section 1 builds with `build_bitstream.sh`; section 7 is the **fresh-boot** A/B
+(one measured window per boot). The old one-boot A/B (OFF then ON on one boot) is **not valid** any more:
+results drift as the board ages. Steps 2–6 are the manual path, for debugging.
 
 All helper scripts live in the parent tree at `chipyard/scripts/ssbc_scripts/`. Commands below assume
 `CY=…/chipyard` and that you have `source $CY/env.sh` in the shell.
@@ -19,35 +20,48 @@ All helper scripts live in the parent tree at `chipyard/scripts/ssbc_scripts/`. 
 
 ## 1. Build the bitstream
 
-`bistream_gen_vcu118.sh` takes the L2 size as its argument. Each size has an SBC config and an SBC-off
-twin (`…NoSbc`). `enableSetBalancing` is a compile-time flag, so the twin is a separate bitstream. The
-one-bitstream A/B in section 7 needs only the SBC image; build the twin when you need area/Fmax or a true
-SBC-off control.
-
-| Argument | Config built | L2 |
-|---|---|---|
-| `sbc` / `nosbc` / `both` | `FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled` / `…256K16WL2ConfigNoSbc` | 256 KB, 256 sets |
-| `sbc_128l2` / `nosbc_128l2` / `both_128l2` | `FPGASingleRocketVCU118L18K128K16WL2ConfigSBC` / `…128K16WL2ConfigNoSbc` | 128 KB, 128 sets |
-| `sbc_64l2` / `nosbc_64l2` / `both_64l2` | `FPGASingleRocketVCU118L18K64K16WL2ConfigSBC` / `…64K16WL2ConfigNoSbc` | 64 KB, 64 sets |
-| any config name | that config | |
+**Use `build_bitstream.sh` (since 2026-10-12).** One script for every config. It replaces the per-config
+copies (`build_256kb_8w.sh`, `build_1mb_8w*.sh`, `build_dual_*.sh`). ⚠️ The script is not yet committed
+in chipyard.
 
 ```bash
-bash $CY/scripts/ssbc_scripts/bistream_gen_vcu118.sh sbc_128l2
-# which runs, from $CY/fpga/:
-#   make -j20 SUB_PROJECT=vcu118 CONFIG=FPGASingleRocketVCU118L18K128K16WL2ConfigSBC bitstream
-# log: $CY/fpga/build-logs/<config>-<stamp>.log
-# bit: $CY/fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.<config>/obj/VCU118FPGATestHarness.bit
+tmux new -s build-<name>        # every build and board run goes in tmux
+S=$CY/scripts/ssbc_scripts
+bash $S/build_bitstream.sh --dry-run <FPGAConfig> <tag>   # all checks + provenance header; builds nothing
+bash $S/build_bitstream.sh <FPGAConfig> <tag>
+# e.g.  build_bitstream.sh FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU 512KB-8way-L1-32K8W-c3
 ```
 
-- **Every build starts clean.** Since 2026-09-17 the script deletes that config's `generated-src` dir
-  first. Make decides what to rebuild from file timestamps, so an old `.fir`, `.sv` or Vivado checkpoint
-  could otherwise be reused and the image would not match the RTL. **Never run `make clean` in `fpga/`**:
-  it deletes all of `generated-src`, including other configs' bitstreams that were never archived.
-- **Archive before the next build of the same config** overwrites the `.bit`: copy it to
-  `$CY/fpga/bitstream_storage/` with a dated, feature-tagged name.
-- **Write down which RTL went in.** Uncommitted inclusive-cache edits are built in if they are in the tree.
-  sbt compiles from the working tree, and a Verilator run may already have compiled them.
-- Build time: ~25 min (128 KB and 256 KB builds took 23–24 min on 2026-09-17).
+What it does:
+- **Refuses to start** if another build is running, the config class is not in `fpga/src`, or an archive
+  with the same name exists. **Warns** if the L2 RTL (`design/`) has uncommitted changes
+- Calls `bistream_gen_vcu118.sh <config>`: deletes that config's `generated-src` dir, then
+  `make -j20 SUB_PROJECT=vcu118 CONFIG=<config> bitstream`
+- **Archives** into `$CY/fpga/bitstream_storage/`, all named `<config>-<tag>-<date>`:
+  - `.bit`
+  - `.provenance.txt`: both repos' HEADs, the sha256 of every L2 `.scala` file, and the bit's sha256
+  - `.dts`: the cache sizes, read from the build itself
+  - `.config.diff`: the uncommitted part of the two config files, so an uncommitted config can be rebuilt
+  - `.reports/`: Vivado timing and DRC reports
+- **Logs:**
+  - Driver: `fpga/build-logs/driver-<config>-<stamp>.log`. Its end has the cache sizes, `SHA256=` and the timing summary
+  - make/Vivado: `fpga/build-logs/<config>-<stamp>.log`
+
+Configs in use (`fpga/src/main/scala/vcu118/Configs.scala`; Scala side in `chipyard/.../config/RocketConfigs.scala`):
+
+| FPGA config | L2 | L1 (I and D) | cores | image (sha256) |
+|---|---|---|---|---|
+| `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` | 512 KB 8-way, 1024 sets | 32 KB 8-way | 1 | `37923e6b…` — **the next config** (built 2026-10-12) |
+| `FPGASingleRocketVCU118L18K256K8WL2ConfigSBCPLRU` | 256 KB 8-way, 512 sets | 8 KB 4-way | 1 | `5ace4125…` — every fresh-boot result to 2026-10-10 |
+| `FPGADualRocketVCU118L18K256K8WL2ConfigSBCPLRU` | 256 KB 8-way | 8 KB 4-way | 2 | `71fa886e…` |
+| `FPGASingleRocketVCU118L132K1024K8WL2ConfigSBCPLRU` | 1 MB 8-way, 2048 sets | 32 KB 8-way | 1 | task 013's A/B pair — set aside 2026-10-12 |
+| 16-way configs (64 / 128 / 256 KB, `bistream_gen_vcu118.sh sbc_64l2` etc.) | | 8 KB | 1 | older. **256 KB 16-way fails Vivado DRC** (bug B7-2) |
+
+- The 8-way configs have **no SBC-off twin**. The off arm is the same image with `--migrate=off`
+- **Never run `make clean` in `fpga/`**: it deletes all of `generated-src`, including other configs'
+  bitstreams that were never archived
+- **Cite an image by its sha256, never by its filename.** Two files were once archived under wrong names
+- Build time: 23–24 min for 128 / 256 KB (2026-09-17); **39 min for 512 KB** (2026-10-12)
 
 ## 2. Program the FPGA
 
@@ -69,6 +83,12 @@ bash $CY/scripts/ssbc_scripts/sdflash_firemarshal.sh /dev/sdX
 
 Boot flow: bootrom prints `INIT/CMD*/LOADING…`, then `BOOT`, then the kernel comes up. **Login is
 `root` / `fpga`.** br-base already ships `devmem` and `sz`/`rz` (`BR2_PACKAGE_LRZSZ=y`).
+
+- Loading Linux from the SD card takes about 21 min; a full program → boot → stage is about 28 min
+- What the board runs (kernel 6.6.0, OpenSBI 1.2, busybox 1.36.0 with `taskset` but no `timeout`, SD
+  partition 2 on `/mnt`, no network): CLAUDE.md, section "The Linux on the board"
+- An `mmc_rescan` / hung-task message during an SD write usually recovers by itself. Run `sync` before a
+  big extraction and give it time (task 016, finding F1)
 
 ## 4. Connect the serial console
 
@@ -113,17 +133,49 @@ which zeroes only the event/hit counters in hardware and never touches `sat`/AT/
 **Do NOT use `SBC_Reset` (0x358) to zero counters** — it wipes the Association Table while lines are
 still parked, orphaning them. `SBC_StatsReset` is the safe per-window reset.
 
+**Set the switches before every window**; a reprogram resets both:
+
+```bash
+./sbc_read --policy=plru      # victim policy (0x490): random after every reprogram, so always set it
+./sbc_read --migrate=off|on   # SBC_MigrateEnable (0x3C0): default OFF
+./sbc_read                    # read both back before the window
+```
+
 Register offsets and semantics: [`devmem-register-map.md`](devmem-register-map.md) and
 [`../../sw/sbc_mmio.h`](../../sw/sbc_mmio.h) (single source of truth, mirrors `Control.scala`).
 
-## 7. Board A/B in one command — `run_board_session.exp`
+## 7. Board A/B — fresh boot per window (the measurement path since 2026-10-07)
 
-The measurement path. One SBC image is programmed once, and the workload runs twice on it: **migrate
-OFF** (`SBC_MigrateEnable` = 0, plain L2), then **migrate ON**. Both halves use the same silicon, routing
-and clock. The script programs the board, boots Linux, pushes `sbc_read` over zmodem, stages the workload
-from the SD card, runs both halves and logs everything.
+**Rule: one measured window per fresh boot, SBC off and SBC on through exactly the same steps.** With
+migration never on, off-arm memory traffic rose with board age: +13% to +41% over six windows on one boot.
+So an OFF window on an aged boot against an ON window on a fresh one measures board age as well as SBC.
+Evidence: [015 REPORT](../coder/015-pair-verification-campaign/REPORT.md) F8, F11.
 
-Full sequence (clean → build → archive → A/B), as used for the 128 KB run on 2026-09-17:
+**One window** (the launcher does all of it):
+1. Check the image's sha256, then reprogram (`programFPGA.sh`)
+2. Boot Linux from the SD card, log in
+3. Push `sbc_read` and the programs over zmodem, then `sync`
+4. `sbc_read --policy=plru --migrate=<off|on>`, and read both back
+5. `sbc_read --zero -- <command>`: the ONE window, run to completion (fixed work)
+6. A checker writes VALID or VOID. A void window is retried on a fresh boot; the size of the effect is never used to judge validity
+
+**How to run a campaign:**
+- The harness is `scripts/ssbc_scripts/run_parsec_session.exp`, with a shared serial/staging library in
+  `scripts/ssbc_scripts/lib/`
+- Each campaign keeps its own copy of the harness, a launcher (`launch_*.sh`), a checker (`check_*_stage.py`)
+  and a `PLAN.md` in `chipyard/scripts/logs/clean-runs/<campaign>/`. Start from the nearest campaign's `tools/`
+- ⚠️ **The launchers pin the image by sha256** (`BIT1`, `BIT1_SHA` near the top of `launch_*.sh`). A new
+  image, such as the 512 KB one, needs a new campaign folder with those two lines changed
+- About 28 min per window; budget boots, not runs
+- Full method, tools, rules and state: [fresh-boot-campaign-handoff.md](fresh-boot-campaign-handoff.md)
+
+### 7a. ⚠️ Old: one-boot A/B with `run_board_session.exp -ab` — not valid for results
+
+Kept for the record and for debugging. One image is programmed once and the workload runs twice on
+the same boot: **migrate OFF**, then **migrate ON**. Don't quote its results as an SBC effect: the ON half
+always runs on an older boot than the OFF half.
+
+The sequence as used for the 128 KB run on 2026-09-17:
 
 ```bash
 tmux new -s sbc128
@@ -139,8 +191,8 @@ cp -p "$BIT" $CY/fpga/bitstream_storage/$CFG-<feature-tag>-<date>.bit  # 3. arch
 cd $CY/scripts/ssbc_scripts && ./run_board_session.exp -bit "$BIT" -ab  # 4. A/B, ~65 min for omnetpp
 ```
 
-For another size, change `CFG` and the build argument (section 1 table). To re-measure an archived image,
-skip steps 1–3 and pass the archived file to `-bit`.
+To re-measure an archived image, skip steps 1–3 and pass the archived file to `-bit`. To build, use
+section 1 instead of steps 1–3.
 
 - **Log:** `$CY/scripts/logs/board_session_<stamp>.log`. Each half ends in an `[SBC-WINDOW]` dump. Check
   `workload rc=0` in **both** halves: `sbc_read` returns the child's exit status but never prints it.
@@ -151,8 +203,10 @@ skip steps 1–3 and pass the archived file to `-bit`.
 - Other flags: `-noprog` (board already programmed), `-poll N` (sample counters every N s),
   `-tmo N` (per-workload limit). The usage block at the top of the script lists them all.
 
-Runs so far: [board-128kb-omnetpp-2026-09-17.md](../performance/board-128kb-omnetpp-2026-09-17.md) (128 KB) and the
-64 KB board sections of [coder/007 REPORT](../coder/007-paper-aligned-eviction/REPORT.md).
+One-boot runs: [board-128kb-omnetpp-2026-09-17.md](../performance/board-128kb-omnetpp-2026-09-17.md) (128 KB) and the
+64 KB board sections of [coder/007 REPORT](../coder/007-paper-aligned-eviction/REPORT.md). Fresh-boot runs:
+[fresh-boot-experiments-2026-10-09.md](../performance/fresh-boot-experiments-2026-10-09.md) and
+[coder/016 REPORT](../coder/016-bodytrack-sbc-sweep/REPORT.md).
 
 ## Verified on hardware (2026-09-04)
 

@@ -21,8 +21,9 @@ live in `ai-documents/`.
 >
 > **▶ NEXT CONFIG (user decision 2026-10-12): 512 KB 8-way L2 (1024 sets) + 32 KB 8-way L1, single core, C3 RTL.**
 > - Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` (chipyard `RocketConfigs.scala` / `vcu118/Configs.scala`, **uncommitted**)
-> - First build started 2026-10-12 13:22, tmux `build512single`, log
->   `chipyard/fpga/build-logs/FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-20261012-132203.log`. No sha256 yet
+> - **Image built 2026-10-12 14:01**, sha256 **`37923e6b…82d3ee`** (`build_bitstream.sh`, 39 min, archived with provenance
+>   in `fpga/bitstream_storage/`). Driver log `chipyard/fpga/build-logs/driver-FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-20261012-132203.log`.
+>   Not on the board yet
 > - **The 1 MB runs are set aside**, including task 013's 1 MB A/B (it never reached the board)
 > - ⚠️ Against the 256 KB image of every fresh-boot result, **both** the L2 (256 → 512 KB) and the L1 (8 → 32 KB) change,
 >   so old and new numbers do not compare directly
@@ -133,10 +134,12 @@ live in `ai-documents/`.
 >   per file: single core `5ace4125…9108` (2026-10-01), dual core `71fa886e…e418` (2026-10-02).
 >   **The single-core `5ace4125…` is the image of every fresh-boot result** (100 windows, 2026-10-05 → 10-10).
 >   Not part of task 013's A/B
-> - **512 KB 8-way single core, 32 kB 8-way L1 — building 2026-10-12** (the next config, box at the top). C3 RTL:
->   this repo at `ca7508e`, `design/` identical to `fed7227`. The chipyard config is uncommitted (the provenance file
->   carries a `.config.diff`). No sha256 yet. A stock-core variant (`FPGAStockRocket…`, `WithNHugeCores`) was aborted
->   the same day
+> - **512 KB 8-way single core, 32 kB 8-way L1 — `37923e6b…82d3ee`, built 2026-10-12** (the next config, box at the
+>   top). C3 RTL: this repo at `ca7508e`, `design/` identical to `fed7227`. The chipyard config is uncommitted (the
+>   archive carries a `.config.diff`). A stock-core variant (`FPGAStockRocket…`, `WithNHugeCores`) was aborted the same day
+> - **Build any image with `chipyard/scripts/ssbc_scripts/build_bitstream.sh <FPGAConfig> <tag>`** (since 2026-10-12,
+>   not yet committed in chipyard): archives `.bit` + provenance + `.dts` + `.config.diff` + reports. Recipe:
+>   [fpga-linux-run.md](ai-documents/guides/fpga-linux-run.md) §1; board A/B = fresh boot per window, §7
 > - ✅ **The `Control.scala` width fix is COMMITTED** (`962fa05`, 2026-09-30). `SBC_AtAssoc` computed its
 >   pad as `0.U((8 - sbcSetBits).W)` — a negative width at 2048 sets, so **no cache above 256 sets
 >   elaborated, baseline included** (the field is not gated by `enablePerfCounters`)
@@ -326,7 +329,7 @@ the full table, the literature it comes from, and which counters follow it. This
 | L5 | Only clean lines migrate — dirty-source migration was never built | **Speed gap:** most real victims are dirty, so SBC often cannot fire | `MSHR.scala:1058` |
 | L6 | **No adaptive throttle.** The cache cannot tell a workload whose overflow fits from one whose does not, and migrates either way | **Unblocked 2026-09-30:** M18's gaps are fixed in RTL (task 013 C1-C3), so the saturation counter is now a clean signal to throttle on. Next: *stop when the overflow does not fit*; `dstFree` vs `dstEvictable` already distinguishes a truly free way from an overwrite. bodytrack at 1600–4000 particles (+4%, lost primary hits) is a real-program case to test it on | not built |
 | L7 | The "serve a parked line that needs write permission" path never ran | **Bug risk:** `secPerm = 0` in every run so far; needs a two-core config. **Moved to the last phase** | `MSHR.scala` |
-| L8 | **Teardown was never built** — nothing clears a pairing except `SBC_Reset` (found 2026-09-14) | **Speed gap:** every pairing is permanent, so a set stays tied to a partner that may no longer be cold or useful. **⚠️ Verify this week** (due 2026-09-18) | `Directory.scala` computes `displacedOther`, but nothing reads it |
+| L8 | ~~Teardown was never built~~ **BUILT 2026-09-17 (task 007 C3, `744fabb`)**: a pairing ends when the source's last guest leaves (paper §3.4). It fired only after the B7-1 fix (`c6a824c`) | Sim-verified (`TEARDOWN` printfs 2,460). **Board check still not done**: no counter for teardowns, and nobody has read every set's pairing after a run. Indirect evidence: the 2026-09-26 run ended with 2 lines parked after 617,145 migrations. Open race: **B8-1** | `SetBalanceUnit.scala:234` |
 
 ### Known causes of the speed gap
 
