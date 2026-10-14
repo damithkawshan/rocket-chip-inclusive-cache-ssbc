@@ -40,6 +40,101 @@
   setting 0 at n4096; bodytrack 1600 on this image (TASK §13 q4, proposal only); push to a remote
 - **State at close:** board free, no run, no tmux job active (idle shells only); old `sbc_read` build unchanged (`8241eb8b…`)
 
+## Summary — what we did, what we saw, why, what is left (2026-10-15)
+
+### What we did
+- **Built a runtime destination setting** (`SBC_DstMode`, 0x4B0) and a counter (`SBC_DstRescue`, 0x4B8). When an SBC migration needs a
+  destination way, today's rule (setting 0) accepts only a clean way with no L1 bit. Setting 1 takes a clean way first, else a **dirty way
+  no L1 holds** (the dirty line is written back); setting 2 takes the least-recent of either. Held ways stay an abort: no probe
+- **Proved in simulation** that flag off and setting 0 behave exactly like the parent commit, and that settings 1 and 2 are safe
+  (I1–I4 pass; I5 fails for setting 2 in the stock stress test, F4, and was not seen on the board)
+- **Built one image** (512 KB 8-way L2 + 32 KB 8-way L1, 1 core; WNS +0.526 ns) and **measured LU alone on the board**, one fresh
+  reprogram + boot per window (38 valid windows):
+  - campaign 1: SBC off and settings 0 / 1 / 2 at 3 points (12 windows) → the user chose setting 1
+  - campaign 2: SBC off vs setting 1 at b 64 / 128 / 256 × n 512 / 1024 / 2048 (18 windows), then a replicate of n2048 b128,
+    n4096 b128 and its replicate, and n3072 b128 (8 windows)
+- **Committed, merged and tagged** the RTL, software and configs (tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`)
+
+### What we saw (setting 1 vs SBC off, memory accesses = DRAM reads + writes)
+
+| n \ b | b=64 | b=128 | b=256 |
+|---|--:|--:|--:|
+| 512 | +0.0% | **−5.7%** | −0.3% |
+| 1024 | −0.9% | **−4.6%** | −0.4% |
+| 2048 | −1.4% | **−10.7%** (replicate −9.7%) | −0.5% |
+| 3072 | not run | **−15.7%** | not run |
+| 4096 | not run | **−20.9%** (replicate −21.1%) | not run |
+
+- **Setting 1 beat setting 0 and setting 2** where they were compared (campaign 1): n512 b128 −4.97% vs −1.97% (setting 0) and −3.46%
+  (setting 2); n1024 b64 −1.32% vs −0.37% and −1.35%; n384 b128 +0.47% vs +0.90% and +0.94% (nothing to win there). Setting 2 wrote
+  back 1.7–3.6× more destination lines than setting 1
+- **No point increased traffic** (largest rise +0.02%); writes fall with reads; destination write-backs are 0.25% of writes
+- **Replicates agree:** n2048 b128 1.1 pp apart, n4096 b128 0.23 pp, the off arms within 0.4%; so the effects here are real
+- **Run time on this board moves little** (L2 cycles −0.2% to −1.4% at the b128 points): a DRAM read costs only ~38 L2 cycles at 50 MHz.
+  The labelled model projects −6.7% at n4096 b128 with 200 cycles per read (a model, not a measurement)
+- **Prediction record:** 8 of 9 per-point bands and 7 of 7 sweep-level predictions right in campaign 2; the one miss (n2048 b128) and
+  n4096 b128 were better than predicted
+
+What the numbers look like inside (SBC on, one window per point; "Δreads per migration" = change in DRAM reads ÷ migrations):
+
+| point | OFF hit | migrations per access | held share | Δreads per migration | primary hits | secondary hits | change |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| n512 b64 | 95.2% | 0.08% | 48% | −0.0 | −12 k | 1 k | +0.0% |
+| n1024 b64 | 95.5% | 0.06% | 36% | −0.6 | +37 k | 23 k | −0.9% |
+| n2048 b64 | 95.7% | 0.04% | 34% | −1.4 | +141 k | 254 k | −1.4% |
+| n512 b128 | 83.1% | 0.11% | 58% | −8.4 | +44 k | 17 k | −5.7% |
+| n1024 b128 | 79.9% | 0.60% | 37% | −1.6 | +344 k | 268 k | −4.6% |
+| n2048 b128 | 77.6% | 0.77% | 38% | −3.2 | +8.0 M | 4.2 M | −10.7% |
+| n3072 b128 | 75.2% | 0.78% | 46% | −5.1 | +46.4 M | 19.9 M | −15.7% |
+| n4096 b128 | 72.9% | 0.77% | 50% | −7.4 | +167.7 M | 58.6 M | −20.9% |
+| n512 b256 | 29.0% | 1.16% | 12% | −0.3 | −38 k | 59 k | −0.3% |
+| n1024 b256 | 25.4% | 1.54% | 17% | −0.3 | −386 k | 642 k | −0.4% |
+| n2048 b256 | 23.7% | 1.65% | 24% | −0.4 | −2.8 M | 6.7 M | −0.5% |
+
+### Why — the high-level explanation
+**Measured (the mechanism):**
+1. Setting 0 almost never found a slot: 80–90% of attempts hit a destination way held by an L1. Setting 1 uses a dirty way with no L1
+   bit instead, so the held share falls to 12–58% and migrations rise 1.3–2.4×
+2. A migration pays back in two ways (hit balance, exact): the moved line is found later in the partner set (**secondary hit**), and the
+   way it left in the overloaded set keeps another line alive (**primary hits rise**). Reads saved = both terms
+3. It pays only where the L2 is moderately loaded. At b64 the L2 already hits 95% (little to fix); at b256 it hits 24–29%
+   and migrations are plentiful (1.2–1.6% of accesses) but **primary hits fall** while secondary hits rise: a moved line displaces
+   about as many lines as it saves, net about zero
+4. At b128 the migration rate is flat at 0.77% of accesses from n2048 up, while the reads saved **per migration grow in step with n/b**
+   (−0.20, −0.20, −0.21, −0.23 per block step at n1024 … n4096). So the saving fraction grows with n
+
+**My reading of why (consistent with the numbers, not separately tested):**
+- A 128 × 128 block of `lu_ncb` is 128 KB: 4× the L1, a quarter of the L2. Its rows are n × 8 B apart, so its lines pile unevenly on
+  the L2 sets: some sets overflow their 8 ways while others sit half empty. That is exactly the case SBC is built for: lend the empty
+  ways of the partner set to the overloaded one
+- The same overflow pattern is met again on every block step of the factorisation, and a lent line can be re-read once per step, so the
+  payoff of one migration grows with the number of steps (n / b) while the number of migrations per access stays constant
+- b64 (block 32 KB, about the L1) has little overflow; b256 (block 512 KB, the whole L2) overloads **every** set, so there is no spare
+  way to lend and migration only reshuffles which lines miss
+- **Rejected:** "it is power-of-two row-stride aliasing". n3072 has a 24 KB stride (8 offsets across the 64 KB L2 span, like n1024) and
+  still saved −15.7%, on the trend line, so the saving follows the problem size
+
+### What is not established
+- One window per arm except n2048 b128 and n4096 b128 (two each); b64 and b256 not run at n3072 or n4096
+- **LU output was not checked** (exit code only): with 30 M migrations at n4096 a data check with SBC on is the missing safety evidence
+- "Best" is against SBC off: setting 0 and setting 2 were not run at n3072 / n4096, so the share of the gain due to setting 1 over
+  today's SBC is measured only at the three campaign-1 points
+- The corrected `l2_miss_calib` sweep did not run, so the controlled "why" model (MP ≤ 2·ways − HP) is unchecked on this image
+- The geometry reading above is a hypothesis; a per-set profile (`SBC_SetSel` / `SBC_SetSat`, `sw/sat_snap.c`) of n4096 b128 would test it directly
+- One core, one workload (LU), one image, PLRU. Other workloads (bodytrack lost 4% at 1600 particles with setting 0) were not run with setting 1
+
+### What is left to do (all outside 018's scope, the user's call; nothing is queued)
+
+| # | item | why | cost |
+|---|---|---|---|
+| 1 | `lu_ncb -t` data check with SBC on (setting 1) at n1024 or n2048 | makes the headline safe to quote; LU output is unchecked | about 1 h, one window |
+| 2 | setting 0 (and 2) at n4096 b128, one window each | attributes the −21% to setting 1 against today's SBC | about 3 h per window |
+| 3 | per-set profile of n4096 b128 (`sat_snap`, off and on) | tests the "uneven sets" reading directly | one boot each, short |
+| 4 | n4096 b64 and b256 pairs | completes the grid; b64 crept up with n (0.0, −0.9, −1.4%) | about 6 h per pair |
+| 5 | corrected `l2_miss_calib` sweep (`-l1sets 64 -l1ways 8`) | checks the migration-pays rule on a controlled workload | about 1 h |
+| 6 | setting 1 on other workloads (bodytrack 1600 / 4000, LU + FFT, LU pairs, dual core) | does it help or hurt outside LU alone | days |
+| 7 | push the L2 branch and tags | nothing is pushed; `origin/sbc-013-sat-counter` is 5 commits behind (still at `b46a8ac`) | minutes |
+
 ## User decisions (2026-10-12, answers to §13)
 | # | §13 question | answer |
 |---|---|---|

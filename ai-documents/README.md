@@ -44,15 +44,15 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
 
 ---
 
-## 0. Where we are (updated 2026-10-12)
+## 0. Where we are (updated 2026-10-15)
 
 > ⚠️ **Configuration Notice (Crucial for all results):**
 > - **All previous runs** in `chipyard/scripts/logs/clean-runs/` (100 valid fresh-boot runs, 2026-10-05 to 10-10: LU alone, LU+LU, LU+FFT, LU+streamcluster, bodytrack) were executed on our **256 KB L2 configuration** (`FPGASingleRocketVCU118L18K256K8WL2ConfigSBCPLRU`, sha256 `5ace41250e7c5141…`, 256 KB 8-way L2, 8 KB L1, single-core, PLRU).
-> - **Our next run is for the 512 KB bitstream** (`FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU`, sha256 `37923e6bb32606e6…`, 512 KB 8-way L2 + 32 KB 8-way L1, single-core). Task 017 is filed and preflighted in `clean-runs/lu-sweep-single-core-512k-20261012/`. Do not mix numbers between the 256 KB and 512 KB configurations.
+> - **Since 2026-10-12 the runs are on the 512 KB bitstreams** (`FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU`, sha256 `37923e6bb32606e6…`, task 017; and the `…Dst` image `502649e2…`, task 018; 512 KB 8-way L2 + 32 KB 8-way L1, single-core). Results are in the 512 KB block below. Do not mix numbers between the 256 KB and 512 KB configurations.
 
-> **▶ NEW 2026-10-12 — the next setup (your decision):**
+> **▶ 2026-10-12 — the setup that was then next (your decision; measured since, see the 512 KB block below):**
 > - **512 KB L2 (8 ways) with a 32 KB L1 (8 ways), one core**, same cache logic as every recent run
-> - **The FPGA image is built** (2026-10-12 14:01, hash `37923e6b…82d3ee`), not on the board yet
+> - **The FPGA image was built** (2026-10-12 14:01, hash `37923e6b…82d3ee`); measured in tasks 017 and 018
 > - How to build and measure: [guides/fpga-linux-run.md](guides/fpga-linux-run.md) (rewritten 2026-10-12)
 > - Campaign folder prepared: `chipyard/scripts/logs/clean-runs/lu-sweep-single-core-512k-20261012/` (Task 017)
 > - **The 1 MB runs are put aside**, including the planned before/after test of the heat-counter fix
@@ -69,6 +69,21 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
 > - bodytrack: about 0 at the default · −1% to −2% around 400 particles · **+4% (worse) at 1600 and 4000 particles**
 > - Run time barely moves (1.2% or less): on this board memory is fast compared with the core
 > - Most of these are one run each way; bodytrack has no repeats yet
+>
+> **▶ 512 KB image results so far (tasks 017 and 018, 2026-10-12 → 10-15)** — 512 KB 8-way L2, 32 KB 8-way L1, one core, LU alone,
+> fresh boot per window, memory accesses SBC on vs off. 38 valid windows in task 018 plus 15 in task 017; replicates agree within 1.1 pp:
+> - **Task 018, setting 1 (clean way first, else a dirty way no L1 holds): b128 pays and grows with n — −5.7% (n512) · −4.6% (n1024) ·
+>   −10.7% / −9.7% (n2048) · −15.7% (n3072) · −20.9% / −21.1% (n4096)**; b64 +0.0 to −1.4% · b256 −0.3 to −0.5% (n 512 / 1024 / 2048)
+> - Task 017, today's rule (setting 0): n512 b128 −4.7% · n768 b128 −3.6% · n1024 b128 −4.9% · n256 b256 −2.8% · n1024 b64 −0.1% ·
+>   n384 b128 +0.5% · n256 b128 +1.5%. Setting 1 beat setting 0 and setting 2 where compared (n512 b128 −5.0 vs −2.0 / −3.5%)
+> - No point increased traffic; writes fall with reads; run time on the board moves only −0.2 to −1.4% (a DRAM read is ~38 L2 cycles)
+> - **Why (high level):** setting 0 aborted 80–90% of attempts on an L1-held way; setting 1 uses a dirty way no L1 holds, so held aborts
+>   fall to 12–58%. b128 blocks (128 KB) overflow some L2 sets while others sit half empty; SBC lends the empty ways and each lent line
+>   pays back once per block step, so the gain grows with n. b64 has little to fix (hit 95%); b256 (block = the L2) overloads every set,
+>   so migration only reshuffles misses. Not power-of-two stride aliasing (n3072 test). The geometry reading is not separately tested
+> - **Left:** LU data check with SBC on · setting 0 at n4096 · per-set profile of n4096 b128 · n4096 b64 / b256 · corrected calib sweep ·
+>   other workloads · push. Detail: [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary"
+> - Image: `…-dst018-494ab5e-best-n4096-b128-…` (sha256 `502649e2…`), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`
 >
 > **What these runs changed:**
 > - Every measured run must start from a fresh boot; runs on a board that has been up a while are not trusted
@@ -227,7 +242,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 014 | Build SPLASH-2 `radix` and `fft` for the board (host-only) | ✅ 2026-10-07 | both static; they feed task 015 S6 | 2026-10-07 |
 | 015 | Multi-application SBC verification: interference, or low hit rate? | 🟡 **parked at stop (c)** | R0 + S1 done. Pair headline −12.58% was board age: fresh-vs-fresh **−1.99%** (p 0.073). Side studies 2026-10-08: LU sweep 18/18, LU pair, LU pair search 8/8 (SBC recovers 6% / 2% / −3% of the interference). 2026-10-09: LU + FFT grid 24/24 (under 10% recovered in 7 of 9). **S2 dose-response not started.** Results: [fresh-boot report](performance/fresh-boot-experiments-2026-10-09.md) | 2026-10-09 |
 | 016 | bodytrack SBC off vs on and a one-parameter-at-a-time sweep (fresh boot per window) | 🟡 **one sweep done, repeats pending** | 2026-10-10: 36 of 36 windows valid. SBC costs 3.7–4.1% at 1600–4000 particles, small savings (1.2–1.9%) only around 400 particles, nothing at the centre (−0.4%). Output correct with SBC on at every setting (`poses.txt` md5 = host). **Left:** repeats to measure bodytrack's own noise (your decision); the extra settings toward the best point not started | 2026-10-10 |
-| 017 | LU alone, single core, SBC off vs on, on the 512 KB 8-way L2 + 32 KB 8-way L1 image (`37923e6b…`) | 🟡 preflight done | Preflight passed (all 6 checks green); waiting at stop (a) for calibration boot. Campaign folder: `clean-runs/lu-sweep-single-core-512k-20261012/` | [017 REPORT](coder/017-lu-sweep-512k/REPORT.md) | 2026-10-12 |
+| 017 | LU alone, single core, SBC off vs on, on the 512 KB 8-way L2 + 32 KB 8-way L1 image (`37923e6b…`) | ⏹ **stopped by the user 2026-10-12 22:19** | 15 of 22 first-round windows valid. On vs off (setting 0): n512 b128 −4.7%, n768 b128 −3.6%, n1024 b128 −4.9%, n256 b256 −2.8%, n1024 b64 −0.1%, n384 / n256 b128 +0.5 / +1.5%. Not run: n512 b256 on, n512 b64 / b32 / b16, best-two pick, noise reruns (018's campaign 2 later ran n512 b64 and n512 b256 with setting 1: +0.0%, −0.3%) | [017 REPORT](coder/017-lu-sweep-512k/REPORT.md) | 2026-10-12 |
 | 018 | ⭐ **VERY IMPORTANT** — destination setting: a migration may overwrite a dirty way that no L1 holds (runtime `SBC_DstMode`, counter `SBC_DstRescue`). RTL + simulation gate + one 512 KB image + board A/B | ✅ **closed 2026-10-15** | RTL + sim gate done (uncommitted); image `502649e2…`. First campaign stopped with 12 valid windows; **setting 1 chosen**. 9-point sweep 18/18 valid: b128 **−5.7 / −4.6 / −10.7%** (n 512/1024/2048), b64 ≈ 0, b256 ≈ −0.4%. Replicate n2048 b128 −9.7%; **n4096 b128 −20.9% (replicate −21.1%)**. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) | 2026-10-13 |
 
 ### 1c. Measure and improve (current phase)

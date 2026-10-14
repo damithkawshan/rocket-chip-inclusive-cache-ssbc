@@ -42,15 +42,15 @@ live in `ai-documents/`.
 >   new point **n4096 b128 −20.9%, replicate −21.1%** memory accesses (reads −21.0%, writes −20.7%, hit 72.9 → 78.6%, held share 50.3%, L2
 >   cycles −1.3%; predicted −16..−4%). At b128 the saving grows with n: −5.7 / −4.6 / −10.7 / **−15.7** / −20.9% at n 512 / 1024 / 2048 / **3072** / 4096 (n3072 is not a power of two: the saving follows problem size, not stride aliasing)
 >
-> **▶ NEXT CONFIG (user decision 2026-10-12): 512 KB 8-way L2 (1024 sets) + 32 KB 8-way L1, single core, C3 RTL.**
+> **▶ CURRENT CONFIG (user decision 2026-10-12; measured in tasks 017 and 018): 512 KB 8-way L2 (1024 sets) + 32 KB 8-way L1, single core, C3 RTL.**
 > - Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` (chipyard `RocketConfigs.scala` / `vcu118/Configs.scala`, committed 2026-10-15 with the 018 configs)
 > - **Image built 2026-10-12 14:01**, sha256 **`37923e6b…82d3ee`** (`build_bitstream.sh`, 39 min, archived with provenance
 >   in `fpga/bitstream_storage/`). Driver log `chipyard/fpga/build-logs/driver-FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-20261012-132203.log`.
->   Not on the board yet
+>   On the board since 2026-10-12 (task 017); the SBC_DstMode image of task 018 is `502649e2…`
 > - **The 1 MB runs are set aside**, including task 013's 1 MB A/B (it never reached the board)
 > - ⚠️ Against the 256 KB image of every fresh-boot result, **both** the L2 (256 → 512 KB) and the L1 (8 → 32 KB) change,
 >   so old and new numbers do not compare directly
-> - What to run on it first: not decided yet
+> - What ran on it: LU alone (task 017, task 018); results in the 512 KB block below
 >
 > **▶ Fresh-boot results so far** — 256 KB 8-way L2, 8 KB L1, single core, image `5ace4125…`, **100 valid windows**
 > (2026-10-05 → 10-10). Memory accesses, SBC on vs off; most settings one window per arm, LU noise 0.5–0.9%:
@@ -61,6 +61,19 @@ live in `ai-documents/`.
 > - bodytrack (task 016): centre −0.4% · −1.2 to −1.9% around 400 particles · **+4.1% / +3.7% at 1600 / 4000 particles** ·
 >   +1.1 to +2.4% at the low-hit corner. No repeats yet
 > - Run time (L2 cycles) moves ≤ ~1.2% everywhere: a DRAM read costs only ~38 L2 cycles at 50 MHz
+>
+> **▶ 512 KB image results so far (tasks 017 and 018, 2026-10-12 → 10-15)** — 512 KB 8-way L2, 32 KB 8-way L1, single core, LU alone,
+> fresh boot per window, memory accesses SBC on vs off (replicates agree within 1.1 pp):
+> - **Task 018, setting 1: b128 pays and grows with n — −5.7% (n512) · −4.6% (n1024) · −10.7% / −9.7% (n2048) · −15.7% (n3072) ·
+>   −20.9% / −21.1% (n4096)**; b64 +0.0 to −1.4% · b256 −0.3 to −0.5% (n 512 / 1024 / 2048). No point raises traffic
+> - Task 017, today's rule (setting 0): n512 b128 −4.7% · n768 b128 −3.6% · n1024 b128 −4.9% · n256 b256 −2.8% · n1024 b64 −0.1%
+> - **Why (high level):** setting 0 aborted 80–90% of attempts on an L1-held way; setting 1 uses a dirty way no L1 holds, so held
+>   aborts fall to 12–58%. b128 blocks (128 KB) overflow some L2 sets while others sit half empty: SBC lends the empty ways and each
+>   lent line pays back once per block step, so the gain grows with n. b64 has little to fix; b256 overloads every set. Not
+>   power-of-two stride aliasing (n3072 test). The geometry reading is not separately tested
+> - Run time on the board −0.2 to −1.4% (a DRAM read is ~38 L2 cycles). Image `…-dst018-494ab5e-best-n4096-b128-…`, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`
+> - **Left:** LU data check with SBC on · setting 0 at n4096 · per-set profile · n4096 b64 / b256 · corrected calib sweep · other workloads · push
+>   ([018 REPORT](ai-documents/coder/018-dst-dirty-ways/REPORT.md) "Summary")
 >
 > **Decisions these changed:**
 > - **A/B rule, in simple terms: for apples-to-apples results, migrate=off and migrate=on each run on their own

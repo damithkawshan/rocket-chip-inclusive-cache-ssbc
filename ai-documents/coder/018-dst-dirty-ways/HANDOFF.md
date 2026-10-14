@@ -60,9 +60,14 @@ is the setting for our tests.**
 - `C1/on/` is a folder of m1 copies made at 08:28 by something other than my tools; my tools ignore it. Leave it.
 - Task 017's folder is READ ONLY; its tmux sessions `lu512`, `lu512drv` stay open (never kill).
 
-## Open items
-- Replicates: n512 b128 and n1024 b64 (within 0.6%), n2048 b128 (−10.75 vs −9.68%, 1.1 pp), n4096 b128 (−20.88 vs −21.11%, 0.23 pp): the 2.7 pp "spread" was between tasks/images, not within-task noise.
-- Ideas offered to the user (not started, their call): n4096 b64 and b256 pairs (≈ 6 h each), `lu_ncb -t` data check at n1024 or n2048 with SBC on, corrected calib sweep.
-- Corrected calib sweep (predictions 6 and 7 of the first campaign's PLAN).
-- Bodytrack 1600 on this image: propose in the report only (TASK §13 q4); not in scope.
-- (The commit was done 2026-10-15; new changes after tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15` are uncommitted until the user says.)
+## What is left (nothing in 018 itself; follow-ups, the user's call — full table in REPORT "What is left to do")
+1. `lu_ncb -t` data check with SBC on (setting 1) at n1024 or n2048 — LU output is not checked in any window (exit code only)
+2. Setting 0 (and 2) at n4096 b128, one window each (~3 h each) — "best" is against SBC off; this attributes the gain to setting 1
+3. Per-set profile of n4096 b128, off and on (`sw/sat_snap.c`, `SBC_SetSel` / `SBC_SetSat`) — tests the "uneven sets" explanation
+4. n4096 b64 and b256 pairs (~6 h per pair); n3072 b64 / b256 if the n4096 ones are interesting
+5. Corrected `l2_miss_calib` sweep (`-l1sets 64 -l1ways 8`, ~1 h) — predictions 6 and 7 of the first campaign are ungraded
+6. Setting 1 on other workloads (bodytrack 1600 / 4000, LU + FFT, LU pairs, dual core)
+7. Push the L2 branch and the tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15` (nothing is pushed; `origin/sbc-013-sat-counter` is still at `b46a8ac`)
+- Bodytrack 1600 on this image: propose in the report only (TASK §13 q4); not in scope
+- Replicates (done): n512 b128 and n1024 b64 within 0.6%, n2048 b128 1.1 pp, n4096 b128 0.23 pp — the 2.7 pp "spread" was between tasks and images
+- New changes after tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15` are uncommitted until the user says
