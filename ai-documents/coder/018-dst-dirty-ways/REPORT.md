@@ -133,7 +133,7 @@ What the numbers look like inside (SBC on, one window per point; "Δreads per mi
 | 4 | n4096 b64 and b256 pairs | completes the grid; b64 crept up with n (0.0, −0.9, −1.4%) | about 6 h per pair |
 | 5 | corrected `l2_miss_calib` sweep (`-l1sets 64 -l1ways 8`) | checks the migration-pays rule on a controlled workload | about 1 h |
 | 6 | setting 1 on other workloads (bodytrack 1600 / 4000, LU + FFT, LU pairs, dual core) | does it help or hurt outside LU alone | days |
-| 7 | push the L2 branch and tags | nothing is pushed; `origin/sbc-013-sat-counter` is 5 commits behind (still at `b46a8ac`) | minutes |
+| 7 | push the L2 branch and tags | nothing is pushed; `origin/sbc-013-sat-counter` is still at `b46a8ac` (checked 2026-10-15) | minutes |
 
 ## User decisions (2026-10-12, answers to §13)
 | # | §13 question | answer |

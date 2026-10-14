@@ -1,27 +1,23 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated **2026-10-13** (task 018 status: RTL done, first board campaign, setting 1 chosen, new sweep running) and **2026-10-12**: 512 KB image built; 1 MB put aside; all fresh-boot results in one list; tracker rows
+Updated **2026-10-15** (task 018 closed: results, explanation, what is left; task 017 rows corrected; follow-up rows M27–M31, H10) and **2026-10-12**: 512 KB image built; 1 MB put aside; all fresh-boot results in one list; tracker rows
 brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and folder layout (sections 2–10).
 **Folders applied on 2026-09-14** — the layout is in section 10.
 
-> ## ⭐ VERY IMPORTANT — task 018: CLOSED 2026-10-15; setting 1 chosen; best result n4096 b128 −20.9% (replicate −21.1%)
+> ## ⭐ Task 018 — CLOSED 2026-10-15: setting 1 chosen; best result LU n=4096 b=128 −20.9% (replicate −21.1%)
 >
-> **[coder/018 TASK](coder/018-dst-dirty-ways/TASK.md) · [REPORT](coder/018-dst-dirty-ways/REPORT.md): let a migration overwrite a dirty way that no L1 holds.**
-> - **Why:** on the 512 KB image, **82–83% of migration attempts abort** because the destination's least-recent way
->   is held by the L1 (task 017). A dirty way with no L1 bit is used instead through task 012's write-back, no probe
-> - **What:** runtime `SBC_DstMode` (0 = today, 1 = clean then dirty, 2 = least-recent of either) and counter
->   `SBC_DstRescue`. Held ways stay an abort: **no destination probe** (that is what hung task 009)
-> - **Done:** RTL + simulation gate (I1–I4 pass; I5 fails for setting 2, F4) · image `502649e2…` · first board
->   campaign stopped by the user at 12 valid windows (n512 b128, n1024 b64, n384 b128; off, settings 0/1/2). Memory
->   accesses vs off, settings 0 / 1 / 2: **−1.97 / −4.97 / −3.46%** at n512 b128, −0.37 / −1.32 / −1.35% at n1024 b64,
->   +0.9 / +0.5 / +0.9% at n384 b128. One window per arm, between-boot spread ≈ 2.7 pp
-> - **User decision 2026-10-13: setting 1 is the one we use.** 9-point sweep done (18 of 18 windows valid, 18:44): LU
->   b 64/128/256 × n 512/1024/2048, off vs setting 1: **b128 −5.7 / −4.6 / −10.7%** (n 512 / 1024 / 2048), b64 +0.0 to −1.4%,
->   b256 −0.3 to −0.5%; no cost (L2 cycles ≤ 0.55%). `chipyard/scripts/logs/clean-runs/lu-sweep-dstmode1-single-core-512k-20261013/`.
->   Extra rounds done 2026-10-14 05:20 (4 of 4 valid): replicate of n2048 b128 **−9.7%**; new point **n4096 b128 −20.9%** (replicate −21.1%)
->   (hit 72.9 → 78.6%, held share 50.3%, L2 cycles −1.3%). At b128 the saving grows with n: −5.7 / −4.6 / −10.7 / **−15.7 (n3072)** / −20.9%
-> - **Closed 2026-10-15** (committed, merged into `sbc-013-sat-counter`, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`). Follow-ups outside 018: corrected `l2_miss_calib` sweep · LU data check · n4096 b64 / b256
+> **[TASK](coder/018-dst-dirty-ways/TASK.md) · [REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary": let a migration overwrite a dirty way that no L1 holds.**
+> - **What:** runtime `SBC_DstMode` (0 = today, 1 = clean way then a dirty way no L1 holds, 2 = least-recent of either) and counter
+>   `SBC_DstRescue`. Held ways stay an abort, **no destination probe** (that is what hung task 009). **Setting 1 is the one we use** (user, 2026-10-13)
+> - **Result (512 KB L2, LU alone, setting 1 vs SBC off):** b128 **−5.7 / −4.6 / −10.7 / −15.7 / −20.9%** at n 512 / 1024 / 2048 / 3072 / 4096;
+>   b64 +0.0 to −1.4%; b256 −0.3 to −0.5%. No point raises traffic. Setting 0 aborted 80–90% of attempts on an L1-held way; setting 1: 12–58%
+> - **Why, in one line:** b128 blocks overflow some L2 sets while others sit half empty; SBC lends the empty ways and each lent line pays back once per
+>   block step, so the gain grows with n (reading, not separately tested). b64 has little to fix; b256 overloads every set. Details: 512 KB block in section 0
+> - **Committed, merged and tagged:** RTL `494ab5e`, branch merged into `sbc-013-sat-counter`, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`; image
+>   `…-dst018-494ab5e-best-n4096-b128-…` (sha256 `502649e2…`) marked as the best bitstream for 512 KB n=4096 b=128
+> - **Left (outside 018, the user's call):** LU data check with SBC on (M27) · setting 0 at n4096 (M28) · per-set profile (M29) · n4096 b64 / b256 and the
+>   corrected calib sweep (M30) · other workloads (M31) · push (H10)
 
 > **Corrected 2026-10-12: the old "overdue" box is gone.**
 > - It said set pairs never break up. That stopped being true on 2026-09-17: task 007 added the code that ends
@@ -70,20 +66,32 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
 > - Run time barely moves (1.2% or less): on this board memory is fast compared with the core
 > - Most of these are one run each way; bodytrack has no repeats yet
 >
-> **▶ 512 KB image results so far (tasks 017 and 018, 2026-10-12 → 10-15)** — 512 KB 8-way L2, 32 KB 8-way L1, one core, LU alone,
-> fresh boot per window, memory accesses SBC on vs off. 38 valid windows in task 018 plus 15 in task 017; replicates agree within 1.1 pp:
-> - **Task 018, setting 1 (clean way first, else a dirty way no L1 holds): b128 pays and grows with n — −5.7% (n512) · −4.6% (n1024) ·
->   −10.7% / −9.7% (n2048) · −15.7% (n3072) · −20.9% / −21.1% (n4096)**; b64 +0.0 to −1.4% · b256 −0.3 to −0.5% (n 512 / 1024 / 2048)
-> - Task 017, today's rule (setting 0): n512 b128 −4.7% · n768 b128 −3.6% · n1024 b128 −4.9% · n256 b256 −2.8% · n1024 b64 −0.1% ·
->   n384 b128 +0.5% · n256 b128 +1.5%. Setting 1 beat setting 0 and setting 2 where compared (n512 b128 −5.0 vs −2.0 / −3.5%)
-> - No point increased traffic; writes fall with reads; run time on the board moves only −0.2 to −1.4% (a DRAM read is ~38 L2 cycles)
-> - **Why (high level):** setting 0 aborted 80–90% of attempts on an L1-held way; setting 1 uses a dirty way no L1 holds, so held aborts
->   fall to 12–58%. b128 blocks (128 KB) overflow some L2 sets while others sit half empty; SBC lends the empty ways and each lent line
->   pays back once per block step, so the gain grows with n. b64 has little to fix (hit 95%); b256 (block = the L2) overloads every set,
->   so migration only reshuffles misses. Not power-of-two stride aliasing (n3072 test). The geometry reading is not separately tested
-> - **Left:** LU data check with SBC on · setting 0 at n4096 · per-set profile of n4096 b128 · n4096 b64 / b256 · corrected calib sweep ·
->   other workloads · push. Detail: [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary"
-> - Image: `…-dst018-494ab5e-best-n4096-b128-…` (sha256 `502649e2…`), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`
+> **▶ 512 KB image results so far (tasks 017 and 018, 2026-10-12 → 10-15)** — 512 KB 8-way L2, 32 KB 8-way L1, one core, LU alone, fresh boot
+> per window, memory accesses (reads + writes) SBC on vs off. 38 valid windows in task 018, 15 in task 017; replicates agree within 1.1 pp:
+>
+> | setting 1 vs SBC off | b=64 | b=128 | b=256 |
+> |---|--:|--:|--:|
+> | n=512 | +0.0% | −5.7% | −0.3% |
+> | n=1024 | −0.9% | −4.6% | −0.4% |
+> | n=2048 | −1.4% | **−10.7%** (replicate −9.7%) | −0.5% |
+> | n=3072 | not run | **−15.7%** | not run |
+> | n=4096 | not run | **−20.9%** (replicate −21.1%) | not run |
+>
+> - Task 017, today's rule (setting 0): n512 b128 −4.7% · n768 b128 −3.6% · n1024 b128 −4.9% · n256 b256 −2.8% · n1024 b64 −0.1% · n384 b128 +0.5% ·
+>   n256 b128 +1.5%. Setting 1 beat setting 0 and setting 2 where compared (n512 b128 −5.0 vs −2.0 / −3.5%; n1024 b64 −1.3 vs −0.4 / −1.35%)
+> - No point raises traffic (largest rise +0.02%); writes fall with reads; run time on the board only −0.2 to −1.4% (a DRAM read costs ~38 L2 cycles);
+>   the labelled model gives −6.7% at n4096 b128 with 200 cycles per read
+> - **Why — measured:** setting 0 aborted 80–90% of attempts on an L1-held way; setting 1 uses a dirty way no L1 holds, so held aborts fall to 12–58%.
+>   A migration pays back as secondary hits plus *more primary hits*. It pays where the L2 is moderately loaded (OFF hit 73–84%, b128); at b64 the L2
+>   already hits 95%; at b256 (hit 24–29%) migrations are plentiful but primary hits *fall* while secondary hits rise, net ≈ 0. At b128 migrations stay
+>   at 0.77% of accesses from n2048 up while reads saved per migration grow with n/b (−0.20 … −0.23 per block step)
+> - **Why — my reading (not separately tested):** a 128 × 128 block (128 KB = 4 × L1, ¼ L2) spreads unevenly over the L2 sets; SBC lends the empty
+>   ways of the partner set and a lent line is re-read once per block step. b256 (block = the L2) overloads every set. **Rejected:** power-of-two
+>   row-stride aliasing (n3072, a 24 KB stride, still −15.7%)
+> - **Not established:** one window per arm except n2048 b128 and n4096 b128; **LU output not checked**; "best" is against SBC off; corrected
+>   `l2_miss_calib` sweep not run; one core, one workload
+> - **Left:** M27–M31 and H10 in the tracker below. Image `…-dst018-494ab5e-best-n4096-b128-…` (sha256 `502649e2…`), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`.
+>   Detail and costs: [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary"
 >
 > **What these runs changed:**
 > - Every measured run must start from a fresh boot; runs on a board that has been up a while are not trusted
@@ -126,7 +134,7 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
 > the two programs' gains alone (10 of 14 recovered values below 10%); with streamcluster the pair keeps only ~27% of
 > LU's gain alone. One lead to repeat: pairs where LU b128 suffers recover 12–23% (4 of 5, weak band, 0.13–0.34 M). To continue in a new chat, start with [guides/fresh-boot-campaign-handoff.md](guides/fresh-boot-campaign-handoff.md).
 
-- **Branch now:** `sbc-013-sat-counter` (cut from `sbc-009-redo`). `sbc-paper-aligned` is still the main
+- **Branch now:** `sbc-013-sat-counter` (cut from `sbc-009-redo`; task 018 merged into it 2026-10-15, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`). `sbc-paper-aligned` is still the main
   line; `sbc-sampling` holds the 010/011 documents.
 - **Two images that matter.** Quote the **hash**, never the filename — two files were found archived
   under wrong names (010 §8.5):
@@ -145,11 +153,13 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
   - 1 MB 8-way dual core `bb0d3d0b…9095` (2026-09-30) = clean **pre-013** RTL, commit `cd7924b`
   - 256 KB 8-way, from **C3** RTL: single `5ace4125…9108`, dual `71fa886e…e418`. **The single-core one ran
     every fresh-boot result** (100 runs, 2026-10-05 to 10-10); not part of 013's A/B
-  - **512 KB 8-way, 32 KB 8-way L1, single core, C3 RTL: `37923e6b…82d3ee`, built 2026-10-12.** The next
-    setup; not on the board yet
-- **What is still true from before:** SBC is correct. On real programs it cuts memory accesses only for LU
-  b64 (−13%) and b128 (about −4%); elsewhere it is about 0 or slightly worse, and run time barely moves on
-  this board (updated 2026-10-12). Every earlier number below stands unless a later line replaces it.
+  - **512 KB 8-way, 32 KB 8-way L1, single core, C3 RTL: `37923e6b…82d3ee`, built 2026-10-12.** Task 017's image
+  - ⭐ **512 KB 8-way, 32 KB 8-way L1, single core + `SBC_DstMode`: `502649e2…`, built 2026-10-13** — RTL commit `494ab5e` (parent `b46a8ac`,
+    26 `.scala` blobs verified against the provenance), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`; stored as `…-dst018-494ab5e-best-n4096-b128-2026-10-13.*`.
+    The image of every task 018 result; **the best bitstream for 512 KB n=4096 b=128**
+- **What is still true from before:** SBC is correct. On real programs it cuts memory accesses for LU only: b64 (−13%) and b128
+  (about −4%) on the 256 KB image; **on the 512 KB image with setting 1, b128 −5% to −21% growing with n** (task 018); elsewhere it is about
+  0 or slightly worse, and run time barely moves on this board (updated 2026-10-15). Every earlier number below stands unless a later line replaces it.
 - **NEW 2026-09-25 — the design's operating envelope is measured:**
   [board-calib-envelope-2026-09-25.md](performance/board-calib-envelope-2026-09-25.md). 80 A/B points on
   the board. Set balancing pays **exactly while a hot set's overflow fits the empty ways of its partner**
@@ -243,14 +253,14 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 015 | Multi-application SBC verification: interference, or low hit rate? | 🟡 **parked at stop (c)** | R0 + S1 done. Pair headline −12.58% was board age: fresh-vs-fresh **−1.99%** (p 0.073). Side studies 2026-10-08: LU sweep 18/18, LU pair, LU pair search 8/8 (SBC recovers 6% / 2% / −3% of the interference). 2026-10-09: LU + FFT grid 24/24 (under 10% recovered in 7 of 9). **S2 dose-response not started.** Results: [fresh-boot report](performance/fresh-boot-experiments-2026-10-09.md) | 2026-10-09 |
 | 016 | bodytrack SBC off vs on and a one-parameter-at-a-time sweep (fresh boot per window) | 🟡 **one sweep done, repeats pending** | 2026-10-10: 36 of 36 windows valid. SBC costs 3.7–4.1% at 1600–4000 particles, small savings (1.2–1.9%) only around 400 particles, nothing at the centre (−0.4%). Output correct with SBC on at every setting (`poses.txt` md5 = host). **Left:** repeats to measure bodytrack's own noise (your decision); the extra settings toward the best point not started | 2026-10-10 |
 | 017 | LU alone, single core, SBC off vs on, on the 512 KB 8-way L2 + 32 KB 8-way L1 image (`37923e6b…`) | ⏹ **stopped by the user 2026-10-12 22:19** | 15 of 22 first-round windows valid. On vs off (setting 0): n512 b128 −4.7%, n768 b128 −3.6%, n1024 b128 −4.9%, n256 b256 −2.8%, n1024 b64 −0.1%, n384 / n256 b128 +0.5 / +1.5%. Not run: n512 b256 on, n512 b64 / b32 / b16, best-two pick, noise reruns (018's campaign 2 later ran n512 b64 and n512 b256 with setting 1: +0.0%, −0.3%) | [017 REPORT](coder/017-lu-sweep-512k/REPORT.md) | 2026-10-12 |
-| 018 | ⭐ **VERY IMPORTANT** — destination setting: a migration may overwrite a dirty way that no L1 holds (runtime `SBC_DstMode`, counter `SBC_DstRescue`). RTL + simulation gate + one 512 KB image + board A/B | ✅ **closed 2026-10-15** | RTL + sim gate done (uncommitted); image `502649e2…`. First campaign stopped with 12 valid windows; **setting 1 chosen**. 9-point sweep 18/18 valid: b128 **−5.7 / −4.6 / −10.7%** (n 512/1024/2048), b64 ≈ 0, b256 ≈ −0.4%. Replicate n2048 b128 −9.7%; **n4096 b128 −20.9% (replicate −21.1%)**. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) | 2026-10-13 |
+| 018 | ⭐ **VERY IMPORTANT** — destination setting: a migration may overwrite a dirty way that no L1 holds (runtime `SBC_DstMode`, counter `SBC_DstRescue`). RTL + simulation gate + one 512 KB image + board A/B | ✅ **closed 2026-10-15** | RTL `494ab5e`, sw, docs committed; merged into `sbc-013-sat-counter`; tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`; image `502649e2…`. First campaign stopped with 12 valid windows; **setting 1 chosen**. Setting 1 vs off, b128: **−5.7 / −4.6 / −10.7 / −15.7 / −20.9%** at n 512 / 1024 / 2048 / 3072 / 4096 (replicates −9.7%, −21.1%); b64 ≈ 0; b256 ≈ −0.4%. Why: held aborts 80–90% → 12–58%; b128 blocks overflow some sets while others sit half empty. **Left:** M27–M31, H10. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary" | 2026-10-15 |
 
 ### 1c. Measure and improve (current phase)
 
 | # | Item | Status | Notes |
 |---|---|---|---|
 | M1 | Same-work speed test on the board, feature on vs off | ✅ 2026-09-13 | 3 tests: 32–51% slower, 2.5–7× more trips to memory |
-| M2 | Repeat each test 3 times | 🟡 | Fresh-boot repeats exist only for a few points: LU + streamcluster (3 off, 4 on), LU b32 + b128 (2 each), LU b64 alone. Every other fresh-boot result, and all of bodytrack, is one run each way. Measured noise: 0.5–0.9% per window (LU) |
+| M2 | Repeat each test 3 times | 🟡 | Task 018 added replicates on the 512 KB image (n512 b128, n1024 b64, n2048 b128, n4096 b128: 0.2–1.1 pp apart). Fresh-boot repeats exist only for a few points on the 256 KB image: LU + streamcluster (3 off, 4 on), LU b32 + b128 (2 each), LU b64 alone. Every other fresh-boot result, and all of bodytrack, is one run each way. Measured noise: 0.5–0.9% per window (LU) |
 | M3 | Watch moved lines pile up for one hour | 🔴 | workplan step 2 |
 | M4 | Try two eviction fixes: stop over-protecting moved lines, and stop always evicting the first slot | ⛔ replaced 2026-09-16 | folded into the fix plan: the "first slot" fallback disappears on its own once moved lines can be evicted. See [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md) C1 |
 | M5 | Count hits honestly (task 005) | ✅ 2026-09-16 (005 c1) | The exact counters exist and are board-verified, so **a hit rate may now be quoted** from `L2_PrimaryHit` + `L2_SecondaryHit` ÷ `L2_AccessA`. The §0 line below saying "do not quote a hit rate" is superseded. Words: [cache-terminology.md](guides/cache-terminology.md) |
@@ -265,9 +275,14 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M21 | Envelope at other geometries: 64 KB 8-way and 1 MB 8-way | ✅ 2026-09-25/26 | The rule `overflow <= spare` holds at all three geometries. More sets and fewer ways shrink the downside: worst-case cycles **+13.61%** (64 KB 16-way) → **+4.95%** (64 KB 8-way) → **+3.27%** (1 MB 8-way). [64 KB 8-way](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · [1 MB 8-way](performance/board-calib-envelope-8way-1mb-2026-09-26.md) |
 | M22 | omnetpp in the paper's own configuration (1 MB 8-way, 32 kB L1, dual core) | ✅ 2026-09-26, n=1 | **Reproduced the paper's regime**: L2 miss 24.58% vs the paper's 28% for omnetpp. SBC still at **parity** — cycles −0.010%, reads +0.182%, writes +0.011%, hit rate −0.07 pts. Mechanism: **617,145 migrations, 2 lines parked at the end**, 0.34 hits per park, 0.004% of accesses served from a parked line, 93.3% of second searches wasted. 44% of migrations overwrote another guest (inferred — `migCommitReuse` has no counter). **52% of attempts aborted, 96.7% of them client-held** — a dual-core effect, so re-run single-core before judging (**put aside 2026-10-12** with the other 1 MB runs). One-boot method, n=1. Log: `chipyard/scripts/logs/board_session_20260926-155336.log` |
 | M23 | Is SBC's benefit on two co-running programs an interference effect, or a low-hit-rate effect? (task 015) | 🟡 interim 2026-10-09 | Pair fresh-vs-fresh **−1.99%** (p 0.073), not −12.58% (board age). LU alone fresh sweep: −3 to −5% where the working set overflows, −12.9% at n=512 b=64, nothing where it fits. LU+LU pairs: SBC recovers **6% / 2% / −3%** of the interference. LU + FFT grid (2026-10-09): under 10% in 7 of 9. **Reading so far (not final):** SBC helps a program whose own working set just overflows (LU b64, b128); it does not win back what a partner costs, and a low hit rate does not predict a gain (bodytrack). S2 dose-response, S3–S7 not run. [REPORT](coder/015-pair-verification-campaign/REPORT.md) F11, F15 · [fresh-boot report](performance/fresh-boot-experiments-2026-10-09.md) |
-| M24 | Measure on the next setup: 512 KB L2 + 32 KB L1, one core (Task 017) | 🟡 preflight done | Image built 2026-10-12 (`37923e6b…82d3ee`). Campaign folder `clean-runs/lu-sweep-single-core-512k-20261012/` prepared and preflight passed (all 6 checks green); awaiting calibration boot |
+| M24 | Measure on the next setup: 512 KB L2 + 32 KB L1, one core (Task 017) | ✅ measured 2026-10-12 → 10-15 (017 stopped at 15 windows; 018 continued) | Image `37923e6b…82d3ee`. Task 017, setting 0: n512 b128 −4.7%, n1024 b128 −4.9%, n768 b128 −3.6%, n256 b256 −2.8%, n1024 b64 −0.1%. Task 018 added setting 1 up to n4096. Campaign folders `clean-runs/lu-sweep-single-core-512k-20261012/`, `lu-dstmode-single-core-512k-20261013/`, `lu-sweep-dstmode1-single-core-512k-20261013/` |
 | M25 | bodytrack: does any setting gain? (task 016) | 🟡 one sweep 2026-10-10 | No clear gain anywhere; **+4% worse at 1600 / 4000 particles** (lost primary hits). Repeats not run. [016 REPORT](coder/016-bodytrack-sbc-sweep/REPORT.md) |
-| M26 | ⭐ **VERY IMPORTANT** — turn held-way aborts into migrations, with no destination probe (task 018) | ✅ closed 2026-10-15 | 82–83% of attempts abort on a held least-recent way on the 512 KB image (017). Settings 1/2 cut held aborts 36–92% and raise migrations 1.3–2.4×; memory accesses vs off: n512 b128 −1.97 / **−4.97** / −3.46% (settings 0 / 1 / 2), n1024 b64 −0.37 / −1.32 / −1.35%, n384 b128 +0.9 / +0.5 / +0.9%. One window per arm. **Setting 1 chosen (user, 2026-10-13).** 9-point sweep (setting 1 vs off): b128 −5.7 / −4.6 / **−10.7%** at n 512 / 1024 / 2048, b64 +0.0 to −1.4%, b256 −0.3 to −0.5%. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) |
+| M26 | ⭐ **VERY IMPORTANT** — turn held-way aborts into migrations, with no destination probe (task 018) | ✅ closed 2026-10-15 | 82–83% of attempts abort on a held least-recent way on the 512 KB image (017). Settings 1/2 cut held aborts 36–92% and raise migrations 1.3–2.4×; memory accesses vs off, settings 0 / 1 / 2: n512 b128 −1.97 / **−4.97** / −3.46%, n1024 b64 −0.37 / −1.32 / −1.35%, n384 b128 +0.9 / +0.5 / +0.9%. **Setting 1 chosen (user, 2026-10-13).** Setting 1 vs off: b128 −5.7 / −4.6 / −10.7 / −15.7 / **−20.9%** at n 512 / 1024 / 2048 / 3072 / 4096, b64 +0.0 to −1.4%, b256 −0.3 to −0.5%; no point raises traffic. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) |
+| M27 | LU output data check with SBC on (setting 1): `lu_ncb -t` at n1024 or n2048 | 🔴 filed 2026-10-15 | LU windows check only the exit code; with 30 M migrations at n4096 this is the missing safety evidence for the headline. ~1 h, one window |
+| M28 | Attribute the n4096 b128 gain: setting 0 (and 2) at n4096 b128, one window each | 🔴 filed 2026-10-15 | "Best" is against SBC off. Setting 0 vs 1 was measured only at the three campaign-1 points. ~3 h per window |
+| M29 | Per-set profile of n4096 b128, off and on (`sw/sat_snap.c`, `SBC_SetSel` / `SBC_SetSat`) | 🔴 filed 2026-10-15 | Tests the "some sets overflow, others sit half empty" reading of task 018 directly. Overlaps M12 |
+| M30 | n4096 b64 and b256 pairs; the corrected `l2_miss_calib` sweep (`-l1sets 64 -l1ways 8`) | 🔴 filed 2026-10-15 | Completes the grid (b64 crept up with n: 0.0, −0.9, −1.4%); the sweep checks the `overflow ≤ spare` rule on this image. ~6 h per pair; ~1 h |
+| M31 | Setting 1 on other workloads: bodytrack 1600 / 4000, LU + FFT, LU pairs, dual core | 🔴 filed 2026-10-15 | bodytrack lost 4% at 1600 particles with today's rule (lost primary hits); setting 1 never ran there |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicted steps of ~15 as pairs form, then flat, never falling. Overlaps M3. The "never falling" part already looks wrong: the 2026-09-26 run ended with 2 moved lines after 617,145 moves (M22) |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | ✅ **fixed — verified in RTL 2026-09-27** | The OR + `Mux1H` this row described is **gone**. `Scheduler.scala:752-756` latches each MSHR's erase pulse **with its own home set** in a per-MSHR pending slot (`grantOnePerCycle`, `Scheduler.scala:669-684`) and drains one per cycle, with an assert on the only remaining loss case. Fixed by 007 c0; the row was simply never updated. `PerfCounters` still moves the global level by `PopCount`, which is correct |
@@ -300,6 +315,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | H5 | Write the priority-order guide | ✅ 2026-09-14 | [priority-orders.md](guides/priority-orders.md) |
 | H6 | Commit the chipyard-side changes (configs, board scripts) | 🟡 | Partly done: the 1 MB configs (`4a2f8064`) and the LU campaign scripts (`fa785739`, `068aa805`). **2026-10-15: the 512 KB and dual 256 KB configs were committed with the 018 configs** (tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`). **Still uncommitted:** `build_bitstream.sh`, and the bodytrack and LU + FFT campaign tools. Until then the 512 KB image could only be rebuilt from its archived `.config.diff` |
 | H7 | Merge `sbc-sampling` into `sbc-paper-aligned` | 🔴 | after task 005 (006 is closed) |
+| H10 | Push the L2 branch `sbc-013-sat-counter` and the tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15` (and the chipyard commits and tag) | 🔴 | Nothing is pushed: `origin/sbc-013-sat-counter` is still at `b46a8ac` (checked 2026-10-15). The user's call |
 | H8 | Move docs into folders, then fix links | ✅ 2026-09-14 | 24 files moved; one link to a long-deleted file marked as deleted |
 | H9 | Remove debug and measurement hardware for the final area number | 🔴 | task 005 puts every counter, the read-back muxes and the sampler behind one switch (`enablePerfCounters`); the rest is listed in CLAUDE.md; only after the last measurement |
 
@@ -341,10 +357,13 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - ⏸ [013](coder/013-sat-counter-paper-mismatches/) — make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green, and that RTL is in every image since 2026-10-01. The 1 MB board A/B was put aside on 2026-10-12** (next setup: 512 KB, see section 0).
 - 📘 [014](coder/014-splash2-radix-fft-build/) — SPLASH-2 `radix` and `fft` built static for the board (host-only); feeds 015 S6.
 - ⏸ [015](coder/015-pair-verification-campaign/) — **parked at stop (c)**: multi-application verification. Pair headline corrected to −1.99% fresh-vs-fresh (F11); LU sweep, LU pair, pair search and the LU + FFT grid done (F14, F15); S2 dose-response not started. Read its "RESUME HERE".
-- ✅ ⭐ [018](coder/018-dst-dirty-ways/) — **VERY IMPORTANT, CLOSED 2026-10-15 (built 2026-10-13, measured to 2026-10-15, committed, merged, tagged)**: destination setting `SBC_DstMode` (a migration may overwrite a dirty way that no L1 holds; held ways stay an abort, no probe). RTL + simulation gate done (uncommitted); first campaign stopped at 12 valid windows; **setting 1 chosen**; 9-point sweep done (b128 −5.7 / −4.6 / −10.7%); replicate −9.7%; n4096 b128 **−20.9%**.
+- ⏹ [017](coder/017-lu-sweep-512k/) — LU alone on the 512 KB image (setting 0). **Stopped by the user 2026-10-12 22:19**, 15 of 22 first-round windows valid; its open points were partly covered by 018.
+- ✅ ⭐ [018](coder/018-dst-dirty-ways/) — **CLOSED 2026-10-15** (RTL `494ab5e`, merged into `sbc-013-sat-counter`, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`): destination setting `SBC_DstMode` (a migration may overwrite a dirty way that no L1 holds; held ways stay an abort, no probe). Setting 1 chosen; b128 −5.7 / −4.6 / −10.7 / −15.7 / **−20.9%** at n 512…4096. Read its REPORT "Summary": what we did, what we saw, why, what is left.
 - 🟡 [016](coder/016-bodytrack-sbc-sweep/) — **one sweep done 2026-10-10, repeats pending** (SBC +3.7 to +4.1% at 1600–4000 particles; small savings only around 400): bodytrack SBC off vs on, then each parameter (cameras, particles, layers, threads, serial model, BMP output) one at a time; LU-sweep method and report shape.
 
 ## 4. Speed and improvement — `performance/`
+
+- ⭐ 🟢 **The 512 KB image results (tasks 017, 018) have no `performance/` report;** they live in [coder/018 REPORT](coder/018-dst-dirty-ways/REPORT.md) "Summary" and [coder/017 REPORT](coder/017-lu-sweep-512k/REPORT.md), with the tables in each campaign's `RESULTS.md` (`chipyard/scripts/logs/clean-runs/`). *Added 2026-10-15.*
 
 - ⭐ 🟢 [fresh-boot-experiments-2026-10-09.md](performance/fresh-boot-experiments-2026-10-09.md) — **the most important set of experiments so far**: every SBC on/off result with one fresh boot per window (LU alone sweep, LU + LU pairs, LU + FFT grid, LU + streamcluster), the observations across them, and the open questions. Data: `performance/data/2026-10-09-fresh-boot/`. Since 2026-10-12 it also has an "on vs off at a glance" list and a pointer to bodytrack (task 016).
 - 🟢 [sbc-findings-2026-09-25.md](performance/sbc-findings-2026-09-25.md) — **the rule** (SBC pays only while a set's overflow fits its partner's empty ways): what the envelope settles, the two figures of merit it overturns, and what to build.
@@ -431,7 +450,7 @@ rocket-chip-inclusive-cache/
     │   ├── priority-orders.md
     │   └── cache-terminology.md
     ├── tasks/                             phase records and plans, history (section 3a)
-    ├── coder/                             000 … 016, each TASK.md + REPORT.md (section 3b)
+    ├── coder/                             000 … 018, each TASK.md + REPORT.md (section 3b)
     ├── performance/                       board results and analyses (section 4)
     │   ├── fresh-boot-experiments-2026-10-09.md   ⭐ main results
     │   ├── sbc-findings-2026-09-25.md             the rule
