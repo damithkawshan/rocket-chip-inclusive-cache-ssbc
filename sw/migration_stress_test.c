@@ -349,6 +349,10 @@ static int case_teardown(void) {
     return gone && data_ok;
 }
 
+#ifdef SBC_DSTMODE_SET
+static int case_held_lru_dirty_alt(void);   /* 018, at the end of the file */
+#endif
+
 int main(void) {
 #ifdef L2_POLICY
     sbc_set_policy();   /* 008 */
@@ -378,9 +382,225 @@ int main(void) {
     report_inprogress("case_bankstore_saturation");
     ok &= case_teardown();          /* 007 C3: pairing breaks when the last guest leaves */
     report_inprogress("case_teardown");
+#ifdef SBC_DSTMODE_SET
+    ok &= case_held_lru_dirty_alt();    /* 018: held least-recent dst way, dirty client-free way beside it */
+    report_inprogress("case_held_lru_dirty_alt");
+#endif
 
     sbc_summary();
     printf(ok ? "PASS: all migration corner cases data-correct (see [SBC] log)\n"
               : "FAIL: data corrupted in at least one case\n");
     return ok ? 0 : 1;
 }
+
+#ifdef SBC_DSTMODE_SET
+/* Case 9 - 018: a migration into a destination D whose least-recent way is HELD by the L1, while another
+ * way is DIRTY with no L1 bit and no way is clean with no L1 bit. Expected (read SBC_DstMode):
+ *   setting 0:   the migration aborts on the held way (dstAbortHeld +1), and SBC_DstRescue +1
+ *   setting 1/2: the dirty way is written back and the migration commits (migrations +1), SBC_DstRescue +1
+ * State built in D (8 ways): G = a guest of S, read through S so it is held; N1..N6 = fresh D lines read
+ * once (the tiny L1 drops them silently, so their bit stays set: held); N7 = a fresh D line stored, then
+ * pushed out of the L1 (ReleaseData: dirty, no bit). PLRU learns only from grants and installs.
+ *
+ * Why the critical part is assembly, in 8 copies. The L2 has 8 sets and the L1 I$ is 4 lines, so the
+ * test's own instruction fetches land in the L2: a code line in D is a clean way with no L1 bit (the I$ is
+ * not a TL-C client), and a code line in S is a clean victim that would migrate before C. Each copy is at
+ * most 3 lines; copy k sits on L2 sets k..k+2, and the case runs a copy whose lines avoid S and D. The
+ * block touches only its own addresses (no stack) and is straight-line apart from short loops.
+ *
+ * Why G must be a guest: D's guests of S keep the pairing alive (teardown fires when the last one
+ * leaves), so the 7 fresh D lines must not push them all out. They are fetched right after a migration
+ * installs C as G (MRU), and tree PLRU then replaces the other 7 ways first.
+ *   B1  8 store misses in S: S = 8 dirty lines, so no S victim migrates until a clean one comes up
+ *   B2  load C (clean) into S
+ *   B3  store misses in S until migrations moves: C was S's victim and is now G, MRU in D
+ *   B4  N1..N6 loads, N7 store: fresh D misses, which replace every way but G
+ *   B5  load C through S: a secondary hit, G is now held and MRU
+ *   B6  8 loads in P (same L1 set as D, not S or D): N7 leaves the L1 as a ReleaseData
+ *   B7  load C2 (clean) into S, snapshot the counters, then store misses in S until a migration is
+ *       attempted: C2 is S's victim, and its destination read sees the state above
+ * Sim only: the host polls tohost / fromhost through the L2 every ~250 cycles. Each poll is an L2 hit that
+ * re-touches that line's way, so the PLRU of those two sets never settles (attempt 1 of setting 2 found C
+ * stuck beside the tohost line, never the victim). S and D are never those sets.
+ * Returns a0 = dstAbortHeld << 32 | dstRescue before B7's attempt, a1 = migrations before it; or
+ * a0 = -1 (B3: C never migrated) / -2 (B7: no attempt). s0/s1 are saved in t0/t1. */
+#define DH_HAM_TAG  16384   /* phase A: fresh S loads that heat S and pair it */
+#define DH_STR_TAG  24576   /* the block's S store stream */
+#define DH_C_TAG    32000   /* C, the guest G */
+#define DH_C2_TAG   32001   /* C2, the migration whose destination read is the test */
+#define DH_D_TAG    40960   /* N1..N7 in D */
+#define DH_P_TAG    49152   /* the pushes in P */
+#define DH_HAMMER   4000
+#define DH_PAT_C    0xC0DE0018C0DE0018ULL
+#define DH_PAT_C2   0xC2C20018C2C20018ULL
+
+extern volatile uint64_t tohost, fromhost;   /* riscv-tests syscalls.c / test.ld */
+typedef struct { uint64_t a, b; } dh_ret_t;
+typedef dh_ret_t (*dh_blk_t)(uintptr_t sstream, uintptr_t c, uintptr_t c2, uintptr_t dbase,
+                             uintptr_t pbase, uintptr_t mmio);
+extern dh_ret_t dst018_blk0(), dst018_blk1(), dst018_blk2(), dst018_blk3(),
+                dst018_blk4(), dst018_blk5(), dst018_blk6(), dst018_blk7();
+static const dh_blk_t dh_blk[8] = {
+    (dh_blk_t)dst018_blk0, (dh_blk_t)dst018_blk1, (dh_blk_t)dst018_blk2, (dh_blk_t)dst018_blk3,
+    (dh_blk_t)dst018_blk4, (dh_blk_t)dst018_blk5, (dh_blk_t)dst018_blk6, (dh_blk_t)dst018_blk7 };
+
+__asm__(
+"  .pushsection .text\n"
+"  .option push\n"
+"  .option norelax\n"
+"  .macro DST018_BLK name\n"
+"  .globl \\name\n"
+"  .type \\name, @function\n"
+"\\name:\n"
+"  mv   t0, s0\n"
+"  mv   t1, s1\n"
+"  li   t6, 512\n"
+"  li   s1, 8\n"                 /* B1 */
+"1: sd   a0, 0(a0)\n"
+"  ld   s0, 0(a0)\n"
+"  add  a0, a0, t6\n"
+"  addi s1, s1, -1\n"
+"  bnez s1, 1b\n"
+"  ld   s0, 0(a1)\n"             /* B2: C */
+"  ld   t2, 0x328(a5)\n"         /* migrations */
+"  li   s1, 31\n"                /* B3 */
+"2: sd   a0, 0(a0)\n"
+"  ld   s0, 0(a0)\n"
+"  add  a0, a0, t6\n"
+"  ld   t3, 0x328(a5)\n"
+"  bne  t3, t2, 3f\n"
+"  addi s1, s1, -1\n"
+"  bnez s1, 2b\n"
+"  li   a0, -1\n"
+"  j    9f\n"
+"3: li   s1, 6\n"                /* B4: N1..N6 loads */
+"4: ld   s0, 0(a3)\n"
+"  add  a3, a3, t6\n"
+"  addi s1, s1, -1\n"
+"  bnez s1, 4b\n"
+"  sd   a3, 0(a3)\n"             /* N7 store */
+"  ld   s0, 0(a1)\n"             /* B5: G through S */
+"  li   s1, 8\n"                 /* B6: pushes */
+"5: ld   s0, 0(a4)\n"
+"  add  a4, a4, t6\n"
+"  addi s1, s1, -1\n"
+"  bnez s1, 5b\n"
+"  ld   s0, 0(a2)\n"             /* B7: C2 */
+"  ld   t4, 0x4A0(a5)\n"         /* dstAbortHeld */
+"  ld   t5, 0x4B8(a5)\n"         /* dstRescue */
+"  ld   a6, 0x328(a5)\n"         /* migrations */
+"  ld   t2, 0x348(a5)\n"         /* attempted */
+"  li   s1, 31\n"
+"6: sd   a0, 0(a0)\n"
+"  ld   s0, 0(a0)\n"
+"  add  a0, a0, t6\n"
+"  ld   t3, 0x348(a5)\n"
+"  bne  t3, t2, 7f\n"
+"  addi s1, s1, -1\n"
+"  bnez s1, 6b\n"
+"  li   a0, -2\n"
+"  j    9f\n"
+"7: li   s1, 2000\n"             /* settle: the destination read lands */
+"8: addi s1, s1, -1\n"
+"  bnez s1, 8b\n"
+"  mv   a0, t4\n"
+"  slli a0, a0, 32\n"
+"  or   a0, a0, t5\n"
+"  mv   a1, a6\n"
+"9: mv   s0, t0\n"
+"  mv   s1, t1\n"
+"  ret\n"
+"  .size \\name, . - \\name\n"
+"  .endm\n"
+"  .balign 512\n"
+"  DST018_BLK dst018_blk0\n"
+"  .balign 512\n  .skip 64\n"
+"  DST018_BLK dst018_blk1\n"
+"  .balign 512\n  .skip 128\n"
+"  DST018_BLK dst018_blk2\n"
+"  .balign 512\n  .skip 192\n"
+"  DST018_BLK dst018_blk3\n"
+"  .balign 512\n  .skip 256\n"
+"  DST018_BLK dst018_blk4\n"
+"  .balign 512\n  .skip 320\n"
+"  DST018_BLK dst018_blk5\n"
+"  .balign 512\n  .skip 384\n"
+"  DST018_BLK dst018_blk6\n"
+"  .balign 512\n  .skip 448\n"
+"  DST018_BLK dst018_blk7\n"
+"  .option pop\n"
+"  .popsection\n");
+
+static int case_held_lru_dirty_alt(void) {
+    if (!(sbc_rd(SBC_STATUS) & 1)) { printf("case_held_lru_dirty_alt: SKIP (SBC not built)\n"); return 1; }
+#ifdef SBC_MIGRATE_OFF
+    printf("case_held_lru_dirty_alt: SKIP (migration off)\n");
+    return 1;
+#endif
+    /* Random policy: the Directory ignores SBC_DstMode, and the PLRU state below means nothing. */
+    if (!(sbc_rd(SBC_L2_REPLACEMENT) & 1)) {
+        printf("case_held_lru_dirty_alt: SKIP (random policy, the setting is ignored)\n");
+        return 1;
+    }
+    int mode = (int)(sbc_rd(SBC_DST_MODE) & 3);
+    if (mode == 3) mode = 0;
+
+    /* A. a source S and its partner D. C and C2 get known values now; the hammer writes them back, so
+     *    B2 and B7 fetch them clean. At least 16 S misses even when S is already a source: S must be hot. */
+    int v, sd, as, S = -1, D = -1;
+    int th = (int)(((uintptr_t)&tohost >> 6) & (L2_SETS - 1)), fh = (int)(((uintptr_t)&fromhost >> 6) & (L2_SETS - 1));
+    uint64_t acc = 0;
+    for (int s = 0; s < L2_SETS && S < 0; s++) {
+        if (s == th || s == fh) continue;           /* the host polls these lines (see above) */
+        at_entry(s, &v, &sd, &as);
+        if (v && sd) continue;                      /* a destination never sources */
+        do_st(set_addr(s, DH_C_TAG),  DH_PAT_C);
+        do_st(set_addr(s, DH_C2_TAG), DH_PAT_C2);
+        for (int it = 0; it < DH_HAMMER; it++) {
+            acc += do_ld(set_addr(s, DH_HAM_TAG + it));
+            if (it >= 16 && (it & 7) == 7) {
+                at_entry(s, &v, &sd, &as);
+                if (v && !sd) { if (as != th && as != fh) { S = s; D = as; } break; }   /* else: next s */
+            }
+        }
+    }
+    sink += acc;
+    if (S < 0) { printf("case_held_lru_dirty_alt: FAIL (no pairing formed)\n"); return 0; }
+
+    /* P: the same L1 set as D (address bit 6), neither S nor D. K: a copy whose 3 lines avoid S and D. */
+    int P = -1, K = -1;
+    for (int p = 0; p < L2_SETS && P < 0; p++)
+        if (p != S && p != D && ((p ^ D) & 1) == 0) P = p;
+    for (int k = 0; k < 8 && K < 0; k++) {
+        int s0 = (int)(((uintptr_t)dh_blk[k] >> 6) & (L2_SETS - 1)), bad = 0;
+        for (int j = 0; j < 3; j++) { int cs = (s0 + j) & (L2_SETS - 1); if (cs == S || cs == D) bad = 1; }
+        if (!bad) K = k;
+    }
+    if (P < 0 || K < 0) { printf("case_held_lru_dirty_alt: FAIL (no P or no block copy, S=%d D=%d)\n", S, D); return 0; }
+
+    uintptr_t sstr = set_addr(S, DH_STR_TAG), c = set_addr(S, DH_C_TAG), c2 = set_addr(S, DH_C2_TAG);
+    uintptr_t dbase = set_addr(D, DH_D_TAG), n7 = set_addr(D, DH_D_TAG + 6);
+    dh_ret_t r = dh_blk[K](sstr, c, c2, dbase, set_addr(P, DH_P_TAG), (uintptr_t)L2_CTRL_BASE);
+    uint64_t held1 = sbc_rd(SBC_DSTABORT_HELD), resc1 = sbc_rd(SBC_DST_RESCUE), mig1 = sbc_rd(SBC_MIGRATIONS);
+
+    if ((int64_t)r.a < 0) {
+        printf("case_held_lru_dirty_alt (018, mode %d): S=%d D=%d P=%d copy=%d: FAIL (%s)\n", mode, S, D, P, K,
+               r.a == (uint64_t)-1 ? "B3: C never migrated" : "B7: no migration attempt");
+        return 0;
+    }
+    uint64_t dHeld = held1 - (r.a >> 32), dResc = resc1 - (r.a & 0xffffffffULL), dMig = mig1 - r.b;
+
+    /* Every line the case wrote or loaded with a known value must read back. */
+    int data_ok = do_ld(c) == DH_PAT_C && do_ld(c2) == DH_PAT_C2 && do_ld(n7) == n7;
+    for (int t = 0; t < 8; t++)
+        if (do_ld(set_addr(S, DH_STR_TAG + t)) != set_addr(S, DH_STR_TAG + t)) data_ok = 0;
+
+    int ok = data_ok && dResc == 1 &&
+             (mode == 0 ? (dHeld == 1 && dMig == 0) : (dHeld == 0 && dMig == 1));
+    printf("case_held_lru_dirty_alt (018, mode %d): S=%d D=%d P=%d copy=%d (host sets %d/%d) heldAbort+%lu rescue+%lu "
+           "migrations+%lu (expect %s) data=%s: %s\n", mode, S, D, P, K, th, fh, (unsigned long)dHeld,
+           (unsigned long)dResc, (unsigned long)dMig, mode == 0 ? "abort held, rescue" : "commit, rescue",
+           data_ok ? "ok" : "BAD", ok ? "PASS" : "FAIL");
+    return ok;
+}
+#endif /* SBC_DSTMODE_SET */

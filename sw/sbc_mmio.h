@@ -67,6 +67,9 @@
 #define SBC_DSTABORT_DIRTY   (L2_CTRL_BASE + 0x498) /* R   the way offered was dirty, no client       */
 #define SBC_DSTABORT_HELD    (L2_CTRL_BASE + 0x4A0) /* R   the way offered was clean, client-held     */
 #define SBC_DSTABORT_BOTH    (L2_CTRL_BASE + 0x4A8) /* R   the way offered was dirty and client-held  */
+/* 018: destination setting. Both read 0 when dstModes is not built. Held ways are never offered. */
+#define SBC_DST_MODE         (L2_CTRL_BASE + 0x4B0) /* R/W 0 = clean only (reset), 1 = clean then dirty, 2 = either */
+#define SBC_DST_RESCUE       (L2_CTRL_BASE + 0x4B8) /* R   setting 0 aborts on held, dirty client-free way was free */
 
 static inline uint64_t sbc_rd(uintptr_t addr) {
     volatile uint64_t *p = (volatile uint64_t *)addr;
@@ -82,9 +85,18 @@ static inline void sbc_wr(uintptr_t addr, uint64_t v) {
  * volatile pinned to .sdata (a 0 would otherwise go to .sbss), so 0 and 1 give the same layout and
  * the two binaries differ in one data byte only. */
 static volatile uint64_t sbc_l2_policy __attribute__((section(".sdata"))) = L2_POLICY;
+#ifdef SBC_DSTMODE_SET
+/* 018 (sim tests, -DSBC_DSTMODE_SET=0|1|2): the destination setting, same .sdata trick as L2_POLICY, so
+ * the three values differ in one data byte only. Without the macro the binaries do not change at all. */
+static volatile uint64_t sbc_dst_mode __attribute__((section(".sdata"))) = SBC_DSTMODE_SET;
+#endif
 static inline void sbc_set_policy(void) {
     sbc_wr(SBC_L2_REPLACEMENT, sbc_l2_policy);
     printf("[SBC] policy=%llu\n", (unsigned long long)sbc_rd(SBC_L2_REPLACEMENT));
+#ifdef SBC_DSTMODE_SET
+    sbc_wr(SBC_DST_MODE, sbc_dst_mode);
+    printf("[SBC] dstmode=%llu\n", (unsigned long long)sbc_rd(SBC_DST_MODE));
+#endif
 }
 #endif
 

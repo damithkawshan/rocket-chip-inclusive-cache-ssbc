@@ -17,6 +17,10 @@
  *   ./sbc_read --migrate=off   stop new migrations from starting
  *   ./sbc_read --policy=plru   victim policy (L2_Replacement, 0x490): random (reset) or plru. Fails
  *                              if the read-back differs - i.e. plru on a bitstream without the tracker
+ *   ./sbc_read --dstmode=N     018: destination setting (SBC_DstMode, 0x4B0): 0 = clean only (reset),
+ *                              1 = clean then dirty, 2 = least-recent of clean or dirty; held never.
+ *                              Matters only with --policy=plru. Fails if the read-back differs - i.e.
+ *                              on a bitstream built without dstModes
  *   ./sbc_read --reset-all     zero ALL SBC state (SBC_Reset, 0x358). Refuses while lines are
  *                              parked, because that would orphan them. --force overrides.
  *
@@ -67,6 +71,7 @@
 #define SBC_PARKED_OFF     0x3A0UL   /* R: live displaced lines currently resident */
 #define SBC_STATSHOLD_OFF  0x438UL   /* R/W: freeze every event counter (not SBC_Parked) */
 #define L2_REPLACEMENT_OFF 0x490UL   /* R/W 008: 0 = random (reset), 1 = PLRU. Reads 0 if not built */
+#define SBC_DSTMODE_OFF    0x4B0UL   /* R/W 018: destination setting 0/1/2. Reads 0 if not built */
 
 /* name and MMIO byte offset. Every counter is a 64-bit register in PerfCounters.scala, so a plain
  * 64-bit read and subtract is exact - no width mask, and no wrap in any realistic window. */
@@ -86,6 +91,8 @@ static const struct { const char *name; unsigned off; } REGS[] = {
     { "secondSearch",  0x420 }, { "secondaryMiss", 0x428 },
     /* 008 commit 2: destination-probe aborts by reason. Appended, never inserted. */
     { "dstAbortDirty", 0x498 }, { "dstAbortHeld",  0x4A0 }, { "dstAbortBoth",  0x4A8 },
+    /* 018: destination reads a dirty, client-free way could rescue. Appended, never inserted. */
+    { "dstRescue",     0x4B8 },
 };
 /* Positional indices into REGS, used by show(). Keep in step with the table above. */
 #define I_MIGRATIONS 0
@@ -107,6 +114,7 @@ static const struct { const char *name; unsigned off; } REGS[] = {
 #define I_DSTABORTDIRTY 28
 #define I_DSTABORTHELD  29
 #define I_DSTABORTBOTH  30
+#define I_DSTRESCUE     31
 #define NREG (sizeof(REGS)/sizeof(REGS[0]))
 
 static volatile uint64_t *base;
@@ -133,6 +141,8 @@ static int migrate_state(void) { return (int)(base[SBC_MIGRATEENABLE_OFF / 8] & 
 /* 008: a bitstream without the tracker reads 0 here, which is also what it does: random. */
 static int policy_state(void)  { return (int)(base[L2_REPLACEMENT_OFF / 8] & 1); }
 static const char *policy_name(void) { return policy_state() ? "plru" : "random"; }
+/* 018: a bitstream without dstModes reads 0 here, which is also what it does: today's rule. */
+static int dstmode_state(void) { return (int)(base[SBC_DSTMODE_OFF / 8] & 3); }
 
 /* Block size from the config word at 0x000, so "bytes moved" cannot drift from the hardware.
  * RegFieldGroup packs its Seq from the LSB up: banks[7:0], ways[15:8], lgSets[23:16],
@@ -148,11 +158,14 @@ static void show(const char *tag, uint64_t *v) {
     printf("[%s]", tag);
     for (unsigned i = 0; i < NREG; i++)
         printf(" %s=%llu", REGS[i].name, (unsigned long long)v[i]);
+    printf(" dstMode=%d", dstmode_state());    /* 018: numeric, live, so key=number parsers keep it */
     printf(" policy=%s\n", policy_name());   /* not numeric, so key=number parsers skip it */
     printf("  migrate          : %s\n",
            !sbc_built() ? "n/a (SBC not built into this bitstream)" :
            migrate_state() ? "ON" : "OFF");
     printf("  policy           : %s\n", policy_name());
+    printf("  dst mode         : %d  (0 clean only, 1 clean then dirty, 2 either; held never)\n",
+           dstmode_state());
     printf("  reads taken under: L2_StatsHold (0x438) - one instant for all registers\n");
 
     /* 005: the terminology block (cache-terminology.md). L2_AccessA is 0 on a bitstream built
@@ -202,6 +215,9 @@ static void show(const char *tag, uint64_t *v) {
         printf("  dst aborts       : %llu  (dirty %llu, client-held %llu, both %llu)\n",
                (unsigned long long)(ad + ah + ab), (unsigned long long)ad, (unsigned long long)ah,
                (unsigned long long)ab);
+    if (v[I_DSTRESCUE])
+        printf("  dst rescues      : %llu  (setting 0 aborts on held, a dirty client-free way was free)\n",
+               (unsigned long long)v[I_DSTRESCUE]);
 
     /* The headline. Reads and writes stay separate above; this is the one number that has no
      * denominator to argue about - a count of things that physically happened at the memory port. */
@@ -233,7 +249,7 @@ int main(int argc, char **argv) {
         hold_clear();
     }
 
-    int cmd = 0, zero = 0, migsw = -1, reset_all = 0, force = 0, policy = -1;
+    int cmd = 0, zero = 0, migsw = -1, reset_all = 0, force = 0, policy = -1, dstmode = -1;
     /* migsw: -1 = leave the switch alone, 0 = off, 1 = on */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--zero")) zero = 1;
@@ -241,6 +257,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--migrate=off")) migsw = 0;
         else if (!strcmp(argv[i], "--policy=random")) policy = 0;
         else if (!strcmp(argv[i], "--policy=plru"))   policy = 1;
+        else if (!strcmp(argv[i], "--dstmode=0")) dstmode = 0;
+        else if (!strcmp(argv[i], "--dstmode=1")) dstmode = 1;
+        else if (!strcmp(argv[i], "--dstmode=2")) dstmode = 2;
         else if (!strcmp(argv[i], "--reset-all")) reset_all = 1;
         else if (!strcmp(argv[i], "--force")) force = 1;
         else if (!strcmp(argv[i], "--")) { cmd = i + 1; break; }
@@ -248,7 +267,8 @@ int main(int argc, char **argv) {
             /* An unrecognised flag is almost always a typo (e.g. --migrate=1); running the child
              * with the switch left unchanged would silently measure the wrong thing. */
             fprintf(stderr, "sbc_read: unknown option '%s'\n"
-                    "usage: sbc_read [--zero] [--migrate=on|off] [--policy=random|plru] [--reset-all] [--force]"
+                    "usage: sbc_read [--zero] [--migrate=on|off] [--policy=random|plru] [--dstmode=0|1|2]"
+                    " [--reset-all] [--force]"
                     " [-- cmd ...]\n",
                     argv[i]);
             return 2;
@@ -301,6 +321,17 @@ int main(int argc, char **argv) {
         if (policy_state() != policy) {
             fprintf(stderr, "sbc_read: L2_Replacement read back %d after writing %d - "
                             "PLRU is not built into this bitstream. Aborting\n", policy_state(), policy);
+            return 1;
+        }
+    }
+
+    /* 018: the destination setting, right after the policy it depends on. Safe at any time: it only
+     * changes which way a migration's destination read is offered. */
+    if (dstmode >= 0) {
+        base[SBC_DSTMODE_OFF / 8] = (uint64_t)dstmode;
+        if (dstmode_state() != dstmode) {
+            fprintf(stderr, "sbc_read: SBC_DstMode read back %d after writing %d - "
+                            "dstModes is not built into this bitstream. Aborting\n", dstmode_state(), dstmode);
             return 1;
         }
     }
