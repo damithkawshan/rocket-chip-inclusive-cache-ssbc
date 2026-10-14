@@ -3,8 +3,19 @@
  * Purpose: check the L2 hit/miss counters on the FPGA against a number we can predict. It prints the
  * designed counts next to the measured ones.
  *
- * Geometry. The L2 geometry is read from the control block's config word. The L1 D-cache is assumed
- * to be 8 KB = 32 sets x 4 ways with random replacement (the L18K configs; it cannot be read).
+ * Geometry. The L2 geometry is read from the control block's config word. The L1 D-cache geometry is read
+ * from Linux (/sys/devices/system/cpu/cpu0/cache, the level-1 data cache), or given with -l1sets / -l1ways;
+ * if neither works it falls back to 8 KB = 32 sets x 4 ways (the L18K configs). Random replacement assumed.
+ *
+ * 2026-10-13 (task 018): the L1 is a parameter now. The design needs every M access to land in the SAME L1
+ * set as an H line, so M traffic pushes the H lines out of the L1 and every H access reaches the L2. The old
+ * layout (M at page offset half + k, H at k) does that only while the L1 index is narrower than half the
+ * set span (32 sets with 64 B lines). A 32 KB 8-way L1 indexes the whole page (64 sets), so H and M sat in
+ * different L1 sets, the H lines never left the L1, and the L2 saw no hit traffic at all. On such a
+ * geometry the M pages now come from a SECOND frame group (two-group layout): same page offsets as H, so
+ * the same L1 sets, but different L2 sets. -r R makes each M set take R accesses per step (default 1), so
+ * a wide L1 sees more fills between two touches of an H line; the run prints the predicted chance that an
+ * H line is still in the L1 when it comes round again, and warns above 1%.
  *
  * How the design works:
  *   - A 64 B line at page offset o is in L2 set ((frame << 6) | (o >> 6)) & (sets - 1).
@@ -13,7 +24,7 @@
  *     its frame's group, so all pages are picked from one group, found via /proc/self/pagemap (root),
  *     and moved next to each other with mremap (the frame does not change).
  *     Within the group's 64 sets, "set k" below means the group's k-th set.
- *   - L1 D-cache set = page offset bits 10:6.
+ *   - L1 D-cache set = page offset bits 10:6 for 32 L1 sets (bits 11:6 for 64 sets).
  *   - H ("hit") lines: sets 0..h-1 on HP pages (-P, default 3/4 x ways = 12). Exactly ONE line of each
  *     H set is touched per step, so HP is both that set's working set AND its reuse distance. HP < ways
  *     means the set always hits and leaves ways-HP ways EMPTY - those empty ways are what SBC can use.
@@ -49,7 +60,10 @@
  *
  * Build: riscv64-unknown-linux-gnu-gcc -O2 -static -o sw/build/l2_miss_calib sw/l2_miss_calib.c
  * Run:   ./l2_miss_calib [-s steps] [-W warmup] [-h hitLines] [-m missLines] [-p missPages]
- *                        [-P hitPages] [-w] [-n]
+ *                        [-P hitPages] [-w] [-n] [-l1sets N] [-l1ways W] [-r R]
+ *        ./l2_miss_calib -D MB   drain only: read MB megabytes of fresh pages twice and exit (no MMIO, any
+ *                                geometry). With migration off this evicts every parked line in every set,
+ *                                where the old `-n` drain reached one 64-set page group only.
  *        -n: no MMIO at all (no counter reset, no read-back; assumes 64 sets x 16 ways x 64 B).
  *        Otherwise it zeroes the event counters (SBC_StatsReset) after warm-up and reads them under
  *        L2_StatsHold at the end, so its own output is an exact window. Safe inside sbc_read --zero --.
@@ -110,6 +124,28 @@ static int cmp_u64(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
+/* The level-1 data cache from Linux's cacheinfo. Returns 1 and fills sets/ways if found. */
+static int read_l1(unsigned *sets, unsigned *ways) {
+    char path[128], buf[32];
+    for (int i = 0; i < 8; i++) {
+        unsigned lvl = 0, ns = 0, nw = 0;
+        int isdata = 0;
+        FILE *f;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/level", i);
+        if (!(f = fopen(path, "r"))) continue;
+        if (fscanf(f, "%u", &lvl) != 1) lvl = 0;
+        fclose(f);
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/type", i);
+        if ((f = fopen(path, "r"))) { if (fscanf(f, "%31s", buf) == 1) isdata = !strcmp(buf, "Data") || !strcmp(buf, "Unified"); fclose(f); }
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/number_of_sets", i);
+        if ((f = fopen(path, "r"))) { if (fscanf(f, "%u", &ns) != 1) ns = 0; fclose(f); }
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu0/cache/index%d/ways_of_associativity", i);
+        if ((f = fopen(path, "r"))) { if (fscanf(f, "%u", &nw) != 1) nw = 0; fclose(f); }
+        if (lvl == 1 && isdata && ns && nw) { *sets = ns; *ways = nw; return 1; }
+    }
+    return 0;
+}
+
 /* Physical frame number of each page. Returns 0 if any is missing or hidden (not root). */
 static int read_pfns(uint8_t *base, unsigned n, uint64_t *pfn) {
     int fd = open("/proc/self/pagemap", O_RDONLY);
@@ -127,7 +163,8 @@ static int read_pfns(uint8_t *base, unsigned n, uint64_t *pfn) {
 }
 
 /* Every page must be its own frame, and in the chosen set group, or the design is broken. */
-static int report_frames(uint8_t *base, unsigned n, unsigned groups, unsigned q, uint64_t *out) {
+static int report_frames(uint8_t *base, unsigned n, unsigned groups, unsigned q, unsigned nh, unsigned q2,
+                         uint64_t *out) {
     uint64_t *p = malloc(n * sizeof(uint64_t)), *s = malloc(n * sizeof(uint64_t));
     int ok = read_pfns(base, n, p);
     if (!ok) {
@@ -137,9 +174,9 @@ static int report_frames(uint8_t *base, unsigned n, unsigned groups, unsigned q,
         qsort(s, n, sizeof(uint64_t), cmp_u64);
         unsigned distinct = 1, wrong = 0;
         for (unsigned i = 1; i < n; i++) distinct += s[i] != s[i - 1];
-        for (unsigned i = 0; i < n; i++) wrong += (unsigned)(p[i] & (groups - 1)) != q;
-        printf("  frames     : %u pages, %u distinct physical frames, %u outside set group %u%s\n",
-               n, distinct, wrong, q, (distinct == n && !wrong) ? "" : "  !!! design is broken");
+        for (unsigned i = 0; i < n; i++) wrong += (unsigned)(p[i] & (groups - 1)) != (i < nh ? q : q2);
+        printf("  frames     : %u pages, %u distinct physical frames, %u outside their set group (H %u, M %u)%s\n",
+               n, distinct, wrong, q, q2, (distinct == n && !wrong) ? "" : "  !!! design is broken");
         if (out) memcpy(out, p, n * sizeof(uint64_t));
     }
     free(p); free(s);
@@ -149,17 +186,19 @@ static int report_frames(uint8_t *base, unsigned n, unsigned groups, unsigned q,
 /* The workload. Pointers are computed, never loaded, and `sum` stays in a register, so the only
  * data-cache traffic is the designed lines. */
 static uint64_t run_steps(uint8_t *hbase, uint8_t *mbase, uint64_t first, uint64_t n,
-                          unsigned half, unsigned line, unsigned h, unsigned m,
-                          unsigned hp, unsigned mp, int writes) {
+                          unsigned half, unsigned moff, unsigned line, unsigned h, unsigned m,
+                          unsigned hp, unsigned mp, unsigned r, int writes) {
     uint64_t sum = 0;
     for (uint64_t s = first; s < first + n; s++) {
-        uint8_t *hpg = hbase + (s % hp) * PAGE;
-        uint8_t *mpg = mbase + (s % mp) * PAGE;
+        uint8_t *hpg = hbase + (s % (hp ? hp : 1)) * PAGE;
         for (unsigned k = 0; k < half; k++) {
             if (k < h) sum += *(volatile uint64_t *)(hpg + (uintptr_t)k * line);
             if (k < m) {
-                volatile uint64_t *a = (volatile uint64_t *)(mpg + (uintptr_t)(half + k) * line);
-                if (writes) *a = s; else sum += *a;
+                for (unsigned j = 0; j < r; j++) {   /* r = 1: one M access per M set per step, as before */
+                    uint8_t *mpg = mbase + ((s * r + j) % mp) * PAGE;
+                    volatile uint64_t *a = (volatile uint64_t *)(mpg + (uintptr_t)(moff + k) * line);
+                    if (writes) *a = s; else sum += *a;
+                }
             }
         }
     }
@@ -168,9 +207,10 @@ static uint64_t run_steps(uint8_t *hbase, uint8_t *mbase, uint64_t first, uint64
 
 int main(int argc, char **argv) {
     uint64_t steps = 50000, warm = 2048;
-    unsigned h = 32, m = 32, user_mp = 0;
+    unsigned h = 32, m = 32, user_mp = 0, l1sets = 0, l1ways = 0, r = 1;
     int user_hp = -1;                     /* -1 = not given; 0 IS a legal value (no hit lines at all) */
     int writes = 0, nommio = 0;
+    unsigned drain_mb = 0;
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "-s") && i + 1 < argc) steps = strtoull(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-W") && i + 1 < argc) warm  = strtoull(argv[++i], 0, 0);
@@ -180,14 +220,36 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-P") && i + 1 < argc) user_hp = (int)strtol(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "-w")) writes = 1;
         else if (!strcmp(argv[i], "-n")) nommio = 1;
+        else if (!strcmp(argv[i], "-l1sets") && i + 1 < argc) l1sets = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-l1ways") && i + 1 < argc) l1ways = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-r") && i + 1 < argc) r = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "-D") && i + 1 < argc) drain_mb = (unsigned)strtoul(argv[++i], 0, 0);
         else {
             fprintf(stderr, "usage: %s [-s steps] [-W warmup] [-h hitLines] [-m missLines] "
-                            "[-p missPages] [-P hitPages] [-w] [-n]\n"
+                            "[-p missPages] [-P hitPages] [-w] [-n] [-l1sets N] [-l1ways W] [-r R]\n"
                             "  -p: lines cycling in each MISS set (its working set and reuse distance)\n"
-                            "  -P: lines cycling in each HIT set; ways-P is the empty ways SBC can use\n",
+                            "  -P: lines cycling in each HIT set; ways-P is the empty ways SBC can use\n"
+                            "  -l1sets/-l1ways: the L1 D-cache (default: read from Linux, else 32 x 4)\n"
+                            "  -r: accesses per MISS set per step (default 1); more L1 fills between H touches\n"
+                            "  -D MB: drain only - read MB megabytes of fresh pages twice, then exit\n",
                     argv[0]);
             return 2;
         }
+    }
+
+    /* ---- drain only: every line of MB megabytes of fresh pages, read twice. Physical frames are spread over
+     *      all page groups, so every L2 set takes far more than `ways` new lines and drops what it held. */
+    if (drain_mb) {
+        size_t dl = (size_t)drain_mb << 20;
+        uint8_t *d = mmap(NULL, dl, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (d == MAP_FAILED) { perror("mmap drain"); return 1; }
+        uint64_t x = 0;
+        for (size_t o = 0; o < dl; o += PAGE) *(uint64_t *)(d + o) = o;      /* private frames */
+        for (int pass = 0; pass < 2; pass++)
+            for (size_t o = 0; o < dl; o += 64) x += *(volatile uint64_t *)(d + o);
+        printf("[L2MISS-DRAIN] mb=%u lines=%zu checksum=%llx\n", drain_mb, dl / 64, (ull)x);
+        munmap(d, dl);
+        return 0;
     }
 
     /* ---- geometry ---- */
@@ -216,6 +278,24 @@ int main(int argc, char **argv) {
     unsigned groups = 1u << extra;               /* page groups by frame number */
     unsigned span = 1u << (lgSets - extra);      /* sets one page reaches */
     unsigned sets = 1u << lgSets, half = span / 2, line = 1u << lgBlock;
+    int l1src = 2;                               /* 0 = -l1sets/-l1ways, 1 = Linux cacheinfo, 2 = fallback */
+    if (l1sets && l1ways) l1src = 0;
+    else {
+        unsigned ds = 0, dw = 0;
+        if (read_l1(&ds, &dw)) { if (!l1sets) l1sets = ds; if (!l1ways) l1ways = dw; l1src = 1; }
+        if (!l1sets) l1sets = 32;
+        if (!l1ways) l1ways = 4;
+    }
+    if (r < 1) r = 1;
+    /* The old layout puts M at offset half + k: same L1 set as H line k only if half is a multiple of the L1
+     * set count. Otherwise take the M pages from a second frame group at the SAME offsets as H. */
+    int twogroup = (half % l1sets) != 0;
+    if (twogroup && groups < 2) {
+        fprintf(stderr, "l2_miss_calib: %u L1 sets do not divide %u, and the L2 has one page group, so M traffic "
+                        "cannot share the H lines' L1 sets on this geometry\n", l1sets, half);
+        return 2;
+    }
+    unsigned moff = twogroup ? 0 : half;         /* M line k sits at page offset (moff + k) * line */
     if (h > half) h = half;
     if (m > half) m = half;
     unsigned hp = (user_hp >= 0) ? (unsigned)user_hp : (ways * 3 / 4);
@@ -223,6 +303,12 @@ int main(int argc, char **argv) {
     if (hp == 0) h = 0;                    /* no hit pages means no hit lines to touch */
     if (mp == 0) { fprintf(stderr, "l2_miss_calib: -p 0 leaves nothing to miss on\n"); return 2; }
     unsigned need = hp + mp;
+    /* Fills an H line's L1 set takes between two touches of that line: the other HP-1 H lines and HP*r M
+     * lines. Random replacement: the chance it is still in the L1 when it comes round again. */
+    unsigned fills = hp ? hp * (1 + r) - 1 : 0;
+    double l1survive = 1.0;
+    for (unsigned i = 0; i < fills; i++) l1survive *= 1.0 - 1.0 / (double)l1ways;
+    if (!h || !hp) l1survive = 0.0;
 
     /* The model this program exists to test. One access per set per step, so a set's working set IS
      * its reuse distance: an H set of HP lines in `ways` ways always hits and leaves ways-HP ways
@@ -242,7 +328,7 @@ int main(int argc, char **argv) {
     /* ---- memory: HP hit pages then MP miss pages, each its own frame, all in one set group ---- */
     size_t len = (size_t)need * PAGE;
     uint8_t *base;
-    unsigned q = 0;
+    unsigned q = 0, q2 = 0;
     if (groups == 1) {
         base = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         if (base == MAP_FAILED) { perror("mmap workload"); return 1; }
@@ -273,16 +359,34 @@ int main(int argc, char **argv) {
         unsigned cnt[64] = {0};
         for (unsigned i = 0; i < pool; i++) cnt[pfn[i] & (groups - 1)]++;
         for (unsigned g = 1; g < groups; g++) if (cnt[g] > cnt[q]) q = g;
-        if (cnt[q] < need) {
-            fprintf(stderr, "l2_miss_calib: only %u of %u pool pages share a set group (need %u)\n",
-                    cnt[q], pool, need);
-            return 1;
+        if (twogroup) {          /* H pages from group q, M pages from the next fullest group q2 */
+            q2 = (q + 1) & (groups - 1);
+            for (unsigned g = 0; g < groups; g++) if (g != q && cnt[g] > cnt[q2]) q2 = g;
+            if (cnt[q] < hp || cnt[q2] < mp) {
+                fprintf(stderr, "l2_miss_calib: groups %u/%u hold %u/%u pool pages (need %u H, %u M)\n",
+                        q, q2, cnt[q], cnt[q2], hp, mp);
+                return 1;
+            }
+        } else {
+            q2 = q;
+            if (cnt[q] < need) {
+                fprintf(stderr, "l2_miss_calib: only %u of %u pool pages share a set group (need %u)\n",
+                        cnt[q], pool, need);
+                return 1;
+            }
         }
         base = mmap(NULL, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);   /* reserve */
         if (base == MAP_FAILED) { perror("mmap reserve"); return 1; }
         unsigned j = 0;
-        for (unsigned i = 0; i < pool && j < need; i++) {
+        for (unsigned i = 0; i < pool && j < hp; i++) {           /* H pages: group q */
             if ((pfn[i] & (groups - 1)) != q) continue;
+            if (mremap(pb + (size_t)i * PAGE, PAGE, PAGE, MREMAP_MAYMOVE | MREMAP_FIXED,
+                       base + (size_t)j * PAGE) == MAP_FAILED) { perror("mremap"); return 1; }
+            pfn[i] = ~0ULL;      /* taken */
+            j++;
+        }
+        for (unsigned i = 0; i < pool && j < need; i++) {         /* M pages: group q2 */
+            if (pfn[i] == ~0ULL || (pfn[i] & (groups - 1)) != q2) continue;
             if (mremap(pb + (size_t)i * PAGE, PAGE, PAGE, MREMAP_MAYMOVE | MREMAP_FIXED,
                        base + (size_t)j * PAGE) == MAP_FAILED) { perror("mremap"); return 1; }
             j++;
@@ -294,16 +398,22 @@ int main(int argc, char **argv) {
     if (mlock(base, len) != 0) perror("mlock (continuing)");
 
     unsigned sb = q * span;   /* first L2 set of the chosen group */
-    double designRate = (h + m) ? 100.0 * m / (h + m) : 0.0;
+    unsigned sbm = q2 * span + moff;   /* first L2 set of the M lines */
+    double designRate = (h + r * m) ? 100.0 * r * m / (h + r * m) : 0.0;
     printf("==== l2_miss_calib ====\n");
     printf("  L2         : %u sets x %u ways x %u B lines%s\n", sets, ways, line,
            nommio ? "  (assumed, -n)" : "  (from config word)");
-    printf("  design     : per step %u hit lines (L2 sets %u..%u, %u pages) + %u miss lines "
+    printf("  L1 D-cache : %u sets x %u ways (%s), %s layout: M lines share the H lines' L1 sets\n", l1sets, l1ways,
+           l1src == 0 ? "given" : l1src == 1 ? "from Linux cacheinfo" : "ASSUMED, not found in Linux",
+           twogroup ? "two-group" : "one-group");
+    printf("  design     : per step %u hit lines (L2 sets %u..%u, %u pages) + %u miss lines x %u "
            "(L2 sets %u..%u, %u pages), %s\n",
-           h, sb, sb + (h ? h - 1 : 0), hp, m, sb + half, sb + half + (m ? m - 1 : 0), mp,
+           h, sb, sb + (h ? h - 1 : 0), hp, m, r, sbm, sbm + (m ? m - 1 : 0), mp,
            writes ? "miss lines STORED" : "reads only");
+    printf("  L1 check   : an H line sees %u L1 fills between touches -> %.2f%% chance it is still in the L1%s\n",
+           fills, 100.0 * l1survive, l1survive > 0.01 ? "  !!! above 1%: raise -r" : "");
     uint64_t *f0 = malloc(need * sizeof(uint64_t));
-    int framesOk = report_frames(base, need, groups, q, f0);
+    int framesOk = report_frames(base, need, groups, q, hp, q2, f0);
     if (parked0)
         printf("  !!! %llu lines are parked from an earlier migrate-ON run. They take ways in the hit sets,\n"
                "  !!! so the 50%% design does not hold here. Reboot for a clean calibration.\n", (ull)parked0);
@@ -325,14 +435,16 @@ int main(int argc, char **argv) {
         printf("  !!! h=%u m=%u: destinations are not uniform - sets %u..%u hold %u line(s) (%u empty ways),\n"
                "  !!!   sets %u..%u are untouched (%u empty ways). Keep h == m for a clean sweep point.\n",
                h, m, sb, sb + h - 1, hp, spare, sb + h, sb + half - 1, ways);
+    if (!twogroup && q2 != q)
+        printf("  !!! internal: one-group layout but two groups chosen\n");
 
     /* ---- warm-up: fill the H sets and cycle the M pages ---- */
-    uint64_t chk = run_steps(hbase, mbase, 0, warm, half, line, h, m, hp, mp, writes);
+    uint64_t chk = run_steps(hbase, mbase, 0, warm, half, moff, line, h, m, hp, mp, r, writes);
 
     /* ---- measured window ---- */
     if (!nommio) wr(OFF_STATSRESET, 1);
     double t0 = now_s();
-    chk += run_steps(hbase, mbase, warm, steps, half, line, h, m, hp, mp, writes);
+    chk += run_steps(hbase, mbase, warm, steps, half, moff, line, h, m, hp, mp, r, writes);
     double t1 = now_s();
 
     uint64_t v[24] = {0};
@@ -361,15 +473,17 @@ int main(int argc, char **argv) {
         free(f1);
     }
 
-    uint64_t dAcc = steps * (h + m), dMiss = steps * m;
+    uint64_t dAcc = steps * (h + r * m), dMiss = steps * r * m;
     printf("[L2MISS-DESIGN] sets=%u ways=%u line=%u group=%u firstSet=%u h=%u m=%u hpages=%u mpages=%u "
            "spare=%u overflow=%u combined=%u pairable=%u fits=%d "
            "steps=%llu warmup=%llu writes=%d designedAccesses=%llu designedMisses=%llu "
-           "designedMissRate=%.2f%% parkedAtStart=%llu seconds=%.2f checksum=%llx\n",
+           "designedMissRate=%.2f%% parkedAtStart=%llu seconds=%.2f checksum=%llx "
+           "l1sets=%u l1ways=%u l1src=%d twoGroup=%d mGroup=%u mFirstSet=%u r=%u l1Fills=%u l1SurvivePct=%.2f\n",
            sets, ways, line, q, sb, h, m, hp, mp, spare, overflow, combined, pairable,
            (mp > ways && overflow <= spare) ? 1 : 0,
            (ull)steps, (ull)warm, writes, (ull)dAcc, (ull)dMiss,
-           designRate, (ull)parked0, t1 - t0, (ull)chk);
+           designRate, (ull)parked0, t1 - t0, (ull)chk,
+           l1sets, l1ways, l1src, twogroup, q2, sbm, r, fills, 100.0 * l1survive);
     if (nommio) {
         printf("  (-n: no counters read; wrap with sbc_read --zero -- to measure)\n");
         return 0;
