@@ -153,6 +153,7 @@ class InclusiveCache(
       scheduler.io.sbcStatsReset := false.B // SBC: default; overridden below when a control port exists
       scheduler.io.statsHold := false.B // SBC: default; overridden below when a control port exists
       scheduler.io.usePlru.foreach { _ := false.B } // 008: random; overridden below when a control port exists
+      scheduler.io.dstMode.foreach { _ := 0.U }     // 018: today's rule; overridden below when a control port exists
 
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
@@ -203,6 +204,7 @@ class InclusiveCache(
         sched.io.sbcStatsReset := ctrl.module.io.sbc_stats_reset
         sched.io.statsHold     := ctrl.module.io.stats_hold
         sched.io.usePlru.foreach { _ := ctrl.module.io.l2_replacement.get }
+        sched.io.dstMode.foreach { _ := ctrl.module.io.dst_mode.get }
       }
     }
 

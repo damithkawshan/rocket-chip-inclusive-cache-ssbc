@@ -41,6 +41,8 @@ class PerfCounterStats extends Bundle
   val dstAbortDirty = UInt(64.W)
   val dstAbortHeld  = UInt(64.W)
   val dstAbortBoth  = UInt(64.W)
+  // 018: destination reads where setting 0 aborts on a held way while a dirty, client-free way was free
+  val dstRescue     = UInt(64.W)
   // outcomes (005 commit 1) - cache-terminology.md
   val accessA       = UInt(64.W)  // an inner-A request was accepted
   val primaryHit    = UInt(64.W)  // home line hit, enough permission, no outer A
@@ -108,6 +110,8 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     val sbc     = Input(new SBCEventPulses(params))
     // 005 commit 1: outcome pulses from the MSHRs (cache-terminology.md).
     val outcome = Input(new OutcomePulses(params))
+    // 018: the SBC_DstRescue pulse. One source (the Directory), so a Bool. Ignored unless dstModes.
+    val dstRescue = Input(Bool())
     val clearStats = Input(Bool())  // SBC_StatsReset: every event counter
     val clearSbc   = Input(Bool())  // SBC_Reset: only the SBC event counters
     val hold       = Input(Bool())  // L2_StatsHold: freeze every event counter (not SBC_Parked)
@@ -280,5 +284,13 @@ class PerfCounters(params: InclusiveCacheParameters) extends Module
     io.stats.dstAbortDirty := dstAbortDirty
     io.stats.dstAbortHeld  := dstAbortHeld
     io.stats.dstAbortBoth  := dstAbortBoth
+
+    // 018: SBC_DstRescue. Held by L2_StatsHold, cleared by SBC_StatsReset and SBC_Reset, like the dstAbort*.
+    if (params.micro.dstModes) {
+      val dstRescue = RegInit(0.U(64.W))
+      when (go && io.dstRescue) { dstRescue := dstRescue + 1.U }
+      when (io.clearStats || io.clearSbc) { dstRescue := 0.U }
+      io.stats.dstRescue := dstRescue
+    }
   }
 }

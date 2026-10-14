@@ -53,6 +53,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val statsHold     = Input(Bool())
     // 008: L2_Replacement (1 = PLRU victim). Absent when plruReplacement = false.
     val usePlru       = if (params.micro.plruReplacement) Some(Input(Bool())) else None
+    // 018: SBC_DstMode, for the Directory's destination mask. Absent when dstModes = false.
+    val dstMode       = if (params.micro.dstModes) Some(Input(UInt(2.W))) else None
   })
 
   val sourceA = Module(new SourceA(params))
@@ -208,6 +210,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     touch(1).bits.set := schedule.dir.bits.set
     touch(1).bits.way := schedule.dir.bits.way
     directory.io.usePlru.get := io.usePlru.get
+    directory.io.dstMode.foreach { _ := io.dstMode.get }   // 018 (dstModes requires plruReplacement)
     // T0 is one touch per grant only because a D request is scheduled only when SourceD takes it.
     assert (!schedule.d.valid || sourceD.io.req.ready, "008: schedule.d valid while SourceD is not ready")
   }
@@ -847,6 +850,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     perf.io.sbc.dstAbortDirty := PopCount(VecInit(mshrs.map(_.io.dstAbortDirty)))   // 008 C2
     perf.io.sbc.dstAbortHeld  := PopCount(VecInit(mshrs.map(_.io.dstAbortHeld)))
     perf.io.sbc.dstAbortBoth  := PopCount(VecInit(mshrs.map(_.io.dstAbortBoth)))
+    // 018: one source (the Directory), so a Bool and +1 per pulse is exact. false.B when not built.
+    perf.io.dstRescue := directory.io.dstRescue.getOrElse(false.B)
     perf.io.sbc.secHit      := PopCount(VecInit(mshrs.map(_.io.secHit)))
     perf.io.sbc.secMiss     := PopCount(VecInit(mshrs.map(_.io.secMiss)))
     perf.io.sbc.secPerm     := PopCount(VecInit(mshrs.map(_.io.secPerm)))

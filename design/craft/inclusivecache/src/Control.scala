@@ -59,6 +59,8 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val stats_hold = Output(Bool())
       // 008: L2_Replacement out (1 = PLRU victim). Absent when plruReplacement = false.
       val l2_replacement = if (outer.micro.plruReplacement) Some(Output(Bool())) else None
+      // 018: SBC_DstMode out (0 = clean only, 1 = clean then dirty, 2 = either). Absent when dstModes = false.
+      val dst_mode = if (outer.micro.dstModes) Some(Output(UInt(2.W))) else None
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -187,6 +189,17 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val l2ReplacementMap: Seq[RegField.Map] = l2Replacement.toSeq.map { r =>
       0x490 -> Seq(RegField(1, r, RegFieldDesc("L2_Replacement", "Victim policy: 0 = random, 1 = PLRU")))
     }
+    // 018: SBC_DstMode. Level, reset 0 = today's destination rule. Like L2_Replacement: not cleared by
+    // SBC_Reset/SBC_StatsReset, not held. Only matters while L2_Replacement = 1 (the Directory gates it
+    // on the live policy). SBC_DstRescue is a counter in PerfCounters. Both absent (read 0) when off.
+    val dstMode = if (outer.micro.dstModes) Some(RegInit(0.U(2.W))) else None
+    io.dst_mode.foreach { _ := dstMode.get }
+    val dstModeMap: Seq[RegField.Map] = dstMode.toSeq.flatMap { r => Seq(
+      0x4B0 -> Seq(RegField(2, r, RegFieldDesc("SBC_DstMode",
+        "Destination way: 0 = clean only (today), 1 = clean then dirty, 2 = least-recent of clean or dirty; held ways never"))),
+      0x4B8 -> Seq(RegField.r(64, io.perfStats.dstRescue, RegFieldDesc("SBC_DstRescue",
+        "Destination reads where setting 0 aborts on a held way while a dirty, client-free way was free", volatile=true))))
+    }
     // 005 commit 1: L2_StatsHold. Removed with enablePerfCounters (§4.3) - reads 0 when off.
     val sbcStatsHold: Bool = if (outer.micro.enablePerfCounters) RegInit(false.B) else false.B
     io.stats_hold := sbcStatsHold
@@ -302,6 +315,6 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x498 -> Seq(sbcDstAbortDirtyField),
       0x4A0 -> Seq(sbcDstAbortHeldField),
       0x4A8 -> Seq(sbcDstAbortBothField)
-    ) ++ l2ReplacementMap): _*)
+    ) ++ l2ReplacementMap ++ dstModeMap): _*)
   }
 }

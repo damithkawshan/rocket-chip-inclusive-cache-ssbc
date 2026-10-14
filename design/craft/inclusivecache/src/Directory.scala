@@ -115,6 +115,9 @@ class Directory(params: InclusiveCacheParameters) extends Module
     // 008: PLRU touches in, and the L2_Replacement bit (1 = PLRU victim). Absent when plruReplacement = false.
     val touch   = if (params.micro.plruReplacement) Some(Flipped(Vec(2, Valid(new RecencyTouch(params))))) else None
     val usePlru = if (params.micro.plruReplacement) Some(Input(Bool())) else None
+    // 018: SBC_DstMode in, and the SBC_DstRescue pulse out. Absent when dstModes = false.
+    val dstMode   = if (params.micro.dstModes) Some(Input(UInt(2.W))) else None
+    val dstRescue = if (params.micro.dstModes) Some(Output(Bool())) else None
   })
 
   val codeBits = new DirectoryEntry(params).getWidth
@@ -220,7 +223,20 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // client-free way instead of the lowest-index one, so a fresh guest is not the next one overwritten.
   // The paper evicts D's LRU line whatever its state; that needs a write-back and a probe - task 009.
   // No such way: the PLRU way, and the MSHR aborts (counted by reason).
-  val evictOH   = evictableOH & freeWays
+  // 018: the destination mask, chosen at run time by SBC_DstMode. Held ways (any clients bit) are never in it:
+  // overwriting one needs a probe, the hold-and-wait shape that hung task 009. The MSHR's dstReleasable (012 C2)
+  // already writes back any dirty, client-free way it is offered. dstModes = false keeps today's expression.
+  val dstModeLive = io.dstMode.map(m => Mux(io.usePlru.get, m, 0.U))   // gate on the LIVE policy register (009 F1)
+  val dstDirtyOH  = if (params.micro.dstModes) Some(Cat(ways.map(w => w.state =/= INVALID &&
+                      (!w.displaced || allowDisplacedVictim) && w.dirty && !w.clients.orR).reverse) & freeWays) else None
+  val evictOH   = if (!params.micro.dstModes) evictableOH & freeWays else {
+    val cleanOH = evictableOH & freeWays
+    val dirtyOH = dstDirtyOH.get
+    val mode    = dstModeLive.get
+    Mux(mode === 1.U, Mux(cleanOH.orR, cleanOH, dirtyOH),
+    Mux(mode === 2.U, cleanOH | dirtyOH,
+                      cleanOH))
+  }
   recency.foreach { r => r.io.evictMask := evictOH }
   val evictPick = recency.map(r => Mux(io.usePlru.get, UIntToOH(r.io.evictWay, params.cache.ways), PriorityEncoderOH(evictOH)))
                          .getOrElse(PriorityEncoderOH(evictOH))
@@ -243,6 +259,28 @@ class Directory(params: InclusiveCacheParameters) extends Module
   // row (its owner, plus one serving in place from its partner). With ways >= 4 there is always room.
   if (params.micro.enableSetBalancing) {
     assert (!ren2 || freeWays.orR, "SBC: every way in this row is locked by a live MSHR")
+  }
+
+  // 018: SBC_DstRescue - a destination read where setting 0 aborts on a held way while a dirty, client-free
+  // way was free. Independent of the setting: under 0 it counts the aborts 1/2 would avoid, under 1/2 the
+  // ones they did. Same stage as the victim mux. v0 = the way setting 0 offers when no clean way is free.
+  io.dstRescue.foreach { pulse =>
+    val cleanFree = (evictableOH & freeWays).orR
+    val v0        = Mux((policyOH & freeWays).orR, policyOH & freeWays, PriorityEncoderOH(freeWays))
+    val v0Held    = Mux1H(v0, ways.map(_.clients.orR))
+    pulse := ren2 && preferEvictable && io.usePlru.get &&
+             !(preferInvalid && (invalidWayOH & freeWays).orR) &&
+             !cleanFree && dstDirtyOH.get.orR && v0Held
+    if (params.micro.sbcDebug) {
+      when (pulse) {
+        printf(p"[SBC] DST-RESCUE set=${set} mode=${dstModeLive.get} v0=${OHToUInt(v0)}\n")
+      }
+      // Every destination read, so a directed test can see what the mask offered and why.
+      when (ren2 && preferEvictable) {
+        printf(p"[SBC] DST-MASK set=${set} mode=${dstModeLive.get} clean=${Binary(evictableOH & freeWays)}" +
+               p" dirty=${Binary(dstDirtyOH.get)} chosen=${victimWay} v0=${OHToUInt(v0)}\n")
+      }
+    }
   }
 
   val setQuash = bypass_valid && bypass.set === set

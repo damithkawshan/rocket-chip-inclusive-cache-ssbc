@@ -144,7 +144,9 @@ case class InclusiveCacheMicroParameters(
   // 005: all measurement hardware (every MMIO counter, read-back muxes). false = not built, reads 0; area only.
   enablePerfCounters:      Boolean = true,
   // 008: per-set PLRU recency + the L2_Replacement register (0 = random, 1 = PLRU). false = not built.
-  plruReplacement:         Boolean = false)
+  plruReplacement:         Boolean = false,
+  // 018: SBC_DstMode (0x4B0) + SBC_DstRescue (0x4B8). false = not built, both read 0.
+  dstModes:                Boolean = false)
 {
   require (writeBytes > 0 && isPow2(writeBytes))
   require (memCycles > 0)
@@ -154,6 +156,7 @@ case class InclusiveCacheMicroParameters(
   require (migrationThreshold >= migrationClearThreshold)
   require (dssEntries >= 1)
   require (sbcGateStallCycles >= 0)
+  require (!dstModes || (enableSetBalancing && plruReplacement), "018: dstModes needs SBC and PLRU")
 }
 
 case class InclusiveCacheControlParameters(
