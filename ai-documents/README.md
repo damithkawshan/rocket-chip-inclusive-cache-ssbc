@@ -1,9 +1,27 @@
 # ai-documents — index and status tracker
 
 What is in this folder, grouped, plus one tracker of every task and how far it got.
-Updated **2026-10-12**: 512 KB image built; 1 MB put aside; all fresh-boot results in one list; tracker rows
+Updated **2026-10-13** (task 018 status: RTL done, first board campaign, setting 1 chosen, new sweep running) and **2026-10-12**: 512 KB image built; 1 MB put aside; all fresh-boot results in one list; tracker rows
 brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and folder layout (sections 2–10).
 **Folders applied on 2026-09-14** — the layout is in section 10.
+
+> ## ⭐ VERY IMPORTANT — task 018: built and on the board; setting 1 chosen; sweep, replicate and n4096 b128 done (2026-10-14)
+>
+> **[coder/018 TASK](coder/018-dst-dirty-ways/TASK.md) · [REPORT](coder/018-dst-dirty-ways/REPORT.md): let a migration overwrite a dirty way that no L1 holds.**
+> - **Why:** on the 512 KB image, **82–83% of migration attempts abort** because the destination's least-recent way
+>   is held by the L1 (task 017). A dirty way with no L1 bit is used instead through task 012's write-back, no probe
+> - **What:** runtime `SBC_DstMode` (0 = today, 1 = clean then dirty, 2 = least-recent of either) and counter
+>   `SBC_DstRescue`. Held ways stay an abort: **no destination probe** (that is what hung task 009)
+> - **Done:** RTL + simulation gate (I1–I4 pass; I5 fails for setting 2, F4) · image `502649e2…` · first board
+>   campaign stopped by the user at 12 valid windows (n512 b128, n1024 b64, n384 b128; off, settings 0/1/2). Memory
+>   accesses vs off, settings 0 / 1 / 2: **−1.97 / −4.97 / −3.46%** at n512 b128, −0.37 / −1.32 / −1.35% at n1024 b64,
+>   +0.9 / +0.5 / +0.9% at n384 b128. One window per arm, between-boot spread ≈ 2.7 pp
+> - **User decision 2026-10-13: setting 1 is the one we use.** 9-point sweep done (18 of 18 windows valid, 18:44): LU
+>   b 64/128/256 × n 512/1024/2048, off vs setting 1: **b128 −5.7 / −4.6 / −10.7%** (n 512 / 1024 / 2048), b64 +0.0 to −1.4%,
+>   b256 −0.3 to −0.5%; no cost (L2 cycles ≤ 0.55%). `chipyard/scripts/logs/clean-runs/lu-sweep-dstmode1-single-core-512k-20261013/`.
+>   Extra rounds done 2026-10-14 05:20 (4 of 4 valid): replicate of n2048 b128 **−9.7%**; new point **n4096 b128 −20.9%** (replicate −21.1%)
+>   (hit 72.9 → 78.6%, held share 50.3%, L2 cycles −1.3%). At b128 the saving grows with n: −5.7 / −4.6 / −10.7 / **−15.7 (n3072)** / −20.9%
+> - **Open:** corrected `l2_miss_calib` sweep · replicate at n512 b128 · committed 2026-10-15 (tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`)
 
 > **Corrected 2026-10-12: the old "overdue" box is gone.**
 > - It said set pairs never break up. That stopped being true on 2026-09-17: task 007 added the code that ends
@@ -28,16 +46,21 @@ brought up to date (teardown, 64-bit counters, open bugs); guides, doc lists and
 
 ## 0. Where we are (updated 2026-10-12)
 
+> ⚠️ **Configuration Notice (Crucial for all results):**
+> - **All previous runs** in `chipyard/scripts/logs/clean-runs/` (100 valid fresh-boot runs, 2026-10-05 to 10-10: LU alone, LU+LU, LU+FFT, LU+streamcluster, bodytrack) were executed on our **256 KB L2 configuration** (`FPGASingleRocketVCU118L18K256K8WL2ConfigSBCPLRU`, sha256 `5ace41250e7c5141…`, 256 KB 8-way L2, 8 KB L1, single-core, PLRU).
+> - **Our next run is for the 512 KB bitstream** (`FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU`, sha256 `37923e6bb32606e6…`, 512 KB 8-way L2 + 32 KB 8-way L1, single-core). Task 017 is filed and preflighted in `clean-runs/lu-sweep-single-core-512k-20261012/`. Do not mix numbers between the 256 KB and 512 KB configurations.
+
 > **▶ NEW 2026-10-12 — the next setup (your decision):**
 > - **512 KB L2 (8 ways) with a 32 KB L1 (8 ways), one core**, same cache logic as every recent run
 > - **The FPGA image is built** (2026-10-12 14:01, hash `37923e6b…82d3ee`), not on the board yet
 > - How to build and measure: [guides/fpga-linux-run.md](guides/fpga-linux-run.md) (rewritten 2026-10-12)
+> - Campaign folder prepared: `chipyard/scripts/logs/clean-runs/lu-sweep-single-core-512k-20261012/` (Task 017)
 > - **The 1 MB runs are put aside**, including the planned before/after test of the heat-counter fix
 >   (task 013). That test never ran on the board
 > - Both the L2 and the L1 get bigger than in the runs below, so the new numbers will not compare one-to-one
-> - What to run on it first: not decided yet
+> - What to run on it first: LU alone (Task 017, the 9 points of the 256 KB sweep)
 >
-> **All fresh-boot results so far** (256 KB L2, 8 KB L1, one core, 100 valid runs, 2026-10-05 to 10-10).
+> **All fresh-boot results so far (256 KB L2 Config)** (256 KB L2, 8 KB L1, one core, 100 valid runs, 2026-10-05 to 10-10).
 > Change in memory accesses with SBC on vs off (negative = fewer = better):
 > - LU alone: −12.9% at block size 64 · about −4% at block 128 · −1.3% at 256 · about 0 at 16 and 32
 > - Two LU programs together: −1% to −10% (best: two LU b64)
@@ -204,6 +227,8 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | 014 | Build SPLASH-2 `radix` and `fft` for the board (host-only) | ✅ 2026-10-07 | both static; they feed task 015 S6 | 2026-10-07 |
 | 015 | Multi-application SBC verification: interference, or low hit rate? | 🟡 **parked at stop (c)** | R0 + S1 done. Pair headline −12.58% was board age: fresh-vs-fresh **−1.99%** (p 0.073). Side studies 2026-10-08: LU sweep 18/18, LU pair, LU pair search 8/8 (SBC recovers 6% / 2% / −3% of the interference). 2026-10-09: LU + FFT grid 24/24 (under 10% recovered in 7 of 9). **S2 dose-response not started.** Results: [fresh-boot report](performance/fresh-boot-experiments-2026-10-09.md) | 2026-10-09 |
 | 016 | bodytrack SBC off vs on and a one-parameter-at-a-time sweep (fresh boot per window) | 🟡 **one sweep done, repeats pending** | 2026-10-10: 36 of 36 windows valid. SBC costs 3.7–4.1% at 1600–4000 particles, small savings (1.2–1.9%) only around 400 particles, nothing at the centre (−0.4%). Output correct with SBC on at every setting (`poses.txt` md5 = host). **Left:** repeats to measure bodytrack's own noise (your decision); the extra settings toward the best point not started | 2026-10-10 |
+| 017 | LU alone, single core, SBC off vs on, on the 512 KB 8-way L2 + 32 KB 8-way L1 image (`37923e6b…`) | 🟡 preflight done | Preflight passed (all 6 checks green); waiting at stop (a) for calibration boot. Campaign folder: `clean-runs/lu-sweep-single-core-512k-20261012/` | [017 REPORT](coder/017-lu-sweep-512k/REPORT.md) | 2026-10-12 |
+| 018 | ⭐ **VERY IMPORTANT** — destination setting: a migration may overwrite a dirty way that no L1 holds (runtime `SBC_DstMode`, counter `SBC_DstRescue`). RTL + simulation gate + one 512 KB image + board A/B | 🟡 **built; sweep, replicate and n4096 b128 done** | RTL + sim gate done (uncommitted); image `502649e2…`. First campaign stopped with 12 valid windows; **setting 1 chosen**. 9-point sweep 18/18 valid: b128 **−5.7 / −4.6 / −10.7%** (n 512/1024/2048), b64 ≈ 0, b256 ≈ −0.4%. Replicate n2048 b128 −9.7%; **n4096 b128 −20.9% (replicate −21.1%)**. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) | 2026-10-13 |
 
 ### 1c. Measure and improve (current phase)
 
@@ -225,8 +250,9 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | M21 | Envelope at other geometries: 64 KB 8-way and 1 MB 8-way | ✅ 2026-09-25/26 | The rule `overflow <= spare` holds at all three geometries. More sets and fewer ways shrink the downside: worst-case cycles **+13.61%** (64 KB 16-way) → **+4.95%** (64 KB 8-way) → **+3.27%** (1 MB 8-way). [64 KB 8-way](performance/board-calib-envelope-8way-64kb-2026-09-25.md) · [1 MB 8-way](performance/board-calib-envelope-8way-1mb-2026-09-26.md) |
 | M22 | omnetpp in the paper's own configuration (1 MB 8-way, 32 kB L1, dual core) | ✅ 2026-09-26, n=1 | **Reproduced the paper's regime**: L2 miss 24.58% vs the paper's 28% for omnetpp. SBC still at **parity** — cycles −0.010%, reads +0.182%, writes +0.011%, hit rate −0.07 pts. Mechanism: **617,145 migrations, 2 lines parked at the end**, 0.34 hits per park, 0.004% of accesses served from a parked line, 93.3% of second searches wasted. 44% of migrations overwrote another guest (inferred — `migCommitReuse` has no counter). **52% of attempts aborted, 96.7% of them client-held** — a dual-core effect, so re-run single-core before judging (**put aside 2026-10-12** with the other 1 MB runs). One-boot method, n=1. Log: `chipyard/scripts/logs/board_session_20260926-155336.log` |
 | M23 | Is SBC's benefit on two co-running programs an interference effect, or a low-hit-rate effect? (task 015) | 🟡 interim 2026-10-09 | Pair fresh-vs-fresh **−1.99%** (p 0.073), not −12.58% (board age). LU alone fresh sweep: −3 to −5% where the working set overflows, −12.9% at n=512 b=64, nothing where it fits. LU+LU pairs: SBC recovers **6% / 2% / −3%** of the interference. LU + FFT grid (2026-10-09): under 10% in 7 of 9. **Reading so far (not final):** SBC helps a program whose own working set just overflows (LU b64, b128); it does not win back what a partner costs, and a low hit rate does not predict a gain (bodytrack). S2 dose-response, S3–S7 not run. [REPORT](coder/015-pair-verification-campaign/REPORT.md) F11, F15 · [fresh-boot report](performance/fresh-boot-experiments-2026-10-09.md) |
-| M24 | Measure on the next setup: 512 KB L2 + 32 KB L1, one core (your decision 2026-10-12) | 🔴 next | Image built 2026-10-12 (`37923e6b…82d3ee`), not on the board. What to run first: not decided. Needs a new campaign folder (the launchers check the 256 KB image's hash) |
+| M24 | Measure on the next setup: 512 KB L2 + 32 KB L1, one core (Task 017) | 🟡 preflight done | Image built 2026-10-12 (`37923e6b…82d3ee`). Campaign folder `clean-runs/lu-sweep-single-core-512k-20261012/` prepared and preflight passed (all 6 checks green); awaiting calibration boot |
 | M25 | bodytrack: does any setting gain? (task 016) | 🟡 one sweep 2026-10-10 | No clear gain anywhere; **+4% worse at 1600 / 4000 particles** (lost primary hits). Repeats not run. [016 REPORT](coder/016-bodytrack-sbc-sweep/REPORT.md) |
+| M26 | ⭐ **VERY IMPORTANT** — turn held-way aborts into migrations, with no destination probe (task 018) | 🟡 sweep, replicate and n4096 b128 done 2026-10-14 | 82–83% of attempts abort on a held least-recent way on the 512 KB image (017). Settings 1/2 cut held aborts 36–92% and raise migrations 1.3–2.4×; memory accesses vs off: n512 b128 −1.97 / **−4.97** / −3.46% (settings 0 / 1 / 2), n1024 b64 −0.37 / −1.32 / −1.35%, n384 b128 +0.9 / +0.5 / +0.9%. One window per arm. **Setting 1 chosen (user, 2026-10-13).** 9-point sweep (setting 1 vs off): b128 −5.7 / −4.6 / **−10.7%** at n 512 / 1024 / 2048, b64 +0.0 to −1.4%, b256 −0.3 to −0.5%. [018 REPORT](coder/018-dst-dirty-ways/REPORT.md) |
 | M13 | Board check 2: read the moved-line count every few seconds during the "on" half | 🔴 | analysis §6 check 2. Predicted steps of ~15 as pairs form, then flat, never falling. Overlaps M3. The "never falling" part already looks wrong: the 2026-09-26 run ended with 2 moved lines after 617,145 moves (M22) |
 | M14 | Decide the fair version to test, before building M4's switches | 🟡 proposed 2026-09-16 | [fix plan](performance/fix-plan-follow-the-paper-2026-09-16.md): C1 evictable + C2 reuse a slot + C3 end pairings + C4 cap. **New:** equal competition alone is not enough — with random replacement the moved lines still settle at roughly half the set (flow argument, section 2), which is why the cap is in. Waiting on your answers in section 7 |
 | M16 | 🐞 The moved-line count can be decremented for the wrong set | ✅ **fixed — verified in RTL 2026-09-27** | The OR + `Mux1H` this row described is **gone**. `Scheduler.scala:752-756` latches each MSHR's erase pulse **with its own home set** in a per-MSHR pending slot (`grantOnePerCycle`, `Scheduler.scala:669-684`) and drains one per cycle, with an assert on the only remaining loss case. Fixed by 007 c0; the row was simply never updated. `PerfCounters` still moves the global level by `PopCount`, which is correct |
@@ -257,7 +283,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 | H3 | Fix 2 code comments that describe deleted hardware | 🔴 | |
 | H4 | The "arm a set" register does nothing in auto mode | 🟡 | written down, not removed |
 | H5 | Write the priority-order guide | ✅ 2026-09-14 | [priority-orders.md](guides/priority-orders.md) |
-| H6 | Commit the chipyard-side changes (configs, board scripts) | 🟡 | Partly done: the 1 MB configs (`4a2f8064`) and the LU campaign scripts (`fa785739`, `068aa805`). **Still uncommitted:** the 512 KB and dual 256 KB configs, `build_bitstream.sh`, and the bodytrack and LU + FFT campaign tools. Until the configs are committed, the 512 KB image can only be rebuilt from its archived `.config.diff` |
+| H6 | Commit the chipyard-side changes (configs, board scripts) | 🟡 | Partly done: the 1 MB configs (`4a2f8064`) and the LU campaign scripts (`fa785739`, `068aa805`). **2026-10-15: the 512 KB and dual 256 KB configs were committed with the 018 configs** (tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`). **Still uncommitted:** `build_bitstream.sh`, and the bodytrack and LU + FFT campaign tools. Until then the 512 KB image could only be rebuilt from its archived `.config.diff` |
 | H7 | Merge `sbc-sampling` into `sbc-paper-aligned` | 🔴 | after task 005 (006 is closed) |
 | H8 | Move docs into folders, then fix links | ✅ 2026-09-14 | 24 files moved; one link to a long-deleted file marked as deleted |
 | H9 | Remove debug and measurement hardware for the final area number | 🔴 | task 005 puts every counter, the read-back muxes and the sampler behind one switch (`enablePerfCounters`); the rest is listed in CLAUDE.md; only after the last measurement |
@@ -273,6 +299,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - 🟢 [guides/priority-orders.md](guides/priority-orders.md) — who goes first when two parts of the cache want the same thing.
 - 🟢 [guides/fresh-boot-campaign-handoff.md](guides/fresh-boot-campaign-handoff.md) — **restart point for any fresh-boot campaign** (tasks 015, 016, and the 512 KB runs): image, flow of one window, counters, tools, standing rules, state, next experiments.
 - 🟢 [guides/cache-terminology.md](guides/cache-terminology.md) — **the words we use** for hit, miss, secondary hit and the rest, where they come from, and which counters follow them.
+- 🟡 [guides/firesim-vcu118.md](guides/firesim-vcu118.md) — **FireSim on the second VCU118 (started 2026-10-12)**: feasibility verdict, what it fixes (asserts on the FPGA, deterministic runs, settable DRAM latency), the manager/build-farm setup on `comparch`, and the run-farm steps still owed.
 
 ## 3. Task documents — `tasks/` and `coder/`
 
@@ -299,6 +326,7 @@ Marks: ✅ done · 🟡 half done · 🔴 not started · ⏭ moved to the last p
 - ⏸ [013](coder/013-sat-counter-paper-mismatches/) — make the saturation counter follow the paper (gaps 1–4). **All four RTL stages are committed and gated green, and that RTL is in every image since 2026-10-01. The 1 MB board A/B was put aside on 2026-10-12** (next setup: 512 KB, see section 0).
 - 📘 [014](coder/014-splash2-radix-fft-build/) — SPLASH-2 `radix` and `fft` built static for the board (host-only); feeds 015 S6.
 - ⏸ [015](coder/015-pair-verification-campaign/) — **parked at stop (c)**: multi-application verification. Pair headline corrected to −1.99% fresh-vs-fresh (F11); LU sweep, LU pair, pair search and the LU + FFT grid done (F14, F15); S2 dose-response not started. Read its "RESUME HERE".
+- 🟡 ⭐ [018](coder/018-dst-dirty-ways/) — **VERY IMPORTANT, built 2026-10-13, board sweep + replicate + n4096 b128 done 2026-10-14**: destination setting `SBC_DstMode` (a migration may overwrite a dirty way that no L1 holds; held ways stay an abort, no probe). RTL + simulation gate done (uncommitted); first campaign stopped at 12 valid windows; **setting 1 chosen**; 9-point sweep done (b128 −5.7 / −4.6 / −10.7%); replicate −9.7%; n4096 b128 **−20.9%**.
 - 🟡 [016](coder/016-bodytrack-sbc-sweep/) — **one sweep done 2026-10-10, repeats pending** (SBC +3.7 to +4.1% at 1600–4000 particles; small savings only around 400): bodytrack SBC off vs on, then each parameter (cameras, particles, layers, threads, serial model, BMP output) one at a time; LU-sweep method and report shape.
 
 ## 4. Speed and improvement — `performance/`

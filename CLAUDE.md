@@ -13,14 +13,37 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status — OPTIMIZATION PHASE (updated 2026-10-12)
+## Current status — OPTIMIZATION PHASE (updated 2026-10-13)
 
 > **▶ START HERE.** Branch **`sbc-013-sat-counter`**. The build phases and the destination-side tasks are done.
 > **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
 > "when does set balancing pay, and can the hardware tell".**
 >
+> **⭐ VERY IMPORTANT — task 018 (filed 2026-10-12): RTL, simulation, a first board campaign and a 9-point
+> setting-1 sweep are done; a replicate and an n4096 point with its replicate are done too (2026-10-14).** [coder/018 TASK](ai-documents/coder/018-dst-dirty-ways/TASK.md),
+> [REPORT](ai-documents/coder/018-dst-dirty-ways/REPORT.md). On the 512 KB image **82–83% of migration attempts abort**
+> because the destination's least-recent way is held by the L1 (task 017). 018 adds a runtime `SBC_DstMode` (0x4B0:
+> 0 = today, 1 = clean way first, else a dirty way no L1 holds, 2 = least-recent of either) so a migration may overwrite
+> a **dirty way that no L1 holds**, using task 012's write-back, plus a counter `SBC_DstRescue` (0x4B8). Held ways stay
+> an abort: **no destination probe**. Built into image `502649e2…` (512 KB 8-way L2 + 32 KB 8-way L1), **committed 2026-10-15**:
+> RTL `494ab5e`, sw `766a0fb`, merged into `sbc-013-sat-counter`, tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`. The stored image is
+> `…-dst018-494ab5e-best-n4096-b128-2026-10-13.bit`: **the bitstream behind our best result for 512 KB, n=4096, b=128 (−20.9%)**.
+> - **First board campaign** (off, settings 0 / 1 / 2; stopped by the user 2026-10-13 08:39 with 12 valid windows, 3
+>   points): held aborts fall 36–92% and migrations rise 1.3–2.4× at settings 1 and 2. Memory accesses vs off, settings
+>   0 / 1 / 2: n512 b128 **−1.97 / −4.97 / −3.46%** · n1024 b64 −0.37 / −1.32 / −1.35% · n384 b128 +0.90 / +0.47 / +0.94%
+>   (no gain). One window per arm; the spread between boots at n512 b128 is about 2.7 pp
+> - **User decision 2026-10-13: setting 1 is the setting for our tests.** It matches or beats setting 2 at every point and
+>   writes back 1.7–3.6× fewer destination lines
+> - **Setting-1 sweep finished 2026-10-13 18:44, 18 of 18 windows valid** (LU `b` 64 / 128 / 256 × `n` 512 / 1024 / 2048, SBC off
+>   vs setting 1, fresh boot per window; `chipyard/scripts/logs/clean-runs/lu-sweep-dstmode1-single-core-512k-20261013/`).
+>   Memory accesses vs off: **b128 −5.7 / −4.6 / −10.7%** at n 512 / 1024 / 2048; b64 +0.0 to −1.4%; b256 −0.3 to −0.5%. No
+>   point costs anything (largest rise +0.02%, L2 cycles ≤ 0.55%). n2048 b128 −10.7% (predicted −6..−1%)
+> - **Extra rounds finished 2026-10-14 05:20 (4 of 4 valid, tmux `dst1extra`):** replicate of n2048 b128 (`r2/`) **−9.7%**;
+>   new point **n4096 b128 −20.9%, replicate −21.1%** memory accesses (reads −21.0%, writes −20.7%, hit 72.9 → 78.6%, held share 50.3%, L2
+>   cycles −1.3%; predicted −16..−4%). At b128 the saving grows with n: −5.7 / −4.6 / −10.7 / **−15.7** / −20.9% at n 512 / 1024 / 2048 / **3072** / 4096 (n3072 is not a power of two: the saving follows problem size, not stride aliasing)
+>
 > **▶ NEXT CONFIG (user decision 2026-10-12): 512 KB 8-way L2 (1024 sets) + 32 KB 8-way L1, single core, C3 RTL.**
-> - Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` (chipyard `RocketConfigs.scala` / `vcu118/Configs.scala`, **uncommitted**)
+> - Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU` (chipyard `RocketConfigs.scala` / `vcu118/Configs.scala`, committed 2026-10-15 with the 018 configs)
 > - **Image built 2026-10-12 14:01**, sha256 **`37923e6b…82d3ee`** (`build_bitstream.sh`, 39 min, archived with provenance
 >   in `fpga/bitstream_storage/`). Driver log `chipyard/fpga/build-logs/driver-FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRU-20261012-132203.log`.
 >   Not on the board yet
@@ -40,7 +63,13 @@ live in `ai-documents/`.
 > - Run time (L2 cycles) moves ≤ ~1.2% everywhere: a DRAM read costs only ~38 L2 cycles at 50 MHz
 >
 > **Decisions these changed:**
-> - **A/B rule: one measured window per fresh boot, OFF and ON on matched board history.** One-boot results do not count
+> - **A/B rule, in simple terms: for apples-to-apples results, migrate=off and migrate=on each run on their own
+>   fresh boot (reprogram + boot, then ONE measured window). Two arms = two fresh boots.** Never run both on one boot.
+>   - Why: off-arm traffic rises with board age, so an on window after an off window on the same boot measures the
+>     board's age as well as SBC. The one-boot 256 KB LU sweep read SBC +4% to +61% worse; fresh boots, −3.2% to −12.9%
+>   - ⚠️ A bare `run_parsec_session.exp` session over several points (e.g. `-plan lu`) **is** one boot: smoke test only.
+>     Results come only from a campaign launcher (`tools/launch_*.sh`), which runs every window on its own fresh boot.
+>     Details: [fresh-boot-campaign-handoff.md](ai-documents/guides/fresh-boot-campaign-handoff.md) §4
 > - A low hit rate does **not** predict a win (bodytrack at 79–83% lost; LU at 75% saved)
 > - SBC does **not** win back a co-runner's interference (under 10% in 10 of 14 cases); a pair's gain ≈ the sum of the
 >   two programs' gains alone
@@ -95,6 +124,11 @@ live in `ai-documents/`.
 >
 > ### What to build next
 >
+> - ⭐ **VERY IMPORTANT — [task 018](ai-documents/coder/018-dst-dirty-ways/TASK.md): destination setting (built; 9-point
+>   board sweep, replicate and n4096 b128 done).** A migration may overwrite a dirty way with no L1 bit (settings 0 = today, 1 = clean then dirty,
+>   2 = least-recent of either). Simulation gate done; first campaign done for 3 points; **setting 1 chosen for tests**
+>   (user, 2026-10-13); 9-point sweep done (b128 −5.7 / −4.6 / **−10.7%**, b64 and b256 ≈ 0); replicate −9.7%; n4096 b128 **−20.9%**.
+>   Still open: the corrected `l2_miss_calib` sweep, and a data check of LU output with SBC on (the commit is done, 2026-10-15)
 > - 🥇 **Build and measure the 512 KB 8-way / 32 KB L1 image** (box above), fresh-boot method. Workloads not decided yet
 > - ⏸ **Task 013's 1 MB A/B — set aside 2026-10-12 (user decision).** Control `3abaca52…` (C0) and candidate
 >   `1bcba361…` (C3) stay archived; neither was ever on the board
@@ -107,7 +141,10 @@ live in `ai-documents/`.
 >   board; first open use: which sets lose the primary hits in bodytrack at 1600 particles
 > - ⛔ **Do NOT build 012 C3** (client-held destination way) — it carries the hold-and-wait shape that
 >   hung the board on 009. ⚠️ **But note:** on **dual core** it is now **96.7% of all aborts**
->   (2026-09-26). The old "under 2% of attempts" figure was single-core only
+>   (2026-09-26). The old "under 2% of attempts" figure was single-core only — **and is out of date there too**:
+>   single-core fresh-boot runs show held aborts at 10–63% of attempts (256 KB image) and 82–83% (512 KB image,
+>   task 017). Task 018's setting 1 recovers some of them without a probe (held aborts −36 to −92% at the three
+>   points measured, 2026-10-13)
 > - 🔶 **Geometry, updated:** the paper used **2 MB / 8-way / 4096 sets** with a **32 kB L1** (Table 1,
 >   read from the PDF 2026-09-27). **Next: 512 KB / 8-way / 1024 sets with a 32 kB 8-way L1** (user decision
 >   2026-10-12): the paper's L1, an L2 4× smaller. The 1 MB images are set aside. 256 KB / 16-way is still blocked by B7-2
@@ -130,7 +167,11 @@ live in `ai-documents/`.
 >   - ⏸ **Never on the board; set aside 2026-10-12 (user decision)**
 > - **1 MB 8-way dual core** `bb0d3d0b…9095`, built 2026-09-30 = **clean pre-013 RTL**, commit `cd7924b`
 >   (all four files match it exactly — unlike the 09-26 pair, this one *is* reproducible)
-> - **256 KB 8-way** (avoids B7-2, which is 16-way only) — built from **C3 RTL `fed7227`**, verified
+> - ⚠️ **B7-2 is NOT 16-way only (2026-10-12):** the FireSim build of the 512 KB 8-way config (Vivado 2023.1)
+>   hits the same LUTLP-1 loop (`dstClaim` → `dstSetConflict` → `io.allocate` → `dstClaim`) and writes no `.bit`;
+>   under Vivado 2021.1 the same RTL builds. It blocks FireSim. [bug-fix-log B7-2](ai-documents/bugs/bug-fix-log.md) ·
+>   [guides/firesim-vcu118.md](ai-documents/guides/firesim-vcu118.md)
+> - **256 KB 8-way** (avoided B7-2 under Vivado 2021.1) — built from **C3 RTL `fed7227`**, verified
 >   per file: single core `5ace4125…9108` (2026-10-01), dual core `71fa886e…e418` (2026-10-02).
 >   **The single-core `5ace4125…` is the image of every fresh-boot result** (100 windows, 2026-10-05 → 10-10).
 >   Not part of task 013's A/B
