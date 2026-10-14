@@ -20,7 +20,7 @@ live in `ai-documents/`.
 > "when does set balancing pay, and can the hardware tell".**
 >
 > **⭐ VERY IMPORTANT — task 018 (filed 2026-10-12): RTL, simulation, a first board campaign and a 9-point
-> setting-1 sweep are done; a replicate and an n4096 point with its replicate are done too (2026-10-14).** [coder/018 TASK](ai-documents/coder/018-dst-dirty-ways/TASK.md),
+> setting-1 sweep are done; a replicate and an n4096 point with its replicate are done too (2026-10-14); task CLOSED 2026-10-15.** [coder/018 TASK](ai-documents/coder/018-dst-dirty-ways/TASK.md),
 > [REPORT](ai-documents/coder/018-dst-dirty-ways/REPORT.md). On the 512 KB image **82–83% of migration attempts abort**
 > because the destination's least-recent way is held by the L1 (task 017). 018 adds a runtime `SBC_DstMode` (0x4B0:
 > 0 = today, 1 = clean way first, else a dirty way no L1 holds, 2 = least-recent of either) so a migration may overwrite
@@ -124,11 +124,11 @@ live in `ai-documents/`.
 >
 > ### What to build next
 >
-> - ⭐ **VERY IMPORTANT — [task 018](ai-documents/coder/018-dst-dirty-ways/TASK.md): destination setting (built; 9-point
->   board sweep, replicate and n4096 b128 done).** A migration may overwrite a dirty way with no L1 bit (settings 0 = today, 1 = clean then dirty,
+> - ⭐ **VERY IMPORTANT — [task 018](ai-documents/coder/018-dst-dirty-ways/TASK.md): destination setting (**CLOSED 2026-10-15**:
+>   built, measured, committed, tagged).** A migration may overwrite a dirty way with no L1 bit (settings 0 = today, 1 = clean then dirty,
 >   2 = least-recent of either). Simulation gate done; first campaign done for 3 points; **setting 1 chosen for tests**
 >   (user, 2026-10-13); 9-point sweep done (b128 −5.7 / −4.6 / **−10.7%**, b64 and b256 ≈ 0); replicate −9.7%; n4096 b128 **−20.9%**.
->   Still open: the corrected `l2_miss_calib` sweep, and a data check of LU output with SBC on (the commit is done, 2026-10-15)
+>   Follow-ups, not part of 018: the corrected `l2_miss_calib` sweep, a data check of LU output with SBC on, n4096 b64 / b256 pairs
 > - 🥇 **Build and measure the 512 KB 8-way / 32 KB L1 image** (box above), fresh-boot method. Workloads not decided yet
 > - ⏸ **Task 013's 1 MB A/B — set aside 2026-10-12 (user decision).** Control `3abaca52…` (C0) and candidate
 >   `1bcba361…` (C3) stay archived; neither was ever on the board

@@ -1,5 +1,7 @@
 # Task 018 — HANDOFF (rewritten 2026-10-15 02:01, for a fresh session)
 
+> **TASK CLOSED 2026-10-15.** Nothing in 018 is pending. What follows is the record; the follow-ups at the end are optional and the user's call.
+
 Read this first, then `REPORT.md` (details, evidence paths), then `TASK.md` (the work order; never edit it).
 Paths: `CY=/home/damith/Research/repos/chipyard_performance_eval/chipyard`, `L2=$CY/generators/rocket-chip-inclusive-cache`,
 `C1=$CY/scripts/logs/clean-runs/lu-dstmode-single-core-512k-20261013` (first campaign, stopped),

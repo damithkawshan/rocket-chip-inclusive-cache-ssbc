@@ -1,6 +1,6 @@
 # Coder report 018 — destination setting (dirty ways with no L1 bit)
 
-**Started:** 2026-10-12 · **Status (2026-10-15 02:01; n3072 b128 pair finished 01:59, −15.7%, size reading supported; replicate of n4096 b128 finished 17:07, −21.1% vs −20.9%):** RTL + sw + simulation gate done (uncommitted; I1–I4 PASS, I5 fails for setting 2 = F4); image `502649e2…` built; first board campaign **stopped by the user at 08:39 with 12 of 32 windows valid**; **user chose setting 1 for our tests**; second campaign (setting 1 only, 9 points, 18 windows) **finished 18:44, 18 of 18 valid**; n2048 b128 **−10.7%**; two more rounds (user, 21:49) **finished 2026-10-14 05:20, all 4 windows valid**: replicate of n2048 b128 **−9.7%**, new point **n4096 b128 −20.9%** (largest saving so far).
+**Started:** 2026-10-12 · **Status: CLOSED 2026-10-15.** RTL, software, simulation gate, image, two board campaigns, report; committed (RTL `494ab5e`), merged into `sbc-013-sat-counter`, tagged `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`. Best result: n4096 b128 **−20.9%** (replicate −21.1%) memory accesses, setting 1 vs SBC off.
 
 ## ▶ RESUME HERE
 - **Fresh session: read `HANDOFF.md` (same folder) first** — current state, tmux sessions, what to do when the chain ends.
@@ -26,6 +26,19 @@
   at n512 b128 (between-boot spread ≈ 2.7 pp), the commit, doc suggestions (done 2026-10-13 on the user's say: CLAUDE.md,
   `ai-documents/README.md`, `coder/README.md`)
 - User wants long jobs in **tmux**; answers in simple English, point form, compact tables
+
+## Closed (2026-10-15)
+- **Delivered:** runtime `SBC_DstMode` / `SBC_DstRescue` in the RTL (commit `494ab5e`), `sbc_read --dstmode`, the simulation gate and the
+  directed case, one 512 KB image (sha256 `502649e2…`, stored as `…-dst018-494ab5e-best-n4096-b128-2026-10-13.*`), two board campaigns
+  (26 + 12 valid windows), this report
+- **Answer to the task's question:** yes, setting 1 turns held aborts into useful migrations, at the b=128 points and growing with n
+  (−5.7, −4.6, −10.7, −15.7, −20.9% at n 512 / 1024 / 2048 / 3072 / 4096), with no extra traffic; nothing at b=64 / b=256 below n = 2048
+- **Where the work differs from the TASK (all on the user's instruction):** the image was built from uncommitted RTL (committed afterwards,
+  all 26 blobs verified equal); the 4-arm chain was stopped at 12 of 32 windows and replaced by a setting-1-only sweep; the corrected
+  `l2_miss_calib` sweep was cancelled and not run (the first run was unusable, F5); I5 fails for setting 2 in simulation (F4), not seen on the board
+- **Not part of 018 (follow-ups, the user's call):** corrected `l2_miss_calib` sweep; `lu_ncb -t` data check with SBC on; n4096 b64 / b256;
+  setting 0 at n4096; bodytrack 1600 on this image (TASK §13 q4, proposal only); push to a remote
+- **State at close:** board free, no run, no tmux job active (idle shells only); old `sbc_read` build unchanged (`8241eb8b…`)
 
 ## User decisions (2026-10-12, answers to §13)
 | # | §13 question | answer |
@@ -272,7 +285,10 @@ arguments, which could have started a default session. It exited at the argument
 `-list` only.
 
 ## Predictions (§10.5)
-—
+Frozen before the first window of each round in the campaigns' `PLAN.md` (first campaign: per point × arm and 7 sweep-level rows;
+second: 9 per-point rows and 7 sweep-level rows, then dated addenda for r2, n4096 b128, its replicate and n3072 b128). Graded in the
+Chain and Results sections: second campaign 8 of 9 per-point bands and 7 of 7 sweep-level right (n2048 b128 wrong, better); r2 3 of 3;
+n4096 b128 4 of 5 (the change was better than predicted); n4096 replicate 5 of 5; n3072 b128 6 of 6.
 
 ## Chain (§11)
 Started 2026-10-13 02:56:17, tmux `dst018`, status `scripts/logs/clean-runs/lu-dstmode-single-core-512k-20261013/chain_status.txt`
