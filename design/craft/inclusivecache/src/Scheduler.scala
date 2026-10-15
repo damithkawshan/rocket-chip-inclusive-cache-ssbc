@@ -165,9 +165,36 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   if (!params.lastLevel)
     params.ccover(mshr_stall_bc && bc_mshr.io.status.valid, "SCHEDULER_BC_INTERLOCK", "BC MSHR interlocked due to pre-emption")
 
+  // 020 C3 (D4b, F1e): a write-back served in place (it works in its partner's row P) must not write the
+  // directory in the cycle a read of row P delivers its result. The slot that issued that read (a row-P slot
+  // choosing its victim) takes the result into `meta` in that cycle, and in the same cycle the merge broadcast
+  // fires - the result then overrides the patch, and the Directory's write bypass covers only writes queued
+  // BEFORE that cycle. Holding the write one cycle (two with dirReg) lets the reader take its snapshot first and
+  // then receive the broadcast. Only write-backs of parked lines are held (physSet =/= homeSet).
+  // Simple form chosen by the user (Q2): the hold. Merging the broadcast into the arriving result is the
+  // alternative, to be revisited if the hold ever shows up in a measurement.
+  val rdPrevV  = RegNext(directory.io.read.valid, false.B)
+  val rdPrevS  = RegNext(directory.io.read.bits.set)
+  val rdPrev2V = if (params.micro.dirReg) RegNext(rdPrevV, false.B) else false.B
+  val rdPrev2S = if (params.micro.dirReg) RegNext(rdPrevS) else 0.U
+  def dirWriteHold(m: MSHR): Bool =
+    if (params.micro.enableSetBalancing)
+      m.io.schedule.bits.dir.valid && m.io.status.bits.isRelease &&
+      m.io.status.bits.physSet =/= m.io.status.bits.homeSet &&
+      ((rdPrevV  && rdPrevS  === m.io.schedule.bits.dir.bits.set) ||
+       (rdPrev2V && rdPrev2S === m.io.schedule.bits.dir.bits.set))
+    else false.B
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    mshrs.zipWithIndex.foreach { case (m, i) =>
+      when (m.io.schedule.valid && dirWriteHold(m)) {
+        printf(p"[SBC][SCHED] DIRW-HOLD mshr=${i} row=${m.io.schedule.bits.dir.bits.set} home=${m.io.status.bits.homeSet}\n")
+      }
+    }
+  }
+
   // Consider scheduling an MSHR only if all the resources it requires are available
   val mshr_request = Cat((mshrs zip mshr_stall).map { case (m, s) =>
-    m.io.schedule.valid && !s &&
+    m.io.schedule.valid && !s && !dirWriteHold(m) &&
       (sourceA.io.req.ready || !m.io.schedule.bits.a.valid) &&
       (sourceB.io.req.ready || !m.io.schedule.bits.b.valid) &&
       (sourceC.io.req.ready || !m.io.schedule.bits.c.valid) &&
@@ -354,6 +381,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val lowerMatches = setMatches & prioFilter
   // If we match an MSHR <= our priority that neither blocks nor nests us, queue to it.
   val queue = lowerMatches.orR && !nestB && !nestC && !blockB && !blockC
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    // 020 C3 coverage: F1d held a write-back back because the same-set slot's search answer was in flight.
+    val blockCSearch = Mux1H(setMatches, mshrs.map(_.io.status.bits.secInFlight)) && request.bits.prio(2)
+    when (request.valid && setMatches.orR && blockCSearch) {
+      printf(p"[SBC][SCHED] BLOCKC-SEARCH set=${request.bits.set} tag=${request.bits.tag}\n")
+    }
+  }
 
   if (!params.lastLevel) {
     params.ccover(request.valid && blockB, "SCHEDULER_BLOCKB", "Interlock B request while resolving set conflict")

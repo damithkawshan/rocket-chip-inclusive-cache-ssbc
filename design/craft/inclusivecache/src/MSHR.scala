@@ -93,6 +93,8 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   // 020 C2: this slot holds a client write-back (C-channel Release / ReleaseData). The Scheduler's merge
   // broadcast comes from any such slot, not only from the reserved one, and keys off this bit.
   val isRelease = Bool()
+  // 020 C3: this slot's partner search has been issued and its answer is not in yet (the window F1d guards).
+  val secInFlight = Bool()
   // SBC Phase 1: migration destination reservation
   val dstValid = Bool()
   val dstSet   = UInt(params.setBits.W)
@@ -514,8 +516,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   io.status.bits.nestB  := meta_valid && w_releaseack && w_rprobeacklast && w_pprobeacklast && !w_grantfirst
   // The above rules ensure we will block and not nest an outer probe while still doing our
   // own inner probes. Thus every probe wakes exactly one MSHR.
-  io.status.bits.blockC := !meta_valid
-  io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
+  // 020 C3 (D4a, F1d): while this slot's partner search is issued and not yet answered, a write-back to this set
+  // must neither nest nor queue. The answer re-points `meta` at the parked entry (a snapshot taken before the
+  // write-back's merge), so a merge that landed in this window would be lost. Hold the write-back for the one or
+  // two cycles the answer takes (bounded internal work, TileLink ch.5 rule 3). `nestC` is lowered in the same
+  // window so the pair stays exclusive (assert below). With SBC off both terms are the stock ones.
+  val searchInFlight = if (params.micro.enableSetBalancing) searching && s_ssearch && !w_ssearch else false.B
+  io.status.bits.secInFlight := searchInFlight
+  io.status.bits.blockC := !meta_valid || searchInFlight
+  io.status.bits.nestC  := meta_valid && !searchInFlight && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
   io.status.bits.isRelease := request.prio(2)   // 020 C2
   // SBC Phase 2.5: hold the migration token across the deferred probe window (see Scheduler's
   // anyMigrating). Deliberately NOT folded into dstValid - no destination is reserved yet, and
