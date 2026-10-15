@@ -963,7 +963,10 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     eviction(S_TRUNK_CD,  c)      // dirty release then reacquire
   }
 
-  when ((!s_writeback && no_wait) && io.schedule.ready) {
+  // 020 C0 (D7): only the real final directory write. A write-back of a parked line takes a schedule step for
+  // its partner search with !s_writeback && no_wait already true, while `meta` is still the home victim.
+  // mig_ready && sec_ready are the other two terms of dir.valid's writeback case; both are true with SBC off.
+  when ((!s_writeback && no_wait && mig_ready && sec_ready) && io.schedule.ready) {
     transition(S_INVALID,  S_BRANCH,   b && m) // only MMIO can bring us to BRANCH state
     transition(S_INVALID,  S_BRANCH_C, b && c) // C state is only possible if there are inner caches
     transition(S_INVALID,  S_TIP,      m)      // MMIO read
@@ -1383,8 +1386,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // looks exactly like a slow run. Turn it into a named assert carrying the whole scoreboard.
     val liveCtr = RegInit(0.U(32.W))
     when (!request_valid || io.schedule.valid) { liveCtr := 0.U } .otherwise { liveCtr := liveCtr + 1.U }
-    assert (liveCtr < 20000.U,
-            cf"SBC(003 2e): MSHR wedged - nothing schedulable. set=${request.set}%d physSet=${physSet}%d " +
+    // 020 C0: the scoreboard is named once so the write-back watchdog below prints the same fields.
+    val scoreboard =
+            cf"set=${request.set}%d physSet=${physSet}%d " +
             cf"inPlace=${inPlace}%d searching=${searching}%d secDefer=${secDefer}%d migDeferred=${migDeferred}%d " +
             cf"migrating=${migrating}%d s_acquire=${s_acquire}%d s_release=${s_release}%d s_rprobe=${s_rprobe}%d " +
             cf"s_pprobe=${s_pprobe}%d s_execute=${s_execute}%d s_writeback=${s_writeback}%d s_sinval=${s_sinval}%d " +
@@ -1395,7 +1399,27 @@ class MSHR(params: InclusiveCacheParameters) extends Module
             cf"metaClients=${meta.clients}%d s_flush=${s_flush}%d s_dread=${s_dread}%d s_copy=${s_copy}%d " +
             cf"s_dmeta=${s_dmeta}%d s_ssearch=${s_ssearch}%d s_probeack=${s_probeack}%d " +
             cf"s_grantack=${s_grantack}%d prio=${request.prio.asUInt}%d ctrl=${request.control}%d " +
-            cf"tag=${request.tag}%x reload=${io.schedule.bits.reload}%d schedV=${io.schedule.valid}%d")
+            cf"tag=${request.tag}%x reload=${io.schedule.bits.reload}%d schedV=${io.schedule.valid}%d"
+    assert (liveCtr < 20000.U, cf"SBC(003 2e): MSHR wedged - nothing schedulable. " + scoreboard)
+
+    // 020 C0 (TileLink ch.5 rule 3): a write-back (C request) must be answered in bounded time. Counts the
+    // cycles one slot has held a write-back, whatever it waits for. The watchdog above fires only when nothing
+    // is schedulable, and only after 20,000 cycles; this one also covers a write-back that is schedulable but
+    // never retires, and names the D1 freeze 16 times sooner. The limit is far above a normal service time;
+    // REPORT 020 records the largest value seen in V2.
+    val wbCtr = RegInit(0.U(16.W))
+    when (!request_valid || !request.prio(2) || io.allocate.valid) { wbCtr := 0.U }
+      .elsewhen (wbCtr =/= ~0.U(16.W)) { wbCtr := wbCtr + 1.U }
+    assert (wbCtr < 4000.U, cf"SBC(020): write-back not answered in 4000 cycles. " + scoreboard)
+    if (params.micro.sbcDebug) {
+      // Largest age at retire, printed only when it grows: the number V2 uses to justify the limit above.
+      val wbMax    = RegInit(0.U(16.W))
+      val wbRetire = io.schedule.ready && no_wait && mig_ready && sec_ready
+      when (wbRetire && request_valid && request.prio(2) && wbCtr > wbMax) {
+        wbMax := wbCtr
+        printf(p"[SBC] WB-AGE-MAX set=${request.set} cycles=${wbCtr} search=${searchedReg} inPlace=${inPlace}\n")
+      }
+    }
   }
 
   when (io.sinkd.valid) {
@@ -1722,7 +1746,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     w_grantack       := true.B
     s_writeback      := true.B
     // SBC: reload now waits for mig_ready, so a migration can never be reset away here.
-    assert (!migrating, "SBC: migration dropped at assess-reset without retiring")
+    // 020 C0 (D7): `migrating` is still set in the cycle a migration retires, and a same-line `repeat`
+    // reload can land in exactly that cycle. mig_ready (not migrating, or dir-write #1 done) is the real test.
+    assert (mig_ready, "SBC: migration dropped at assess-reset without retiring")
     // SBC Phase 1: migration scoreboard defaults (inert unless cleared by a migrate request)
     s_copy           := true.B
     w_copy           := true.B
@@ -1732,7 +1758,9 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     migrating        := false.B
     // 012 C2: W's eviction always finishes before retire (no_wait carries w_dreleaseack), so these are
     // already idle here. The assert says so rather than assuming it, then they are reset anyway.
-    assert (!dstEvict && s_drelease && w_dreleaseack && !dstRelOut,
+    // 020 C0 (D7): `dstEvict` itself is cleared by the retire, so it is still set in a repeat reload's cycle.
+    // What must hold is that W's Release has been sent and acknowledged.
+    assert (s_drelease && w_dreleaseack && !dstRelOut,
             "012: destination write-back dropped at assess-reset")
     dstEvict         := false.B
     s_drelease       := true.B

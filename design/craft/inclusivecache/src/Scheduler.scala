@@ -120,6 +120,23 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.usePlru.foreach { _ := io.usePlru.get }
   }
 
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    // 020 C0 (D5): the routing above matches (probeSet, probeTag) alone, so a slot that is NOT waiting for a
+    // probe answer can match too and collect stray ack bits. Count the answers that reach such a slot. C1 makes
+    // the routing exact (probeAckPending) and turns this into an assert; here it only reports.
+    val ackKey     = mshrs.map(m => sinkC.io.resp.valid &&
+                                    sinkC.io.resp.bits.set === m.io.status.bits.probeSet &&
+                                    sinkC.io.resp.bits.tag === m.io.status.bits.probeTag)
+    val ackWaiting = mshrs.zip(ackKey).map { case (m, k) => k && m.io.status.bits.probeAckPending }
+    val strayCnt   = RegInit(0.U(32.W))
+    val strayNow   = VecInit(ackKey.zip(ackWaiting).map { case (k, w) => k && !w }).asUInt
+    when (strayNow.orR) {
+      strayCnt := strayCnt + 1.U
+      printf(p"[SBC][SCHED] PROBEACK-STRAY n=${strayCnt} reached=${Binary(VecInit(ackKey).asUInt)} " +
+             p"waiting=${Binary(VecInit(ackWaiting).asUInt)} set=${sinkC.io.resp.bits.set} tag=${sinkC.io.resp.bits.tag}\n")
+    }
+  }
+
   // If the pre-emption BC or C MSHR have a matching set, the normal MSHR must be blocked
   val mshr_stall_abc = abc_mshrs.map { m =>
     (bc_mshr.io.status.valid && m.io.status.bits.homeSet === bc_mshr.io.status.bits.homeSet) ||
@@ -446,6 +463,25 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     if (params.micro.sbcDebug) {
       when (cHeadCtr === 200.U) {
         printf(p"[SBC][SCHED] C-HEAD-STALL set=${request.bits.set} alloc=${alloc} queue=${queue}\n")
+      }
+    }
+    // 020 C0 (TileLink ch.5 rule 3i): a write-back must eventually be accepted, whatever refuses it. The
+    // counter above sees only the fence; this one counts every refusal at the head of the C channel. It is
+    // not a replacement: the fence assert names its cause. The limit is far above a normal wait for a free
+    // slot (a memory fetch is ~100s of cycles); V2 reports the largest value seen.
+    val cHeadAnyBlocked = sinkC.io.req.valid && !request.ready
+    val cHeadAnyCtr = RegInit(0.U(16.W))
+    when (!cHeadAnyBlocked) { cHeadAnyCtr := 0.U } .elsewhen (cHeadAnyCtr =/= ~0.U(16.W)) { cHeadAnyCtr := cHeadAnyCtr + 1.U }
+    assert (cHeadAnyCtr < 4000.U,
+            cf"SBC(020): C-channel head refused for 4000 cycles. set=${request.bits.set}%d tag=${request.bits.tag}%x " +
+            cf"alloc=${alloc}%d queue=${queue}%d mshr_free=${mshr_free}%d dstSetConflict=${dstSetConflict}%d " +
+            cf"secSetConflict=${secSetConflict}%d nestC=${nestC}%d blockC=${blockC}%d c_mshr_valid=${c_mshr.io.status.valid}%d " +
+            cf"push_ready=${requests.io.push.ready}%d dirReady=${directory.io.ready}%d")
+    if (params.micro.sbcDebug) {
+      val cHeadAnyMax = RegInit(0.U(16.W))
+      when (!cHeadAnyBlocked && cHeadAnyCtr > cHeadAnyMax) {
+        cHeadAnyMax := cHeadAnyCtr
+        printf(p"[SBC][SCHED] C-HEAD-WAIT-MAX cycles=${cHeadAnyCtr}\n")
       }
     }
   }
