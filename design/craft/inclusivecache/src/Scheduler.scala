@@ -355,7 +355,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val secSetConflict = mshrs.map { m =>
     m.io.status.valid && m.io.status.bits.secValid && m.io.status.bits.secSet === request.bits.set
   }.reduce(_ || _)
-  val allocReady = alloc && !dstSetConflict && !secSetConflict
+  // 020 C4 (D2, F1b): a client write-back passes both fences (TileLink ch.5 rule 3i: it must eventually be
+  // accepted, and a fence can last as long as a memory fetch or another slot's grant). Safe because a
+  // write-back neither evicts nor refills, so it creates no victim-choice hazard against a parked way, and its
+  // line is native to the fenced set (a migration destination is never a source), so it never searches there.
+  // A destination way offered to a migration is never a held line. With SBC off the stock expression.
+  val allocReady = if (params.micro.enableSetBalancing)
+                     alloc && ((!dstSetConflict && !secSetConflict) || request.bits.prio(2))
+                   else alloc && !dstSetConflict && !secSetConflict
   // SBC Phase 2: one-migration-per-bank token — a migration is in flight while any MSHR holds a
   // destination reservation (dstValid).
   // SBC Phase 2.5: the token must also cover the deferred-probe window. A migrant that is waiting on
@@ -496,11 +503,19 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // writeback unit onto that one channel - so a ProbeAck can sit behind it while the migration that
   // raised the fence waits for exactly that ProbeAck. Exempt prio(2) here: it never evicts
   // (MSHR.scala's C branch has no eviction arm and asserts new_meta.hit), so it creates no
-  // victim-selection hazard against the parked way the fence protects. allocReady keeps the full
-  // condition, so a prio(2) request still cannot allocate a fresh MSHR onto a fenced set.
+  // victim-selection hazard against the parked way the fence protects.
+  // 020 C4: allocReady now lets a prio(2) request through both fences as well (see its definition), so a
+  // write-back can also take a fresh slot on a fenced set instead of waiting at the head of the C channel.
   request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) &&
                    !(dstSetConflict && !request.bits.prio(2))
   val alloc_uses_directory = request.valid && request_alloc_cases
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    // 020 C4 coverage: a write-back took a fresh slot on a set a migration or a search had fenced.
+    when (request.valid && request.bits.prio(2) && alloc && (dstSetConflict || secSetConflict) &&
+          mshr_free && !mshr_uses_directory_assuming_no_bypass) {
+      printf(p"[SBC][SCHED] C-FENCE-PASS set=${request.bits.set} dst=${dstSetConflict} sec=${secSetConflict}\n")
+    }
+  }
 
   // 005 commit 1: L2_AccessA (cache-terminology.md) - an inner-A request accepted this cycle.
   // Outside the enableSetBalancing block on purpose (unlike the SBC advice below, which is inside it) so

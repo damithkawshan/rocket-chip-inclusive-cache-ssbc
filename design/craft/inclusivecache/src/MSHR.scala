@@ -254,6 +254,14 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     // a source, so the MSHR holding the partner row never searches and never waits on us; and since 2c
     // removed the partner term from dstSetConflict, it can no longer be blocked at request.ready by us
     // either. The wait has strictly fewer edges than it did.
+    //
+    // 020 C4: that argument covers waits INSIDE the L2 only. A client's write-back of a parked line also
+    // searches this row, and the slot working here can be the one the write-back pre-empted (frozen by
+    // mshr_stall_abc) or one waiting for a probe answer that the releasing core will not send before it gets
+    // its ReleaseAck - which waits for this search. So a write-back (prio(2)) does NOT wait: the wait is for A
+    // requests only, whose line may be clean and unheld and so could be evicted silently during the search.
+    // A write-back's line is held by the releasing core, so it cannot be evicted before the acknowledgement,
+    // and the search sees it even when a slot has locked its way (F1f, Directory secHits mask).
     val partnerBusy = Input(Bool())
   })
 
@@ -697,7 +705,15 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // evictable way we can silently overwrite (no writeback, no probe). Falls back if neither exists.
   // SBC Phase 3: the dread lane carries two reads of the partner set. The search asks "is my line
   // parked here?"; the migrate probe asks "where can I park my victim?". The search goes first.
-  val doSearch = searching && !s_ssearch && !io.partnerBusy
+  // 020 C4 (D1, F1a): a write-back's search never waits for the partner row (TileLink ch.5 rule 3: a write-back
+  // must be answered, and may wait only on bounded internal work, never on a probe answer or another slot's
+  // grant). The wait stays for A requests; see the note at `partnerBusy` in the IO bundle.
+  val doSearch = searching && !s_ssearch && (!io.partnerBusy || request.prio(2))
+  if (params.micro.sbcDebug) {
+    when (io.schedule.ready && doSearch && request.prio(2) && io.partnerBusy) {
+      printf(p"[SBC] C-SEARCH-BUSY set=${request.set} partner=${pairSetReg} tag=${request.tag}\n")
+    }
+  }
   val doDread  = migrating && !s_dread && !searching
   io.schedule.bits.dread.valid         := doSearch || doDread
   io.schedule.bits.dread.bits.set      := Mux(doSearch, pairSetReg, migDstSet)
