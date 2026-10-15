@@ -388,6 +388,12 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val lowerMatches = setMatches & prioFilter
   // If we match an MSHR <= our priority that neither blocks nor nests us, queue to it.
   val queue = lowerMatches.orR && !nestB && !nestC && !blockB && !blockC
+  // 020 C5 (F5): the destination fence refuses a request that is not a write-back (request.ready below). Every path that
+  // TAKES the request - the bypass into a reloading slot, the push into the queue - must apply the same refusal. Otherwise a
+  // refused Acquire is served anyway (bypass) and accepted again later: one Acquire, two Grants. The TLMonitor "ready check"
+  // caught a Grant for an Acquire that had not been accepted. Reachable since C4 lets a write-back hold a slot on a fenced set,
+  // so requests can now queue behind a slot on that set. With SBC off dstSetConflict is false, so this is false (stock).
+  val fenceRefuse = dstSetConflict && !request.bits.prio(2)
   if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
     // 020 C3 coverage: F1d held a write-back back because the same-set slot's search answer was in flight.
     val blockCSearch = Mux1H(setMatches, mshrs.map(_.io.status.bits.secInFlight)) && request.bits.prio(2)
@@ -422,7 +428,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val bypassMatches = (mshr_selectOH & lowerMatches1).orR &&
                       Mux(c_pop || request.bits.prio(2), !c_pop, Mux(b_pop || request.bits.prio(1), !b_pop, !a_pop))
   val may_pop = a_pop || b_pop || c_pop
-  val bypass = request.valid && queue && bypassMatches
+  val bypass = request.valid && queue && bypassMatches && !fenceRefuse   // 020 C5
   val will_reload = schedule.reload && (may_pop || bypass)
   val will_pop = schedule.reload && may_pop && !bypass
 
@@ -440,7 +446,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     val bypassMatches = lowerMatches1(i) &&
                         Mux(c_pop || request.bits.prio(2), !c_pop, Mux(b_pop || request.bits.prio(1), !b_pop, !a_pop))
     val may_pop = a_pop || b_pop || c_pop
-    val bypass = request.valid && queue && bypassMatches
+    val bypass = request.valid && queue && bypassMatches && !fenceRefuse   // 020 C5
     val will_reload = m.io.schedule.bits.reload && (may_pop || bypass)
     m.io.allocate.bits.viewAsSupertype(chiselTypeOf(requests.io.data)) := Mux(bypass, WireInit(new QueuedRequest(params), init = request.bits), requests.io.data)
     m.io.allocate.bits.set := m.io.status.bits.homeSet   // SBC (003): FullRequest.set stays the ADDRESS
@@ -507,7 +513,17 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // 020 C4: allocReady now lets a prio(2) request through both fences as well (see its definition), so a
   // write-back can also take a fresh slot on a fenced set instead of waiting at the head of the C channel.
   request.ready := (request_alloc_cases || (queue && (bypassQueue || requests.io.push.ready))) &&
-                   !(dstSetConflict && !request.bits.prio(2))
+                   !fenceRefuse   // = !(dstSetConflict && !request.bits.prio(2)), named once (020 C5)
+  if (params.micro.enableSetBalancing) {
+    // 020 C5: a request is taken (bypassed into a slot or pushed into the queue) only in a cycle it is accepted.
+    assert (!(request.valid && (bypass || requests.io.push.valid)) || request.ready,
+            "SBC(020 C5): a request was bypassed or queued in a cycle it was not accepted")
+    if (params.micro.sbcDebug) {
+      when (request.valid && queue && fenceRefuse) {
+        printf(p"[SBC][SCHED] FENCE-HOLD-QUEUE set=${request.bits.set} tag=${request.bits.tag} prio=${request.bits.prio.asUInt}\n")
+      }
+    }
+  }
   val alloc_uses_directory = request.valid && request_alloc_cases
   if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
     // 020 C4 coverage: a write-back took a fresh slot on a set a migration or a search had fenced.
@@ -638,7 +654,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   }
 
   // Enqueue the request if not bypassed directly into an MSHR
-  requests.io.push.valid := request.valid && queue && !bypassQueue
+  requests.io.push.valid := request.valid && queue && !bypassQueue && !fenceRefuse   // 020 C5
   requests.io.push.bits.data  := request.bits
   requests.io.push.bits.index := Mux1H(
     request.bits.prio, Seq(
