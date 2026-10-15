@@ -64,6 +64,9 @@ class ScheduleRequest(params: InclusiveCacheParameters) extends InclusiveCacheBu
   val copy = Valid(new SetCopyRequest(params))
   // SBC Phase 1: 2nd directory-read lane — probe dstSet (preferInvalid) for a free way
   val dread = Valid(new DirectoryRead(params))
+  // 020 C2 (F1f): this dread is a write-back's partner search. It must see a way another slot has locked (a write-back
+  // is a MERGE into that line, TileLink 1.8.1 s9.2), so the Scheduler leaves the slot locks out of its way mask.
+  val dreadMerge = Bool()
   // 008: this dir-write installs a migrated guest in D (mig_dir1) - a PLRU touch, so it enters as MRU.
   val dirInstall = if (params.micro.plruReplacement && params.micro.enableSetBalancing) Some(Bool()) else None
   val reload = Bool() // get next request via allocate (if any)
@@ -87,6 +90,9 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val nestB  = Bool()
   val blockC = Bool()
   val nestC  = Bool()
+  // 020 C2: this slot holds a client write-back (C-channel Release / ReleaseData). The Scheduler's merge
+  // broadcast comes from any such slot, not only from the reserved one, and keys off this bit.
+  val isRelease = Bool()
   // SBC Phase 1: migration destination reservation
   val dstValid = Bool()
   val dstSet   = UInt(params.setBits.W)
@@ -441,14 +447,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   val probes_toN = Reg(UInt(params.clientBits.W))
   val probes_noT = Reg(Bool())
 
-  // When a nested transaction completes, update our meta data
-  when (meta_valid && meta.state =/= INVALID &&
-        io.nestedwb.homeSet === request.set && io.nestedwb.tag === meta.tag) {
-    when (io.nestedwb.b_clr_dirty) { meta.dirty := false.B }
-    when (io.nestedwb.c_set_dirty) { meta.dirty := true.B }
-    when (io.nestedwb.b_toB) { meta.state := BRANCH }
-    when (io.nestedwb.b_toN) { meta.hit := false.B }
-  }
+  // (The nested-writeback consumer is below, after `lineHome`: it matches on the line's home set.)
 
   // SBC Phase 3 (003): the SRAM row this MSHR is working in. Stage 2e is what finally makes it differ
   // from the home set. Scala `if`, not a Chisel Mux, so with SBC off this is literally `request.set`
@@ -463,6 +462,30 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     if (params.micro.enableSetBalancing)
       Mux(meta.displaced && pairValidReg && !pairIsSrcReg, pairSetReg, request.set)
     else request.set
+
+  // When a nested transaction completes, update our meta data.
+  // 020 C2 (D3, TileLink O2/O6): the broadcast names a LINE (home set + tag), so match it against the home set of
+  // the line in `meta`, not against the row this slot works in. With SBC off lineHome is request.set (stock).
+  // The three cases (see lineHome above):
+  //   a row-S slot serving X in place from its partner row P  : displaced, we are the source -> lineHome = S
+  //   a row-P slot whose chosen victim is the parked line X   : displaced, we are the dest   -> lineHome = S
+  //   a row-P slot holding one of P's own lines               : not displaced                -> lineHome = P
+  // Before, the second slot never saw a write-back of X, and would write X back to memory as clean.
+  val nestedwbMatch = meta_valid && meta.state =/= INVALID &&
+                      io.nestedwb.homeSet === lineHome && io.nestedwb.tag === meta.tag
+  when (nestedwbMatch) {
+    when (io.nestedwb.b_clr_dirty) { meta.dirty := false.B }
+    when (io.nestedwb.c_set_dirty) { meta.dirty := true.B }
+    when (io.nestedwb.b_toB) { meta.state := BRANCH }
+    when (io.nestedwb.b_toN) { meta.hit := false.B }
+  }
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    // Coverage: a merge that reached a slot whose own set is not the line's home set (the D3 case).
+    when (nestedwbMatch && io.nestedwb.c_set_dirty && io.nestedwb.homeSet =/= request.set) {
+      printf(p"[SBC] NESTWB-XROW slot-set=${request.set} phys=${physSet} home=${io.nestedwb.homeSet} tag=${io.nestedwb.tag} " +
+             p"inPlace=${inPlace} displaced=${meta.displaced} prio=${request.prio.asUInt}\n")
+    }
+  }
   // SBC (003 Stage 9, P7): read the pairing LIVE on the cycle the register is being written, the
   // same treatment the 002 C1 fix used. `pairSetReg` updates under `io.directory.valid`, so on a
   // directory result the register still holds the PREVIOUS transaction's partner.
@@ -493,6 +516,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // own inner probes. Thus every probe wakes exactly one MSHR.
   io.status.bits.blockC := !meta_valid
   io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
+  io.status.bits.isRelease := request.prio(2)   // 020 C2
   // SBC Phase 2.5: hold the migration token across the deferred probe window (see Scheduler's
   // anyMigrating). Deliberately NOT folded into dstValid - no destination is reserved yet, and
   // fencing the destination set before the probe completes would add a hold-and-wait edge
@@ -679,6 +703,8 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // The way-lock mask is computed by the Scheduler for whichever row the read port actually takes,
   // so this lane does not carry one.
   io.schedule.bits.dread.bits.busyWays        := 0.U
+  // 020 C2 (F1f): a write-back's search merges into the line, so it must see a way another slot has locked.
+  io.schedule.bits.dreadMerge                 := doSearch && request.prio(2)
   if (params.micro.enableSetBalancing) {
     // A set pairing with itself would make the search read the set it is already missing in.
     assert (!doSearch || pairSetReg =/= physSet, "SBC: a set is its own partner")

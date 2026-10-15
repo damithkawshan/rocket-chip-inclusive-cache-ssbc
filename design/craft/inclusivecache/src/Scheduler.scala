@@ -253,12 +253,23 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // Forward meta-data changes from nested transaction completion
   val select_c  = mshr_selectOH(params.mshrs-1)
   val select_bc = mshr_selectOH(params.mshrs-2)
-  nestedwb.homeSet := Mux(select_c, c_mshr.io.status.bits.homeSet, bc_mshr.io.status.bits.homeSet)
-  nestedwb.tag   := Mux(select_c, c_mshr.io.status.bits.tag, bc_mshr.io.status.bits.tag)
   nestedwb.b_toN       := select_bc && bc_mshr.io.schedule.bits.dir.valid && bc_mshr.io.schedule.bits.dir.bits.data.state === MetaData.INVALID
   nestedwb.b_toB       := select_bc && bc_mshr.io.schedule.bits.dir.valid && bc_mshr.io.schedule.bits.dir.bits.data.state === MetaData.BRANCH
   nestedwb.b_clr_dirty := select_bc && bc_mshr.io.schedule.bits.dir.valid
-  nestedwb.c_set_dirty := select_c  &&  c_mshr.io.schedule.bits.dir.valid && c_mshr.io.schedule.bits.dir.bits.data.dirty
+  if (params.micro.enableSetBalancing) {
+    // 020 C2 (D3, TileLink O2/O6): the merge comes from ANY slot that finishes a write-back, not only from the
+    // reserved one. A write-back of a parked line can run in a normal slot (no same-set slot, so it never nests),
+    // while a slot in the PARTNER row is evicting that same line. Both are named by the line's home set and tag.
+    // The b_* fields above are unchanged. Only one slot is selected per cycle, so the two sources never overlap.
+    val selIsRelease = Mux1H(mshr_selectOH, mshrs.map(_.io.status.bits.isRelease))
+    nestedwb.homeSet := Mux(select_bc, bc_mshr.io.status.bits.homeSet, scheduleHomeSet)
+    nestedwb.tag     := Mux(select_bc, bc_mshr.io.status.bits.tag, scheduleTag)
+    nestedwb.c_set_dirty := selIsRelease && schedule.dir.valid && schedule.dir.bits.data.dirty
+  } else {
+    nestedwb.homeSet := Mux(select_c, c_mshr.io.status.bits.homeSet, bc_mshr.io.status.bits.homeSet)
+    nestedwb.tag   := Mux(select_c, c_mshr.io.status.bits.tag, bc_mshr.io.status.bits.tag)
+    nestedwb.c_set_dirty := select_c  &&  c_mshr.io.schedule.bits.dir.valid && c_mshr.io.schedule.bits.dir.bits.data.dirty
+  }
 
   // Pick highest priority request
   val request = Wire(Decoupled(new FullRequest(params)))
@@ -541,14 +552,36 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   // only ever claimed when no MSHR owns it (`dstOfferOwned`), and strict 1:1 pinning gives a row one
   // partner source. So a row sees at most its owner's slot plus one borrower - which is what keeps
   // `assert(freeWays.orR)` provable rather than hopeful. ways >= 4 leaves ample room either way.
-  directory.io.read.bits.busyWays := mshrs.map { m =>
+  val lockMask = mshrs.map { m =>
     Mux(m.io.status.valid && m.io.status.bits.lockValid &&
         m.io.status.bits.lockSet === directory.io.read.bits.set,
-        UIntToOH(m.io.status.bits.lockWay, params.cache.ways), 0.U) |
+        UIntToOH(m.io.status.bits.lockWay, params.cache.ways), 0.U)
+  }.reduce(_ | _)
+  val lock2Mask = mshrs.map { m =>
     Mux(m.io.status.valid && m.io.status.bits.lock2Valid &&
         m.io.status.bits.lock2Set === directory.io.read.bits.set,
         UIntToOH(m.io.status.bits.lock2Way, params.cache.ways), 0.U)
   }.reduce(_ | _)
+  // 020 C2 (D8, F1f): a write-back's partner search must SEE a way another slot has locked. The slot locks steer
+  // victim choice and protect a way that is being served or evicted; a write-back is a MERGE into the line
+  // (TileLink 1.8.1 s9.2), so a miss here would send its data to the wrong way. Two cases, both reproduced by
+  // reading: the same-set slot is serving the line in place (Form B), or a row-P slot has chosen it as its victim
+  // (D3). Why seeing it is safe: the releasing core holds the line, so the evictor cannot read it out before the
+  // core answers its probe, and Rocket answers only after the ReleaseAck. The migration destination lock (lock2)
+  // stays: a held line is never offered as a destination way, so a write-back never needs it.
+  val mergeRead = mshr_uses_directory_for_dread && schedule.dreadMerge
+  directory.io.read.bits.busyWays :=
+    (if (params.micro.enableSetBalancing) Mux(mergeRead, lock2Mask, lockMask | lock2Mask) else (lockMask | lock2Mask))
+  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
+    // Coverage: the search found a line only because the slot locks were left out of its mask. Aligned to the
+    // result with the same register chain as directoryFanout.
+    val mergeNow  = params.dirReg(RegNext(mergeRead, false.B))
+    val mergeHeld = params.dirReg(RegNext(Mux(mergeRead, lockMask, 0.U)))
+    val res       = directory.io.result
+    when (mergeNow && res.valid && res.bits.secondaryHit && mergeHeld(res.bits.secondaryWay)) {
+      printf(p"[SBC][SCHED] C-SEARCH-LOCKED way=${res.bits.secondaryWay} held=${Binary(mergeHeld)} tag=${res.bits.secondaryEntry.tag}\n")
+    }
+  }
   if (params.micro.sbcDebug) {
     when (mshr_uses_directory_for_dread && mshr_selectOH.orR) {
       printf(p"[SBC][SCHED] DREAD-SCHED dstSet=${schedule.dread.bits.set} mshr=${mshr_select}\n")
