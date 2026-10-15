@@ -104,9 +104,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // SBC (003): route the ProbeAck by the probe key, not by the address set. An MSHR evicting a
     // displaced victim probes at a set that is another MSHR's home set, so set alone aliases - the
     // tag term is what keeps the match unique.
+    // 020 C1 (D5, TileLink O3): with SBC on, an answer goes only to a slot that is WAITING for one. A slot with
+    // no probe out still advertises (request.set, request.tag), which is also the (lineHome, meta.tag) key of a
+    // row-P slot that is probing that very line, so two slots matched and the idle one collected stray ack bits.
+    // With SBC off the term is the constant true, so the stock expression is unchanged.
     m.io.sinkc.valid := sinkC.io.resp.valid &&
                         sinkC.io.resp.bits.set === m.io.status.bits.probeSet &&
-                        sinkC.io.resp.bits.tag === m.io.status.bits.probeTag
+                        sinkC.io.resp.bits.tag === m.io.status.bits.probeTag &&
+                        (if (params.micro.enableSetBalancing) m.io.status.bits.probeAckPending else true.B)
     m.io.sinkd.valid := sinkD.io.resp.valid && sinkD.io.resp.bits.source === i.U
     m.io.sinke.valid := sinkE.io.resp.valid && sinkE.io.resp.bits.sink   === i.U
     m.io.sinkc.bits := sinkC.io.resp.bits
@@ -120,20 +125,26 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.usePlru.foreach { _ := io.usePlru.get }
   }
 
-  if (params.micro.enableSetBalancing && params.micro.sbcDebug) {
-    // 020 C0 (D5): the routing above matches (probeSet, probeTag) alone, so a slot that is NOT waiting for a
-    // probe answer can match too and collect stray ack bits. Count the answers that reach such a slot. C1 makes
-    // the routing exact (probeAckPending) and turns this into an assert; here it only reports.
+  if (params.micro.enableSetBalancing) {
+    // 020 C1 (D5, O3): the routing above delivers a probe answer only to a waiting slot, so every answer must
+    // reach exactly one slot. This is the net that says so. (C0 only counted the answers that reached an idle slot.)
     val ackKey     = mshrs.map(m => sinkC.io.resp.valid &&
                                     sinkC.io.resp.bits.set === m.io.status.bits.probeSet &&
                                     sinkC.io.resp.bits.tag === m.io.status.bits.probeTag)
     val ackWaiting = mshrs.zip(ackKey).map { case (m, k) => k && m.io.status.bits.probeAckPending }
-    val strayCnt   = RegInit(0.U(32.W))
-    val strayNow   = VecInit(ackKey.zip(ackWaiting).map { case (k, w) => k && !w }).asUInt
-    when (strayNow.orR) {
-      strayCnt := strayCnt + 1.U
-      printf(p"[SBC][SCHED] PROBEACK-STRAY n=${strayCnt} reached=${Binary(VecInit(ackKey).asUInt)} " +
-             p"waiting=${Binary(VecInit(ackWaiting).asUInt)} set=${sinkC.io.resp.bits.set} tag=${sinkC.io.resp.bits.tag}\n")
+    assert (!sinkC.io.resp.valid || PopCount(VecInit(ackWaiting).asUInt) === 1.U,
+            cf"SBC(020 O3): a probe answer reached ${PopCount(VecInit(ackWaiting).asUInt)}%d waiting slots, not one. " +
+            cf"set=${sinkC.io.resp.bits.set}%d tag=${sinkC.io.resp.bits.tag}%x")
+    if (params.micro.sbcDebug) {
+      // Informational: an answer whose key also matches a slot that is NOT waiting - the D5 situation that C0
+      // counted as PROBEACK-STRAY. It is filtered out now, so this tag only shows that the case happens.
+      val aliasCnt = RegInit(0.U(32.W))
+      val aliasNow = VecInit(ackKey.zip(ackWaiting).map { case (k, w) => k && !w }).asUInt
+      when (aliasNow.orR) {
+        aliasCnt := aliasCnt + 1.U
+        printf(p"[SBC][SCHED] PROBEACK-ALIAS n=${aliasCnt} keyMatch=${Binary(VecInit(ackKey).asUInt)} " +
+               p"waiting=${Binary(VecInit(ackWaiting).asUInt)} set=${sinkC.io.resp.bits.set} tag=${sinkC.io.resp.bits.tag}\n")
+      }
     }
   }
 
