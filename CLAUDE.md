@@ -212,7 +212,8 @@ live in `ai-documents/`.
 >   `.config.diff`). A stock-core variant (`FPGAStockRocket…`, `WithNHugeCores`) was aborted the same day
 > - ⭐ **Task 020 images (RTL `e2a71b3`, tag `sbc-020-dualcore-tilelink-merge-512k-2026-10-16`), built 2026-10-16 with `build_bitstream.sh`:** **dual core** `32ebbd03…eab5`
 >   (`FPGADualRocketVCU118L132K512K8WL2ConfigSBCPLRUDst`, +0.425 ns) and single core `0f02bc92…341d` (`…SingleRocket…Dst`, +0.646 ns).
->   Tags `dual-512KB-8way-L1-32K8W-tl020c5-e2a71b3` / `512KB-8way-L1-32K8W-tl020c5-e2a71b3`. Both still carry F3. The dual image is the
+>   Archived in `fpga/bitstream_storage/` as `<config>-dual-512KB-8way-L1-32K8W-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*` and `<config>-512KB-8way-L1-32K8W-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*`
+>   with a `.NOTE.txt` each (renamed 2026-10-16 from `…-tl020c5-e2a71b3-2026-10-16.*`, the name in older logs). Both still carry F3. The dual image is the
 >   first two-core image that does not freeze with SBC on
 > - ⭐ **512 KB 8-way single core, 32 kB 8-way L1, + `SBC_DstMode` — `502649e2…`, built 2026-10-13** (task 018). RTL commit `494ab5e` (parent
 >   `b46a8ac`; all 26 `.scala` blobs match the build provenance), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`. Stored as `…-dst018-494ab5e-best-n4096-b128-2026-10-13.*`

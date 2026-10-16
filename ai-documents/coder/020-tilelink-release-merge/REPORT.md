@@ -54,7 +54,7 @@ Paths: `$CY = /home/damith/Research/repos/chipyard_performance_eval/chipyard`, `
 | Single-core performance | **Unchanged** on the af36949 image (V7: −9.9% vs task 018's −10.7% / −9.7%) |
 | F5 (020 bug, found by V2) | **Fixed in C5**, the failing run passes on C5 |
 | F3 (older bug, not 020) | Open. Candidate fix on branch `sbc-021-copy-refill-gate-candidate` (`021b2d9`), passes the failing run, costs ~18 L2 cycles per migration. **User decision** |
-| C5 images | **Built:** dual `32ebbd03…` (+0.425 ns), single `0f02bc92…` (+0.646 ns), no LUTLP, tag `…-tl020c5-e2a71b3-2026-10-16` |
+| C5 images | **Built:** dual `32ebbd03…` (+0.425 ns), single `0f02bc92…` (+0.646 ns), no LUTLP; archived as `…-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*` (was `…-tl020c5-e2a71b3-2026-10-16.*`) |
 | Board checks on C5 | **All done and passed:** A hunt 4/4 OK; B LU data check PASS (diff = host reference); C dual LU −13.25%, replicate −2.87% (mean −8.2%, = C4); D single LU −9.49% (V7 pass) |
 | V2 on C5 | **Done: 65/66 PASS**, the 1 FAIL = F3 (same cycle as C4); 52 runs identical to C4 |
 | V4b on C5 | **Done: 4/4 PASS**, 0 asserts, cycles identical to V2 |
@@ -66,7 +66,7 @@ Paths: `$CY = /home/damith/Research/repos/chipyard_performance_eval/chipyard`, `
 
 | What | How to check | Notes |
 |---|---|---|
-| FPGA builds from C5, tmux `t020_fpga_c5` | `grep -a "^######## build" $NEW/gates/fpga_builds_c5.log`; `ls $CY/fpga/bitstream_storage \| grep tl020c5` | dual started 10:09 (~60 min), then single (~45 min). Check timing (`<image>.reports/timing.txt`, WNS) and `grep -c LUTLP <image>.reports/drc.txt` = 0, as for the af36949 images |
+| FPGA builds from C5, tmux `t020_fpga_c5` | `grep -a "^######## build" $NEW/gates/fpga_builds_c5.log`; `ls $CY/fpga/bitstream_storage \| grep sbc-020-dualcore` (was `tl020c5`) | dual started 10:09 (~60 min), then single (~45 min). Check timing (`<image>.reports/timing.txt`, WNS) and `grep -c LUTLP <image>.reports/drc.txt` = 0, as for the af36949 images |
 | Board chain C5, tmux `board020c5`, script `$NEW/tools/board_chain_c5.sh` | `grep -a "^######## " $NEW/gates/board_chain_c5.log` | A hunt boot (console `$NEW/board/console_c5_boot1.txt`, summary in `$NEW/board/runs/`), B LU data check (`$NEW/board/lucheck_c5/console.txt`), C dual LU off/on (`$NEW/board/lu/c5/RESULTS.md`), D single LU off/on = V7 on C5 (`$NEW/board/lu1/c5/RESULTS.md`). About 4–5 h |
 | (finished 16:15) Dual LU replicate on C5, tmux `board020c5r2`, script `$NEW/tools/board_chain_c5_r2.sh` | `grep -a "^######## " $NEW/gates/board_chain_c5r2.log`; `$NEW/board/lu/c5r2/chain_status.txt` | waits for `BOARD-CHAIN-C5-EXIT`, then dual LU off + on, fresh boot each (~75 min). Why: C5 pair −13.25% vs C4 −7.7/−8.1%, and B (same image) 8.6% above C's on window |
 | Post-V2 chain, tmux `t020_post`, script `$NEW/tools/post_v2_chain_c5.sh` (started 10:27) | `grep -a "^######## " $NEW/gates/post_v2_chain_c5.log` | waits for V2 c5 to finish, then V4b (4 freeze programs, `$NEW/sim/v4b_c5_*.log`), V3 (`$NEW/sim/v3_c5_*.{log,tags}`), then waits for `BOTH-BUILDS-EXIT` and runs V4 = `run_v4_gates_c5.sh` (labels `013-020v4c5`, `020-v4c5-g*`; driver `$NEW/gates/v4_c5_driver.log`; compare `python3 $NEW/tools/v4_compare.py v4c5`) |
@@ -494,9 +494,11 @@ did not return (Vivado 2021.1, the version the script uses). Files: `<config>-<t
 `.config.diff`, `.reports/` (clocks, datasheet, drc, fanout, io, timing, utilization). Tags: `dual-512KB-8way-L1-32K8W-tl020-af36949`
 and `512KB-8way-L1-32K8W-tl020-af36949`.
 
-**C5 images (RTL `e2a71b3`, the final tree; same script and rules; driver log `$NEW/gates/fpga_builds_c5.log`).** Tags
-`dual-512KB-8way-L1-32K8W-tl020c5-e2a71b3` and `512KB-8way-L1-32K8W-tl020c5-e2a71b3`. These replace the af36949 images for every
-board check from now on.
+**C5 images (RTL `e2a71b3`, the final tree; same script and rules; driver log `$NEW/gates/fpga_builds_c5.log`).** Built with the tags
+`dual-512KB-8way-L1-32K8W-tl020c5-e2a71b3` and `512KB-8way-L1-32K8W-tl020c5-e2a71b3`; **renamed 2026-10-16 ~17:30** (user request) so
+the archive carries the git tag: `<config>-dual-512KB-8way-L1-32K8W-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*` and `<config>-512KB-8way-L1-32K8W-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*`, each with a
+`.NOTE.txt` (identity, results, old name). Logs written before the rename name the old path; the sha256 is the identity. These replace
+the af36949 images for every board check from now on.
 
 | Image | sha256 | Built | Wall time | Worst setup slack | Hold slack | Loop (LUTLP-1) |
 |---|---|---|--:|--:|--:|---|
@@ -835,4 +837,5 @@ carries F3, so data checks there remain worthwhile.
     `lu/` (dual: round 1, `r2/`, `c5/`), `lu1/` (single V7: round 1, `c5/`), `lucheck/` (failed start), `lucheck_c5/`
 - Single-core gate runs: `chipyard/generators/rocket-chip-inclusive-cache/sw/verilator_logs/*_{013-020base,020-base-g*,013-020fix,020-fix-g*,020-c<N>-g3}`
 - Harness logs of board stages: `chipyard/scripts/logs/lu_session_<stamp>.log` (each stage folder's `stage_check.txt` names its own)
-- FPGA: `chipyard/fpga/bitstream_storage/*-tl020-af36949-2026-10-16.*` and `*-tl020c5-e2a71b3-2026-10-16.*`; build logs `chipyard/fpga/build-logs/`
+- FPGA: `chipyard/fpga/bitstream_storage/*-tl020-af36949-2026-10-16.*` (C4 images) and `*-sbc-020-dualcore-tilelink-merge-512k-2026-10-16.*` (C5 images, with `.NOTE.txt`; named
+  `*-tl020c5-e2a71b3-2026-10-16.*` until 2026-10-16 ~17:30, the name in every log before then); build logs `chipyard/fpga/build-logs/`
