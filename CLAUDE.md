@@ -13,11 +13,25 @@ It is vendored as a Chipyard generator at
 This fork implements the **Set-Balancing Cache (SBC)** — a PhD research project. The design docs
 live in `ai-documents/`.
 
-## Current status — OPTIMIZATION PHASE (updated 2026-10-15)
+## Current status — OPTIMIZATION PHASE (updated 2026-10-16)
 
 > **▶ START HERE.** Branch **`sbc-013-sat-counter`** (task 018 merged into it 2026-10-15). The build phases and the destination-side tasks are done.
 > **The question is no longer "is SBC correct" or "can a migration find a slot" — both are settled. It is
 > "when does set balancing pay, and can the hardware tell".**
+>
+> **⭐ Task 020 — CLOSED 2026-10-16: the dual-core freeze is fixed** ([TASK](ai-documents/coder/020-tilelink-release-merge/TASK.md) ·
+> [REPORT](ai-documents/coder/020-tilelink-release-merge/REPORT.md) "Summary"). On two cores with SBC on, a core's write-back of a parked line
+> waited for the partner row while the slot holding that row waited for the write-back: the board froze in seconds (task 019). SBC now obeys
+> TileLink's write-back rules: a write-back is always accepted, never waits for the partner row, and is merged into every slot that holds the
+> line (bugs D1–D8). No SBC decision changed. Branch **`sbc-020-tilelink-merge`**, RTL **`e2a71b3`** (C0–C5), tag **`sbc-020-dualcore-tilelink-merge-512k-2026-10-16`**.
+> - Images (512 KB 8-way L2, 32 KB 8-way L1): **dual core `32ebbd03…`**, single core `0f02bc92…`, both timing met, no LUTLP loop
+> - Board: the freeze patterns 4/4 OK; **LU's output with SBC on equals the host reference** (first data check); single-core LU n2048 b128
+>   **−9.5%** memory accesses (018: −10.7 / −9.7%); **two-thread LU n2048 b128 −8.0% on average**, but one off/on pair ranges −3% to −13%:
+>   use 3+ windows per arm on two cores (cause untested)
+> - Simulation: two-core matrix 65/66, single-core regression 24/24 identical to `494ab5e` (020 changes nothing on one core, SBC on or off)
+> - ⚠️ **OPEN: F3** (older than 020, also in the 018/019 images): a migration copy can read its source way after the memory refill overwrote it,
+>   silently corrupting one parked line. Seen twice in simulation, once with setting 1. Candidate fix `021b2d9` (~18 cycles per migration).
+>   **Its own task, not yet filed (user decision).**
 >
 > **⭐ Task 018 — CLOSED 2026-10-15** ([TASK](ai-documents/coder/018-dst-dirty-ways/TASK.md) ·
 > [REPORT](ai-documents/coder/018-dst-dirty-ways/REPORT.md) "Summary"). A migration may now overwrite a **dirty way that no L1 holds**: runtime
@@ -196,6 +210,10 @@ live in `ai-documents/`.
 > - **512 KB 8-way single core, 32 kB 8-way L1 — `37923e6b…82d3ee`, built 2026-10-12** (task 017's image). C3 RTL: this repo at
 >   `ca7508e`, `design/` identical to `fed7227`. The chipyard config was committed 2026-10-15 (chipyard `6f2cd723`; the archive also carries a
 >   `.config.diff`). A stock-core variant (`FPGAStockRocket…`, `WithNHugeCores`) was aborted the same day
+> - ⭐ **Task 020 images (RTL `e2a71b3`, tag `sbc-020-dualcore-tilelink-merge-512k-2026-10-16`), built 2026-10-16 with `build_bitstream.sh`:** **dual core** `32ebbd03…eab5`
+>   (`FPGADualRocketVCU118L132K512K8WL2ConfigSBCPLRUDst`, +0.425 ns) and single core `0f02bc92…341d` (`…SingleRocket…Dst`, +0.646 ns).
+>   Tags `dual-512KB-8way-L1-32K8W-tl020c5-e2a71b3` / `512KB-8way-L1-32K8W-tl020c5-e2a71b3`. Both still carry F3. The dual image is the
+>   first two-core image that does not freeze with SBC on
 > - ⭐ **512 KB 8-way single core, 32 kB 8-way L1, + `SBC_DstMode` — `502649e2…`, built 2026-10-13** (task 018). RTL commit `494ab5e` (parent
 >   `b46a8ac`; all 26 `.scala` blobs match the build provenance), tag `sbc-018-dstmode-512k-n4096-b128-best-2026-10-15`. Stored as `…-dst018-494ab5e-best-n4096-b128-2026-10-13.*`
 >   (+ `.NOTE.txt`). Config `FPGASingleRocketVCU118L132K512K8WL2ConfigSBCPLRUDst`. The image of every task 018 result
