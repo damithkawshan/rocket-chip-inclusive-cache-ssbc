@@ -2,7 +2,7 @@
 
 ## ▶ SUMMARY FOR A HUMAN (kept current; the comprehensive record starts at "RESUME HERE" below)
 
-**Last updated: 2026-10-16 17:00. TASK CLOSED** (user decision Q8). The final RTL is commit `e2a71b3` (C5) on branch
+**Last updated: 2026-10-16 21:15. TASK CLOSED** (user decisions Q8 and "wrap the task now"). The final RTL is commit `e2a71b3` (C5) on branch
 `sbc-020-tilelink-merge`, not pushed. F3, an older bug found on the way, moves to its own task.
 
 **The problem.** On the two-core chip with SBC on, the board froze within seconds. A core's write-back of a *parked* line had to wait
@@ -63,7 +63,7 @@ Paths: `$CY = /home/damith/Research/repos/chipyard_performance_eval/chipyard`, `
 | V4 on C5 | **Done: 24/24 identical** to the 494ab5e baseline, 0 asserts |
 | Task | **CLOSED 2026-10-16 17:00** (Q8). Nothing is running. F3 → its own task |
 
-### Running at handoff — NOTHING (all finished by 16:54; my idle tmux sessions closed 17:00). Table kept as a record
+### Running at handoff — NOTHING (the last run, the n4096 pair, ended 20:50; no tmux session of 020 is left). Table kept as a record
 
 | What | How to check | Notes |
 |---|---|---|
@@ -81,13 +81,13 @@ Finished tmux sessions that are only idle shells (do not need anything): `t020_b
 Everything planned for 020 ran and is recorded: V2 (65/66, the 1 = F3), V3, V4 (24/24 identical), V4b, both C5 images, board A, B, C,
 the replicate R, and D. Nothing is running.
 
-1. **User decisions, open:**
-   - commit this task folder (`ai-documents/coder/020-tilelink-release-merge/`, untracked), `ai-documents/guides/priority-orders.md`
+1. **User decisions (all answered 2026-10-16 evening):**
+   - ~~commit~~ **done:** this task folder (`ai-documents/coder/020-tilelink-release-merge/`, untracked), `ai-documents/guides/priority-orders.md`
      and `ai-documents/bugs/bug-fix-log.md` (it also holds someone else's older uncommitted hunk about B7-2 at 512 KB; only the 020
      section and two index lines are mine);
    - the 020 status line in `CLAUDE.md` and in `ai-documents/coder/README.md` (TASK §13: ask before editing either);
-   - push the branch `sbc-020-tilelink-merge` and tag the C5 images;
-   - delete the throwaway branch `sbc-020-debug-tlmon` (debug prints only, F5 is closed).
+   - ~~push the branch and tag~~ **done** (tag `sbc-020-dualcore-tilelink-merge-512k-2026-10-16`; archives renamed to it);
+   - ~~delete `sbc-020-debug-tlmon`~~ **done**. Docs, status lines: **committed and pushed** (f3ccbd6, fcb48aa, b8f8c06, 21ee043).
 2. **F3 as its own task** (user Q8). Start from `021b2d9` on `sbc-021-copy-refill-gate-candidate` (cut from C4): re-apply on `e2a71b3`,
    rebuild, rerun the matrix (both F3 programs must pass: `v2_s1_d2_p1_n4`, `v3_s0_d1_p1_n18`), images, board checks. Expect cycles to
    move (about 18 cycles per migration), so the single-core regression criterion becomes "all pass, counts close", not "identical".
@@ -836,7 +836,7 @@ Measured on the final RTL:
 - **Correctness.** Two-core matrix 65/66 (the 1 = F3, older); coverage: every new path fired; LU's output with SBC on equals the host
   reference; single-core regression 24/24 identical to the pre-020 baseline.
 - **Performance did not drop.** Single-core LU n2048 b128: −9.5% memory accesses (task 018: −10.7% / −9.7%). Two-thread LU: −8.0%
-  on average over 4 on and 3 off windows, C5 equal to C4.
+  on average over 4 on and 3 off windows, C5 equal to C4. Two-thread LU n4096 b128 (after close, one pair): −12.9%.
 - **Timing.** Both images meet timing (dual +0.425 ns, single +0.646 ns), no LUTLP loop.
 
 Not done here, by decision: **F3** (older copy-after-refill hole; seen twice in simulation, once with the board's setting 1) moves to
