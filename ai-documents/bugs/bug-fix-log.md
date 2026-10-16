@@ -17,8 +17,12 @@ Quick index:
 - **Found in 003** — P1 ✅, P2 ✅, P5 ✅ (closed by deletion), P6 ✅, P7 ✅; A5.1 / A5.2 🟡 live RTL facts, not the corruption.
 - **Found in 007** — B7-1 ✅ stale `dispHome` (fixed 2026-09-17).
 - **Found in 008** — B8-1 🔴 teardown races a deferred migration's stale partner claim (2026-09-17).
+- **Found in 019, fixed in 020** — D1–D8 ✅ the dual-core write-back freeze and its seven siblings; F5 ✅ a double grant that 020's own
+  C4 introduced and C5 fixed (2026-10-16, RTL `e2a71b3`; status below).
+- **Found in 020, older** — **F3 🔴** a migration copy can read its source way after the memory refill overwrote it (silent corruption
+  of one parked line; predates 020; moved to its own task, 2026-10-16).
 - **Open** — residual `[born→gate]` sub-window (latent, do not pre-build); **B7-2 combinational loop at 256 KB**
-  (Vivado DRC, 2026-09-17); **B8-1** (above).
+  (Vivado DRC, 2026-09-17); **B8-1** (above); **F3** (020 section).
 
 ---
 
@@ -237,6 +241,18 @@ No bugs. Saturation counters, DSS, and the MMIO read-back map were added with mi
 - **Status 2026-10-12:** still open, not traced. Avoided rather than fixed: only 256 KB **16-way** is known to
   fail. 64 KB 16-way still builds (012's image, 2026-09-25), and every image since 2026-09-26 is **8-way**
   (256 KB, 512 KB, 1 MB); each wrote its `.bit`.
+- **2026-10-12 evening: reproduced at 512 KB 8-way, so "8-way is safe" is false.** FireSim build of
+  `FireSimSBC512KL2Config` (= `SingleRocketVCU118L132K512K8WL2ConfigSBCPLRU`, `design/` identical to C3
+  `fed7227`), Vivado **2023.1**, Garnet partial flow on `comparch`. Synth, place and route complete (WNS +0.114 ns
+  at 50 MHz); `write_bitstream` stops on LUTLP-1, **9 LUT cells**, net `mshrs_0/mshrs_0_io_dstClaim_valid`.
+  The same RTL wrote a `.bit` in the chipyard flow under Vivado 2021.1 (image `37923e6b…`), so whether the loop
+  forms depends on the tool or its context. That fits a packing-made structural loop, but is **not proof**.
+  Traced read-only from `post_route.dcp`, the closed path is: `dstClaim.valid` → Scheduler `dstSetConflict` →
+  `request_valid` / `io.allocate.valid`, `io.allocate.bits.repeat` (`sinkC/c_q`) → a LUT **shared with the
+  `meta_tag` next-state logic** (inputs `allocate_valid`, `allocate_bits_repeat`, `meta.clients`, `dstValid`,
+  `w_dread`, `searching`) → `migDeferred` / `migDstSet` LUTs → `dstClaim.valid`. That is exactly the path
+  `MSHR.scala:1084-1091` and `Scheduler.scala:728-732` say must stay open. Cell list with pin nets:
+  `comparch:/research/repos/firesim-work/analysis/b7-2-512k-8w/loop_cells.txt`. Not waived, not fixed.
 - **Found:** 2026-09-17 02:41, 256 KB build of `251c9d7` (tag `sbc-007-c2-breakeven-2026-09-16`, config
   `FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled`). Log:
   `chipyard/fpga/build-logs/FPGASingleRocketVCU118L18K256K16WL2ConfigSBCResetEnabled-20260917-021836.log` line 7953.
@@ -470,6 +486,55 @@ val probingVictim  = !w_rprobeacklast   // which probe am I WAITING for
 `s_rprobe` retires the moment the probe issues, while the answer is still in flight. Keying the
 advertised `probeSet`/`probeTag` off it would flip the routing key mid-transaction and hang the MSHR.
 Keep both selectors distinct, and keep the comment saying why.
+
+---
+
+## Found in 019, fixed in 020 — a client's write-back of a PARKED line (dual-core freeze)
+
+**Branch** `sbc-020-tilelink-merge`, commits `1392362` C0 · `c3320f1` C1 · `386112b` C2 · `a09155c` C3 · `af36949` C4 · `e2a71b3` C5.
+**Record:** [020 REPORT](../coder/020-tilelink-release-merge/REPORT.md) (evidence, tables) and
+[BUG-dual-core-release-deadlock.md](../coder/020-tilelink-release-merge/BUG-dual-core-release-deadlock.md) (the freeze step by step).
+**Root cause:** the original SiFive cache serialises every action on a line through one set. SBC splits a parked line between its
+home row S and the partner row P, and the merge rules of TileLink 1.8.1 §9.2 were never carried across that split. A write-back
+(`Release`/`ReleaseData`) of a parked line must search row P, and that search waited while any other slot worked in row P — which can be
+the slot the write-back had pre-empted. TileLink forbids it: a write-back must always be accepted and answered (ch. 5 rule 3) and
+merged into the transaction it meets (§9.2). Seen: the whole dual-core board froze within seconds (task 019), and the stopping
+two-core simulator froze 5 of 5 runs.
+
+| # | Defect | Fix (commit) | Status |
+|---|---|---|---|
+| D1 ✅ | The write-back's partner search waits for `!partnerBusy`, and its ReleaseAck waits for the search. Three shapes seen: the pre-empted same-set slot is frozen by `mshr_stall_abc` (Form A); that slot also waits for a probe answer the core withholds (Form B); a row-P slot waits for a probe answer for another dirty line of the same core | `doSearch` ignores `partnerBusy` for `prio(2)` (C4, F1a) | fixed. Sim: the 4 freeze programs run 200,000 iterations with data OK (froze at ~28,000 steps before). Board: see the REPORT |
+| D2 ✅ | A write-back that needs a new slot on a set fenced by a migration or a search is refused at the entrance (`allocReady`) | `allocReady` lets `prio(2)` through both fences (C4, F1b) | fixed; `C-FENCE-PASS` seen in simulation |
+| D3 ✅ | A row-P slot evicting parked line X never learns the holder's write-back made X dirty (broadcast matched on the slot's own set). Would write X to memory as clean: data loss | producer from any write-back slot, consumer matches `lineHome` (C2, F1c) | fixed by code; hidden behind D1 before. `NESTWB-XROW` coverage: see the REPORT |
+| D4 ✅ | Two same-cycle windows in the merge: a write-back nests while the same-set slot's search answer is in flight; a row-P slot's directory result lands in the cycle the broadcast fires | `blockC` covers the in-flight search, `nestC` lowered (F1d); a write-back served in place is not scheduled in the cycle a read of its row returns (F1e) (C3) | fixed by construction. `BLOCKC-SEARCH`, `DIRW-HOLD` coverage: see the REPORT |
+| D5 ✅ | A probe answer reaches every slot whose `(probeSet, probeTag)` matches, waiting or not; an idle slot collects stray ack bits that are cleared once per request | `sinkc.valid` also requires `probeAckPending`, plus an "exactly one slot" assert (C1, F2) | fixed. `PROBEACK-ALIAS` seen 478 times in 16,000 steps: the case is common |
+| D6 ✅ | A data-carrying probe answer that no waiting slot matches is written to set 0, way 0 | same as D5 | closed with D5 |
+| D7 ✅ | Three simulation-only checks fire falsely on two-core traffic (`migrating` and `dstEvict` still set in a retiring cycle; the stock transition check judges the home victim on the write-back's search step) | the asserts test `mig_ready` and W's Release state; the transition check runs on the real final write (C0) | fixed (checker bugs, no hardware) |
+| D8 ✅ | The partner search ignores way-locked lines (`secHits & freeWays`). With the D1 wait gone, a write-back would **miss its own line** (same-set slot serving it in place, or a row-P evictor holding it) and write its data to the home row's victim way: silent corruption of two lines | a write-back's search is masked only by the migration-destination lock (`dreadMerge`, C2, F1f) | fixed. `C-SEARCH-LOCKED` seen in simulation |
+| F5 ✅ | **Introduced by 020's C4, found by the two-core test matrix.** Once a write-back may hold a slot on a set fenced by a migration (D2's fix), a core's Acquire to that set was refused by `request.ready` but still taken by the bypass and the queue push, which ignored the fence: one Acquire, two Grants (TileLink monitor "ready check") | `fenceRefuse = dstSetConflict && !prio(2)` applied to `request.ready`, both `bypass` terms and `requests.io.push.valid`, plus an assert that nothing is bypassed or queued in a cycle it is not accepted (C5) | fixed. The failing run passes; the 52 matrix runs that passed on both C4 and C5 give identical cycle counts |
+
+**Status at close (2026-10-16, RTL `e2a71b3`, measured).** Two-core simulation matrix 65/66 (the 1 = F3 below); the 4 freeze programs
+pass with data OK; every new path fired in coverage runs; single-core regression identical to the pre-020 baseline. Board (images
+dual `32ebbd03…`, single `0f02bc92…`): the freeze patterns 4/4 OK, LU output with SBC on equal to the host reference, two-thread LU
+−8% memory accesses on average (single pairs −3% to −13%), single-core LU −9.5% (task 018: −10.7% / −9.7%).
+
+### F3 🔴 OPEN — a migration copy reads its source way after the memory refill (predates 020; moved to its own task)
+
+**What happens.** A migrating miss sends its memory Acquire at MIG-START, because the A2 interlock (`!migrating || w_copy`) treats the
+copy as done until it starts. When the destination way is dirty and must be written back first (task 018's setting 1 or 2), the copy
+starts late; the refill (SinkD) can then write the victim's way before the copy reads it, so the copy moves the new line's data into the
+destination as the parked line. **Silent corruption of one parked line** if it is read back later.
+**Seen (simulation only, shadow checker `copy_r touched the wrong row`, `lastWriter = sinkD`):** `v2_s1_d2_p1_n4` (setting 2, shared
+lines, on C4 and C5 at the same cycle) and `v3_s0_d1_p1_n18` (**setting 1, unshared**, the board setting; that run still ended with
+data OK). Same code in the task 018 and 019 images. Not seen on the board (the shadow checker is simulation-only).
+**Candidate fix:** branch `sbc-021-copy-refill-gate-candidate`, commit `021b2d9` (cut from C4, one file, 7 lines): `w_copy` cleared at
+both migration starts, set on a destination abort, so the Acquire waits for the copy. Passes both failing runs; costs about 18 L2
+cycles per migration (+4.4–4.7% on the synthetic programs, about +0.35% run time estimated for LU). Needs re-applying on `e2a71b3`
+and its own full round of checks. Details: 020 REPORT, F3 and F4.
+
+**Lesson (recurring pattern, see "Bug patterns that keep coming back").** Removing a wait is safe only after every merge fix that sat
+behind it exists. The commit order C0 → C4 was chosen so each step is no worse than the one before; the freeze stayed
+visible, as a named assert, until C4.
 
 ---
 

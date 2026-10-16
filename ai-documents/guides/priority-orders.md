@@ -38,7 +38,7 @@ Words used below:
 | 6 | **Which line to evict** | empty → easy to move → random → first → moved line | **Yes — main tuning target** | `Directory.scala:217-226` |
 | 7 | Data memory | 7 users in a fixed order; the SBC copy is last | No — tested | `BankedStore.scala:156-222` |
 | 8 | Starting a migration | Only one migration at a time | Maybe — a design decision | `Scheduler.scala:271-282, 356-359` |
-| 9 | A set busy with a migration or search | New requests to that set wait | No | `Scheduler.scala:257-270, 399-407` |
+| 9 | A set busy with a migration or search | New requests to that set wait. **A client write-back never waits** (task 020) | No | `Scheduler.scala` (`allocReady`, `request.ready`), `MSHR.scala` (`doSearch`) |
 | 10 | Messages from one worker | Never bundle a message that might stall with a higher one | No | `MSHR.scala:365-368` |
 
 ---
@@ -132,7 +132,22 @@ Slots another worker is using are always skipped (the "way-lock"), so two worker
 - A new request may not start a worker on the partner set of a search that is still running
   (`Scheduler.scala:267-270`). It is still accepted into the cache.
 - **Exception:** a C message may pass the destination fence (`Scheduler.scala:406-407`) — the bug P1 fix.
-- **Do not loosen.** Two fixed bugs depend on these fences: the destination collision and P1.
+- **Task 020 (2026-10-16): a client write-back passes every fence, never waits for the partner row, and its
+  search sees locked ways.** TileLink ch.5 rule 3 and §9.2 say a write-back must always be accepted and
+  answered, and merged into any transaction it meets. Three places carry it:
+  - `allocReady` lets a prio(2) request take a fresh slot on a set fenced by a migration (`dstSetConflict`)
+    or a search (`secSetConflict`) — `Scheduler.scala`.
+  - `doSearch` in the MSHR ignores `partnerBusy` for a prio(2) request. The wait stays for A requests.
+  - the write-back's partner search is masked only by the migration-destination lock, not by the slot locks
+    (`dreadMerge`, `lockMask` vs `lock2Mask` in `Scheduler.scala`), so it finds a line another slot is serving
+    or evicting, and merges into it.
+  The merge itself: the broadcast `nestedwb` comes from any slot finishing a write-back and is matched by
+  the line's home set (`lineHome`), not by the row; `blockC` covers a search in flight; a write-back served
+  in place is not scheduled in the cycle a read of its row returns (`dirWriteHold`).
+  **Never add a wait to a write-back that depends on a probe answer, a grant, or another slot's progress.**
+  [020 REPORT](../coder/020-tilelink-release-merge/REPORT.md)
+- **Do not loosen** the fences for any request other than a write-back. Two fixed bugs depend on them: the
+  destination collision and P1.
 
 ## 10. Messages from one worker
 
