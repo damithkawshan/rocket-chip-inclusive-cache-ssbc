@@ -22,6 +22,7 @@ changed.
 | Board: LU's output with SBC on (first data check ever) | Equal to the host's reference, through 7.0 million migrations |
 | Board: single-core LU n2048 b128, SBC on vs off | **−9.5% memory accesses** (task 018: −10.7% / −9.7%). Performance did not drop |
 | Board: two-thread LU n2048 b128, SBC on vs off | **−8.0% on average** over 4 on and 3 off windows; single pairs ranged −3% to −13% |
+| Board: two-thread LU n4096 b128, SBC on vs off (after close, user request) | **−12.9% memory accesses**, −1.4% run time, one pair, both valid |
 | Simulation: two-core test matrix (66 runs) | 65 pass with data OK; the 1 failure is F3 (below) |
 | Simulation: the 4 programs that froze 5 of 5 times | All pass, 200,000 iterations, data OK |
 | Simulation: coverage of the new code paths | All 8 fired; longest write-back wait 23 cycles (watchdog limit 4,000) |
@@ -676,6 +677,24 @@ measurable L2 traffic.
 - Inferred: two-thread LU on this board needs **at least three windows per arm**; one pair can land anywhere from about −3% to −13%.
   The single-core pairs repeat within 0.2–0.7% (D), so the spread comes from running two threads (which thread touches a set first,
   and so which sets pair up), not from the board. Not tested.
+
+**N — two-thread LU n=4096 b=128, SBC off then setting 1 (user request after close; fresh boot each, 2026-10-16 17:01–20:50;
+`$NEW/board/lu/c5_n4096/{off,on}/lu-p2-n4096-b128-plru/`, driver `$NEW/gates/board_n4096_c5.log`, script `$NEW/tools/board_n4096_c5.sh`):
+both windows VALID, dual image `32ebbd03…` (measured).**
+
+| | SBC off | SBC on (setting 1) | Change |
+|---|--:|--:|--:|
+| Memory accesses | 3,225,199,647 | 2,809,664,095 | **−12.88%** |
+| Reads / writes | 1,738,023,070 / 1,487,176,577 | 1,500,766,858 / 1,308,897,237 | −13.65% / −11.99% |
+| Accesses (inner A) | 4,120,471,883 | 4,085,485,261 | −0.85% |
+| L2 hit rate (primary + secondary) | 57.82% | 63.27% (primary 61.21%) | +5.45 points |
+| Migrations / attempts / aborted | — | 65,070,245 / 116,317,357 / 51,281,404 (44.1%) | |
+| L2 cycles | 260,698,970,316 (86.9 min) | 257,016,294,521 (85.7 min) | −1.41% |
+
+- Measured: one pair. Single-core LU at this point gave −20.9% / −21.1% on task 018's image; the two-thread run saves less but still
+  saves clearly, with no freeze in 173 minutes of SBC on and off and 65 million migrations.
+- Not known: the spread. At n2048 one two-thread pair ranged −3% to −13%; this n4096 point has one window per arm.
+- The accesses differ by 0.85% between the arms (n2048: within 0.3%), so a small part of the change may be different work.
 
 **D — V7 on C5: single-core LU `-p1` n2048 b128, SBC off then setting 1 (fresh boot each, 2026-10-16 13:32–15:02;
 `$NEW/board/lu1/c5/{off,on}/lu-p1-n2048-b128-plru/`): both windows VALID, image `0f02bc92…`. PASS (measured).**

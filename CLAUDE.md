@@ -27,7 +27,7 @@ live in `ai-documents/`.
 > - Images (512 KB 8-way L2, 32 KB 8-way L1): **dual core `32ebbd03…`**, single core `0f02bc92…`, both timing met, no LUTLP loop
 > - Board: the freeze patterns 4/4 OK; **LU's output with SBC on equals the host reference** (first data check); single-core LU n2048 b128
 >   **−9.5%** memory accesses (018: −10.7 / −9.7%); **two-thread LU n2048 b128 −8.0% on average**, but one off/on pair ranges −3% to −13%:
->   use 3+ windows per arm on two cores (cause untested)
+>   use 3+ windows per arm on two cores (cause untested); **two-thread LU n4096 b128 −12.9%** (one pair; single core −20.9%)
 > - Simulation: two-core matrix 65/66, single-core regression 24/24 identical to `494ab5e` (020 changes nothing on one core, SBC on or off)
 > - ⚠️ **OPEN: F3** (older than 020, also in the 018/019 images): a migration copy can read its source way after the memory refill overwrote it,
 >   silently corrupting one parked line. Seen twice in simulation, once with setting 1. Candidate fix `021b2d9` (~18 cycles per migration).
